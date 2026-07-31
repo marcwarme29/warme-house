@@ -378,7 +378,8 @@ function initialState() {
     avisFilter: { kind: 'tous', prop: 'tous', stars: 'toutes' },
     livretSection: 'arrivee',
     livretCopie: [],                  // logements cochés pour recopier une rubrique
-    livretDrafts: {},                 // { 'pid:section': { titre, texte, media } }
+    livretBlocs: null,                // blocs cochés pour la copie (null = tous)
+    livretDrafts: {},                 // { 'pid:section': { titre, texte, adresse, media } }
     avisDrafts: {}                    // { 'pid:kind': { stars, texte } } — la note en cours de saisie
   };
 }
@@ -718,6 +719,12 @@ function fmtNote(n) { return String(n).replace('.', ','); }
 /** Adresse publique de l'application, sans la partie après le # . */
 function appUrl() {
   return location.origin + location.pathname;
+}
+
+/** Lien vers un plan. Ce format est compris par Google Maps, et l'iPhone le
+    propose dans Plans : c'est le plus sûr sans dépendre d'un service précis. */
+function planUrl(adresse) {
+  return 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(adresse);
 }
 
 /** Texte de l'invitation. Il dit la vérité : aujourd'hui il n'y a pas de mot
@@ -2648,12 +2655,23 @@ function bienLivret(pid, b) {
       act('livret-section', { s: s.k }) + '>' + s.label + (n ? ' · ' + n : '') + '</button>';
   }).join('') + '</div>';
 
+  /* Chaque bloc porte une case à cocher : elle sert à choisir précisément ce
+     qui sera recopié vers d'autres logements. */
+  var choisis = blocsChoisis(blocs);
+
   var liste = '<div class="stack" style="margin-top:14px">' + (blocs.length ? blocs.map(function (x, xi) {
-    return '<div class="card" style="padding:16px 18px">' +
-      '<div style="display:flex;align-items:flex-start;gap:10px">' +
+    var on = choisis.indexOf(xi) >= 0;
+    return '<div class="card livret-bloc' + (on ? ' livret-bloc--on' : '') + '" style="padding:16px 18px">' +
+      '<div style="display:flex;align-items:flex-start;gap:12px">' +
+        '<button type="button" class="livret-pick" aria-pressed="' + on + '"' +
+          ' aria-label="Sélectionner « ' + esc(x.titre) + ' » pour la copie"' +
+          act('livret-bloc', { pid: pid, s: sec.k, i: xi }) + '>' +
+          '<span class="checkbox-sq' + (on ? ' checkbox-sq--on' : '') + '" style="--accent:' + b.color + '"></span>' +
+        '</button>' +
         '<div class="grow">' +
           '<div style="font:700 15px Figtree,sans-serif">' + esc(x.titre) + '</div>' +
           '<div style="font:500 13.5px/1.55 Figtree,sans-serif;color:var(--muted3);margin-top:5px;white-space:pre-wrap">' + esc(x.texte) + '</div>' +
+          (x.adresse ? '<div class="livret-adresse">📍 ' + esc(x.adresse) + '</div>' : '') +
           (x.media ? '<div class="livret-media-url num">' + esc(x.media) + '</div>' : '') +
         '</div>' +
         '<div style="display:flex;gap:4px;flex:none">' +
@@ -2671,6 +2689,9 @@ function bienLivret(pid, b) {
       '<input class="inp" id="lvd-t" type="text" placeholder="Ex. Comment allumer la télévision" value="' + esc(dr.titre) + '" data-fid="lvd-t" data-in="livret-draft" data-key="' + esc(dkey) + '" data-f="titre"></div>' +
     '<div style="margin-top:12px"><label class="lab" for="lvd-x">Explication</label>' +
       '<textarea class="inp" id="lvd-x" placeholder="Écrivez comme si vous parliez au voyageur." data-fid="lvd-x" data-in="livret-draft" data-key="' + esc(dkey) + '" data-f="texte">' + esc(dr.texte) + '</textarea></div>' +
+    '<div style="margin-top:12px"><label class="lab" for="lvd-a">Adresse (facultatif)</label>' +
+      '<input class="inp" id="lvd-a" type="text" placeholder="Ex. 12 quai du Port, 13002 Marseille" value="' + esc(dr.adresse || '') + '" data-fid="lvd-a" data-in="livret-draft" data-key="' + esc(dkey) + '" data-f="adresse">' +
+      '<p class="sec-note" style="margin-top:5px">Le voyageur pourra l\'ouvrir directement dans son application de plans.</p></div>' +
     '<div style="margin-top:12px"><label class="lab" for="lvd-m">Photo ou vidéo (adresse internet, facultatif)</label>' +
       '<input class="inp" id="lvd-m" type="url" placeholder="https://… (lien YouTube, Google Photos, image…)" value="' + esc(dr.media) + '" data-fid="lvd-m" data-in="livret-draft" data-key="' + esc(dkey) + '" data-f="media"></div>' +
     '<button type="button" class="btn btn--primary btn--sm" style="margin-top:14px"' +
@@ -2681,14 +2702,23 @@ function bienLivret(pid, b) {
     livretCopie(pid, sec, blocs) + ajout + '</div>';
 }
 
-/* Recopier une rubrique vers d'autres logements. Les activités et les
-   restaurants d'un quartier valent souvent pour plusieurs biens : on évite
-   de les ressaisir logement par logement. */
+/** Indices des blocs cochés pour la copie. `null` = tous, ce qui évite de
+    cocher quatre cases quand on veut simplement tout recopier. */
+function blocsChoisis(blocs) {
+  if (!Array.isArray(state.livretBlocs)) return blocs.map(function (x, i) { return i; });
+  return state.livretBlocs.filter(function (i) { return i < blocs.length; });
+}
+
+/* Recopier tout ou partie d'une rubrique vers d'autres logements. Les activités
+   et les restaurants d'un quartier valent souvent pour plusieurs biens — mais
+   pas toujours tous : on choisit les blocs, puis les logements. */
 function livretCopie(pid, sec, blocs) {
   var autres = state.props.filter(function (p) { return p.id !== pid; });
   if (!autres.length) return '';
 
   var cibles = state.livretCopie || [];
+  var choisis = blocsChoisis(blocs);
+  var tous = choisis.length === blocs.length;
 
   if (!blocs.length) {
     return '<div class="card" style="margin-top:14px;padding:18px 20px">' +
@@ -2699,8 +2729,18 @@ function livretCopie(pid, sec, blocs) {
 
   return '<div class="card" style="margin-top:14px;padding:18px 20px">' +
     '<h3 style="font:700 15px Figtree,sans-serif;margin:0">Copier « ' + esc(sec.label) + ' » vers d\'autres logements</h3>' +
-    '<p class="sec-note" style="margin-top:3px">' + blocs.length + ' bloc(s) à recopier. ' +
-      'Pratique pour les activités et les restaurants d\'un même quartier.</p>' +
+    '<p class="sec-note" style="margin-top:3px">Cochez ci-dessus ce que vous voulez copier, puis les logements ' +
+      'qui doivent le recevoir.</p>' +
+
+    '<div class="perm-row" style="border:0;padding:12px 0 0;background:transparent">' +
+      '<span class="perm-label">À copier :</span>' +
+      '<span class="copie-count' + (choisis.length ? '' : ' copie-count--vide') + '">' +
+        choisis.length + ' sur ' + blocs.length + '</span>' +
+      '<button type="button" class="btn btn--xs" style="background:var(--cream);color:var(--ink-soft)"' +
+        act('livret-blocs-tous', { v: tous ? '0' : '1' }) + '>' +
+        (tous ? 'Tout décocher' : 'Tout cocher') + '</button>' +
+    '</div>' +
+
     '<div class="perm-row" style="border:0;padding:12px 0 0;background:transparent">' +
       '<span class="perm-label">Copier vers :</span>' +
       autres.map(function (p) {
@@ -2711,13 +2751,14 @@ function livretCopie(pid, sec, blocs) {
           esc(p.short) + '</button>';
       }).join('') +
     '</div>' +
+
     '<div style="display:flex;gap:10px;margin-top:14px;flex-wrap:wrap;align-items:center">' +
       '<button type="button" class="btn btn--dark btn--sm"' +
         act('livret-copie', { pid: pid, s: sec.k, mode: 'ajout' }) + '>Ajouter à la suite</button>' +
       '<button type="button" class="btn btn--sm" style="background:var(--terra-bg);color:var(--terra-dd)"' +
         act('livret-copie', { pid: pid, s: sec.k, mode: 'remplace' }) + '>Remplacer</button>' +
       '<span class="sec-note">« Ajouter » conserve ce qui existe déjà. « Remplacer » efface la rubrique ' +
-        'des logements cochés avant d\'y copier celle-ci.</span>' +
+        'des logements cochés avant d\'y copier votre sélection.</span>' +
     '</div>' +
     '</div>';
 }
@@ -2799,6 +2840,10 @@ function viewLivretSection() {
       return '<article class="lv-bloc">' +
         '<h3 class="lv-h3">' + esc(x.titre) + '</h3>' +
         (x.texte ? '<p class="lv-p">' + esc(x.texte) + '</p>' : '') +
+        (x.adresse ? '<a class="lv-adresse" href="' + esc(planUrl(x.adresse)) + '" target="_blank" rel="noopener noreferrer">' +
+          '<span class="lv-adresse-ico" aria-hidden="true">📍</span>' +
+          '<span class="grow">' + esc(x.adresse) + '</span>' +
+          '<span class="lv-adresse-go">Y aller →</span></a>' : '') +
         (x.media ? '<a class="lv-media" href="' + esc(x.media) + '" target="_blank" rel="noopener noreferrer">' +
           'Voir la photo ou la vidéo →</a>' : '') +
         '</article>';
@@ -3066,7 +3111,13 @@ var actions = {
   nav: function (el) { go(el.dataset.path); },
   'back-list': function () { go(state.auth === 'presta' ? '#/app/missions' : '#/admin'); },
   'open-mission': function (el) { go('#/app/missions/' + el.dataset.id); },
-  'open-bien': function (el) { state.bienTab = 'infos'; save(); go('#/admin/biens/' + el.dataset.id); },
+  'open-bien': function (el) {
+    state.bienTab = 'infos';
+    state.livretBlocs = null;
+    state.livretCopie = [];
+    save();
+    go('#/admin/biens/' + el.dataset.id);
+  },
 
   /* Connexion ------------------------------------------------------------ */
   'login-role': function (el) {
@@ -3335,15 +3386,28 @@ var actions = {
   },
 
   /* Livret d'accueil ------------------------------------------------------ */
-  'livret-section': function (el) { state.livretSection = el.dataset.s; save(); render(); },
+  /* La sélection de blocs repose sur leur rang : dès que la liste bouge —
+     changement de rubrique, ajout, suppression, déplacement — on repart de
+     « tout coché » plutôt que de garder des rangs devenus faux. */
+  'livret-section': function (el) {
+    state.livretSection = el.dataset.s;
+    state.livretBlocs = null;
+    save(); render();
+  },
   'livret-add': function (el) {
     var pid = el.dataset.pid, s = el.dataset.s, key = pid + ':' + s;
     var d = state.livretDrafts[key] || {};
     var titre = (d.titre || '').trim();
     if (!titre) { alert('Donnez un titre à ce bloc.'); return; }
     var lv = state.livret[pid] || (state.livret[pid] = lvVide());
-    lv[s] = (lv[s] || []).concat([{ titre: titre, texte: (d.texte || '').trim(), media: (d.media || '').trim() }]);
-    state.livretDrafts[key] = { titre: '', texte: '', media: '' };
+    lv[s] = (lv[s] || []).concat([{
+      titre: titre,
+      texte: (d.texte || '').trim(),
+      adresse: (d.adresse || '').trim(),
+      media: (d.media || '').trim()
+    }]);
+    state.livretDrafts[key] = { titre: '', texte: '', adresse: '', media: '' };
+    state.livretBlocs = null;
     save(); render();
   },
   'livret-remove': function (el) {
@@ -3351,6 +3415,7 @@ var actions = {
     var lv = state.livret[pid];
     if (!lv || !lv[s]) return;
     lv[s] = lv[s].filter(function (x, xi) { return xi !== i; });
+    state.livretBlocs = null;
     save(); render();
   },
   'livret-move': function (el) {
@@ -3362,10 +3427,32 @@ var actions = {
     if (j < 0 || j >= list.length) return;
     var tmp = list[i]; list[i] = list[j]; list[j] = tmp;
     lv[s] = list;
+    state.livretBlocs = null;
     save(); render();
   },
 
   /* Recopie d'une rubrique de livret vers d'autres logements --------------- */
+
+  /* Coche ou décoche un bloc pour la copie. Tant que rien n'a été touché,
+     `livretBlocs` vaut null et tout est considéré comme coché. */
+  'livret-bloc': function (el) {
+    var lv = state.livret[el.dataset.pid] || lvVide();
+    var total = (lv[el.dataset.s] || []).length;
+    var i = parseInt(el.dataset.i, 10);
+    var list = Array.isArray(state.livretBlocs)
+      ? state.livretBlocs.slice()
+      : lv[el.dataset.s].map(function (x, xi) { return xi; });
+    var j = list.indexOf(i);
+    if (j >= 0) list.splice(j, 1); else list.push(i);
+    state.livretBlocs = list.filter(function (x) { return x < total; }).sort(function (a, b) { return a - b; });
+    save(); render();
+  },
+  'livret-blocs-tous': function (el) {
+    if (el.dataset.v === '1') state.livretBlocs = null;   // null = tous
+    else state.livretBlocs = [];
+    save(); render();
+  },
+
   'livret-cible': function (el) {
     var pid = el.dataset.pid;
     var list = (state.livretCopie || []).slice();
@@ -3379,17 +3466,22 @@ var actions = {
     var cibles = (state.livretCopie || []).filter(function (x) { return x !== pid && !prop(x).gone; });
     if (!cibles.length) { alert('Cochez d\'abord les logements vers lesquels copier.'); return; }
 
-    var source = (state.livret[pid] || lvVide())[s] || [];
-    if (!source.length) return;
+    var tous = (state.livret[pid] || lvVide())[s] || [];
+    if (!tous.length) return;
+
+    // Seuls les blocs cochés partent : on ne copie pas forcément tout.
+    var indices = blocsChoisis(tous);
+    if (!indices.length) { alert('Cochez d\'abord ce que vous voulez copier.'); return; }
+    var source = indices.map(function (i) { return tous[i]; });
 
     var sec = LIVRET_SECTIONS.find(function (x) { return x.k === s; });
     var noms = cibles.map(function (x) { return prop(x).name; }).join(', ');
+    var quoi = source.length + ' bloc(s) sur ' + tous.length +
+      ' :\n· ' + source.map(function (x) { return x.titre; }).join('\n· ');
     var question = mode === 'remplace'
-      ? 'Remplacer la rubrique « ' + sec.label +' » de ' + noms + ' ?\n\n' +
-        'Ce qui s\'y trouve aujourd\'hui sera effacé, puis les ' + source.length +
-        ' bloc(s) de ce logement y seront copiés.'
-      : 'Copier les ' + source.length + ' bloc(s) de « ' + sec.label + ' » vers ' + noms + ' ?\n\n' +
-        'Ils s\'ajouteront à la suite de ce qui existe déjà.';
+      ? 'Remplacer la rubrique « ' + sec.label + ' » de ' + noms + ' ?\n\n' +
+        'Ce qui s\'y trouve aujourd\'hui sera effacé, puis vous y copiez ' + quoi
+      : 'Copier vers ' + noms + ' ?\n\n' + quoi + '\n\nIls s\'ajouteront à la suite de ce qui existe déjà.';
     if (!confirm(question)) return;
 
     cibles.forEach(function (cid) {
@@ -3399,6 +3491,7 @@ var actions = {
     });
 
     state.livretCopie = [];
+    state.livretBlocs = null;
     save(); render();
     alert('Copié vers ' + cibles.length + ' logement(s).');
   },
@@ -3700,7 +3793,7 @@ var inputs = {
   },
   'livret-draft': function (el) {
     var k = el.dataset.key;
-    var d = state.livretDrafts[k] || (state.livretDrafts[k] = { titre: '', texte: '', media: '' });
+    var d = state.livretDrafts[k] || (state.livretDrafts[k] = { titre: '', texte: '', adresse: '', media: '' });
     d[el.dataset.f] = el.value;
   },
 

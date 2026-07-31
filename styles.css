@@ -860,6 +860,33 @@ textarea.inp { min-height: 90px; resize: vertical; line-height: 1.5; }
   margin-top: 6px;
   overflow-wrap: anywhere;
 }
+.livret-adresse {
+  font: 600 12.5px Figtree, sans-serif;
+  color: var(--ink-soft2);
+  margin-top: 7px;
+  overflow-wrap: anywhere;
+}
+
+/* Bloc de livret sélectionnable pour la copie. */
+.livret-bloc { transition: box-shadow .16s ease; }
+.livret-bloc--on { box-shadow: var(--sh-card), inset 3px 0 0 var(--terra); }
+.livret-pick {
+  flex: none;
+  width: 32px;
+  min-height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 2px;
+}
+.copie-count {
+  font: 700 12.5px Figtree, sans-serif;
+  color: var(--ink-soft);
+  background: var(--cream);
+  border-radius: 999px;
+  padding: 6px 12px;
+}
+.copie-count--vide { color: var(--terra-d); background: var(--terra-bg); }
 
 /* La page telle que la voit le voyageur. */
 .livret {
@@ -905,6 +932,24 @@ textarea.inp { min-height: 90px; resize: vertical; line-height: 1.5; }
 .lv-bloc + .lv-bloc { margin-top: 10px; }
 .lv-h3 { font: 700 17px/1.3 Figtree, sans-serif; margin: 0; }
 .lv-p { font: 500 14.5px/1.6 Figtree, sans-serif; color: var(--ink-soft); margin: 8px 0 0; white-space: pre-wrap; }
+/* Adresse d'une activité ou d'un restaurant, cliquable vers un plan. */
+.lv-adresse {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: var(--cream);
+  color: var(--ink-soft);
+  font: 600 13.5px/1.4 Figtree, sans-serif;
+  text-decoration: none;
+  min-height: 44px;
+  overflow-wrap: anywhere;
+}
+.lv-adresse-ico { flex: none; font-size: 15px; }
+.lv-adresse-go { flex: none; color: var(--terra-d); font: 700 12.5px Figtree, sans-serif; }
+
 .lv-media {
   display: inline-block;
   margin-top: 12px;
