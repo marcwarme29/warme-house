@@ -640,6 +640,7 @@ textarea.inp { min-height: 90px; resize: vertical; line-height: 1.5; }
 .alert--terra { background: var(--terra-bg2); border-color: #F3D3C6; color: var(--terra-d); }
 .alert--amber { background: var(--amber-bg2); border-color: #F0E1C4; color: var(--amber-t); }
 .alert--blue  { background: #E9F1F6;          border-color: #D3E2EC; color: var(--blue-t); }
+.alert--green { background: var(--green-bg);  border-color: #CFE5D9; color: var(--green-t); }
 
 /* Tableaux ---------------------------------------------------------------- */
 
@@ -667,6 +668,242 @@ textarea.inp { min-height: 90px; resize: vertical; line-height: 1.5; }
 .trow:hover { background: rgba(36,30,26,.035); }
 .thead, .trow { min-width: 760px; }
 .thead--stock, .trow--stock { min-width: 900px; }
+
+/* Ligne de mission terminée : cliquable, elle ouvre la revue. */
+.trow--link { width: 100%; }
+.trow-go {
+  width: 76px;
+  flex: none;
+  text-align: right;
+  font: 700 12.5px Figtree, sans-serif;
+  color: var(--terra);
+}
+
+/* Revue d'une mission terminée -------------------------------------------- */
+
+.revue-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 10px;
+  margin-top: 12px;
+}
+.revue-step {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 10px;
+  border-radius: 14px;
+  background: var(--sand);
+}
+.revue-thumb {
+  width: 54px; height: 54px;
+  border-radius: 12px;
+  flex: none;
+  display: flex; align-items: center; justify-content: center;
+  font: 600 8px ui-monospace, Menlo, monospace;
+  color: var(--muted);
+}
+.revue-thumb--none {
+  background: var(--fill);
+  font: 700 16px Figtree, sans-serif;
+  color: var(--muted2);
+}
+
+/* Note de reprise, côté prestataire. */
+.redo-note {
+  background: var(--terra-bg2);
+  border: 1px solid #F3D3C6;
+  border-radius: 16px;
+  padding: 13px 15px;
+}
+.redo-note .k { font: 700 13.5px Figtree, sans-serif; color: var(--terra-dd); }
+.redo-note .t { font: 500 12.5px/1.5 Figtree, sans-serif; color: var(--terra-d); margin-top: 4px; }
+
+/* Note laissée par le propriétaire sur une mission. */
+.owner-note {
+  background: var(--amber-bg2);
+  border: 1px solid #F0E1C4;
+  border-radius: 16px;
+  padding: 13px 15px;
+}
+.owner-note .k { font: 700 12px Figtree, sans-serif; color: var(--amber-t); letter-spacing: .04em; text-transform: uppercase; }
+.owner-note .t { font: 600 13.5px/1.5 Figtree, sans-serif; color: var(--ink); margin-top: 5px; white-space: pre-wrap; }
+
+.mission-note {
+  margin-top: 10px;
+  padding: 8px 11px;
+  border-radius: 12px;
+  background: var(--amber-bg2);
+  font: 600 12px/1.45 Figtree, sans-serif;
+  color: var(--amber-t);
+}
+
+/* Accès et Wi-Fi, mis en évidence dans la mission du prestataire. */
+.access-card { display: flex; gap: 10px; flex-wrap: wrap; }
+.access-item {
+  flex: 1;
+  min-width: 140px;
+  background: var(--ink);
+  color: #F7EFE4;
+  border-radius: 16px;
+  padding: 13px 15px;
+}
+.access-item .k { font: 600 11px Figtree, sans-serif; color: rgba(247,239,228,.6); letter-spacing: .05em; text-transform: uppercase; }
+.access-item .v { font: 700 15px/1.35 Figtree, sans-serif; margin-top: 5px; overflow-wrap: anywhere; }
+
+/* ==========================================================================
+   Ajout / suppression : prestations, permissions, formulaires
+   ========================================================================== */
+
+.svc-row { padding: 12px 0; border-bottom: 1px solid rgba(36,30,26,.07); }
+.svc-fields { display: flex; gap: 12px; flex-wrap: wrap; }
+.svc-actions { display: flex; align-items: center; gap: 10px; margin-top: 10px; flex-wrap: wrap; }
+.svc-actions .lab { flex: none; }
+
+.btn-danger-xs {
+  min-height: 38px;
+  padding: 0 12px;
+  border-radius: 999px;
+  background: var(--terra-bg2);
+  color: var(--terra-d);
+  font: 600 12px Figtree, sans-serif;
+  flex: none;
+}
+.btn-danger-xs:hover { background: #F7DDD3; }
+
+.x-btn {
+  width: 32px; height: 32px;
+  border-radius: 999px;
+  background: var(--cream);
+  color: var(--muted);
+  display: inline-flex; align-items: center; justify-content: center;
+  font: 700 14px Figtree, sans-serif;
+  flex: none;
+}
+.x-btn:hover { background: var(--terra-bg2); color: var(--terra-d); }
+
+.danger-zone {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-top: 16px;
+  background: var(--terra-bg2);
+  border: 1px solid #F3D3C6;
+  box-shadow: none;
+}
+
+.perm-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 12px 22px 16px;
+  border-top: 1px solid rgba(36,30,26,.07);
+  background: var(--sand);
+}
+.perm-label { font: 600 12px Figtree, sans-serif; color: var(--muted); margin-right: 2px; }
+.perm-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 38px;
+  padding: 0 13px;
+  border-radius: 999px;
+  border: 1.5px solid rgba(36,30,26,.12);
+  background: #fff;
+  font: 600 12.5px Figtree, sans-serif;
+  color: var(--muted2);
+}
+.perm-chip[aria-pressed="true"] { border-color: var(--accent, var(--terra)); color: var(--ink); }
+
+.swatch {
+  width: 34px; height: 34px;
+  border-radius: 999px;
+  border: 3px solid transparent;
+  box-shadow: 0 0 0 1px rgba(36,30,26,.12) inset;
+}
+.swatch[aria-pressed="true"] { border-color: var(--ink); }
+
+/* ==========================================================================
+   Livret d'accueil
+   ========================================================================== */
+
+.livret-recap {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 10px;
+  margin-top: 14px;
+}
+.livret-recap .k { font: 600 11px Figtree, sans-serif; color: var(--muted); letter-spacing: .05em; text-transform: uppercase; }
+.livret-recap .v { font: 700 14px Figtree, sans-serif; margin-top: 3px; overflow-wrap: anywhere; }
+.livret-media-url {
+  font: 500 11.5px ui-monospace, Menlo, monospace;
+  color: var(--blue-t);
+  margin-top: 6px;
+  overflow-wrap: anywhere;
+}
+
+/* La page telle que la voit le voyageur. */
+.livret {
+  max-width: 660px;
+  margin: 0 auto;
+  padding: 0 0 calc(40px + var(--safe-bottom));
+  background: var(--sand);
+  min-height: 100vh;
+}
+.lv-back {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding: 12px 20px;
+  background: var(--ink);
+  color: rgba(247,239,228,.65);
+  font: 500 12px Figtree, sans-serif;
+}
+.lv-back button { color: #F7EFE4; font: 600 12.5px Figtree, sans-serif; min-height: 38px; }
+.lv-head { padding: calc(26px + var(--safe-top)) 24px 26px; }
+.lv-logo { font-family: "Instrument Serif", Georgia, serif; font-size: 19px; color: var(--muted3); }
+.lv-title { font: 700 30px/1.15 Figtree, sans-serif; letter-spacing: -.02em; margin-top: 8px; }
+.lv-city { font: 500 14px Figtree, sans-serif; color: var(--muted3); margin-top: 5px; }
+.lv-mot { font: 500 15px/1.6 Figtree, sans-serif; color: var(--ink-soft); margin-top: 16px; white-space: pre-wrap; }
+
+.lv-keys {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+  padding: 20px 24px 0;
+}
+.lv-key { background: #fff; border-radius: 16px; padding: 14px 16px; box-shadow: var(--sh-card); }
+.lv-key .k { font: 600 11px Figtree, sans-serif; color: var(--muted); letter-spacing: .05em; text-transform: uppercase; }
+.lv-key .v { font: 700 17px/1.3 Figtree, sans-serif; margin-top: 5px; overflow-wrap: anywhere; }
+
+.lv-section { padding: 30px 24px 0; }
+.lv-h2 {
+  font: 700 12px Figtree, sans-serif;
+  color: var(--terra);
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  margin: 0 0 12px;
+}
+.lv-bloc { background: #fff; border-radius: 18px; padding: 18px 20px; box-shadow: var(--sh-card); }
+.lv-bloc + .lv-bloc { margin-top: 10px; }
+.lv-h3 { font: 700 17px/1.3 Figtree, sans-serif; margin: 0; }
+.lv-p { font: 500 14.5px/1.6 Figtree, sans-serif; color: var(--ink-soft); margin: 8px 0 0; white-space: pre-wrap; }
+.lv-media {
+  display: inline-block;
+  margin-top: 12px;
+  padding: 10px 15px;
+  border-radius: 999px;
+  background: var(--blue-bg);
+  color: var(--blue-t);
+  font: 700 12.5px Figtree, sans-serif;
+  text-decoration: none;
+}
+.lv-foot {
+  padding: 36px 24px 0;
+  text-align: center;
+  font: 500 12.5px Figtree, sans-serif;
+  color: var(--muted2);
+}
 
 .day-badge { width: 44px; flex: none; text-align: center; }
 .day-badge .d { font: 700 16px Figtree, sans-serif; }

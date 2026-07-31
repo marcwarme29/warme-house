@@ -33,13 +33,14 @@ var PROPS = [
   { id: 'p4', name: 'Loft Bellecour', short: 'Bellecour', city: 'Lyon 2e', address: '5 place Antonin', color: C.ambre, tint: '#F7EEDC' }
 ];
 
-var TYPE_ORDER = ['menage', 'menage_jardin', 'stock', 'maintenance'];
-var TYPES = {
-  menage: { label: 'Ménage après séjour', duration: '≈ 2 h' },
-  menage_jardin: { label: 'Ménage + extérieur', duration: '≈ 3 h' },
-  stock: { label: 'Réapprovisionnement', duration: '≈ 45 min' },
-  maintenance: { label: 'Petite réparation', duration: '≈ 1 h' }
-};
+/* Prestations : liste commune à tous les biens (nom + durée réglables).
+   Le tarif, lui, reste propre à chaque bien — voir state.tariffs. */
+var SERVICES = [
+  { key: 'menage', label: 'Ménage après séjour', duration: '≈ 2 h' },
+  { key: 'menage_jardin', label: 'Ménage + extérieur', duration: '≈ 3 h' },
+  { key: 'stock', label: 'Réapprovisionnement', duration: '≈ 45 min' },
+  { key: 'maintenance', label: 'Petite réparation', duration: '≈ 1 h' }
+];
 
 var PLATS = {
   'Airbnb': { bg: '#F7E7DF', fg: '#B04A26', color: C.terracotta },
@@ -68,10 +69,21 @@ var RESAS = {
   ]
 };
 
+/* `props` = biens sur lesquels le prestataire a le droit de se positionner. */
 var AGENTS = [
-  { id: 'Sofia', name: 'Sofia Lemaire', init: 'SL', role: 'Référente ménage', since: 'mars 2025', note: '4,9', email: 'sofia.lemaire@mail.fr', iban: 'IBAN ··· 4417', avatarBg: '#F7E7DF', avatarFg: '#B04A26', roleBg: '#F7E7DF', roleFg: '#B04A26' },
-  { id: 'Amandine', name: 'Amandine Roux', init: 'AR', role: 'Ménage', since: 'janv. 2026', note: '4,8', email: 'amandine.roux@mail.fr', iban: 'IBAN ··· 8102', avatarBg: '#E4EDF4', avatarFg: '#2F6C93', roleBg: '#E4EDF4', roleFg: '#2F6C93' },
-  { id: 'Karim', name: 'Karim Belaïd', init: 'KB', role: 'Maintenance & extérieur', since: 'sept. 2025', note: '5,0', email: 'karim.belaid@mail.fr', iban: 'IBAN ··· 2390', avatarBg: '#E3F0E9', avatarFg: '#227052', roleBg: '#E3F0E9', roleFg: '#227052' }
+  { id: 'Sofia', name: 'Sofia Lemaire', init: 'SL', role: 'Référente ménage', since: 'mars 2025', note: '4,9', email: 'sofia.lemaire@mail.fr', iban: 'IBAN ··· 4417', avatarBg: '#F7E7DF', avatarFg: '#B04A26', roleBg: '#F7E7DF', roleFg: '#B04A26', props: ['p1', 'p2', 'p3', 'p4'] },
+  { id: 'Amandine', name: 'Amandine Roux', init: 'AR', role: 'Ménage', since: 'janv. 2026', note: '4,8', email: 'amandine.roux@mail.fr', iban: 'IBAN ··· 8102', avatarBg: '#E4EDF4', avatarFg: '#2F6C93', roleBg: '#E4EDF4', roleFg: '#2F6C93', props: ['p3', 'p4'] },
+  { id: 'Karim', name: 'Karim Belaïd', init: 'KB', role: 'Maintenance & extérieur', since: 'sept. 2025', note: '5,0', email: 'karim.belaid@mail.fr', iban: 'IBAN ··· 2390', avatarBg: '#E3F0E9', avatarFg: '#227052', roleBg: '#E3F0E9', roleFg: '#227052', props: ['p1', 'p2', 'p3', 'p4'] }
+];
+
+/* Palette d'identité proposée à la création d'un bien ou d'un prestataire. */
+var PALETTE = [
+  { color: C.terracotta, tint: '#F7E7DF', fg: '#B04A26' },
+  { color: C.bleu, tint: '#E4EDF4', fg: '#2F6C93' },
+  { color: C.vert, tint: '#E3F0E9', fg: '#227052' },
+  { color: C.ambre, tint: '#F7EEDC', fg: '#996B12' },
+  { color: '#8A6A4F', tint: '#EFE7DA', fg: '#6B5138' },
+  { color: '#7A6BA8', tint: '#EAE6F4', fg: '#5B4E85' }
 ];
 
 var MONTHS = [
@@ -131,12 +143,15 @@ var ARTICLES = [
   ]]
 ];
 
-var FLAT = ARTICLES.reduce(function (acc, g) {
-  return acc.concat(g[1].map(function (a) {
-    return { key: a[0], label: a[1], unit: a[2], par: a[3], seuil: a[4], group: g[0] };
-  }));
-}, []);
-var GROUPS = ARTICLES.map(function (g) { return g[0]; });
+/* Liste d'articles de départ, à plat. Elle devient modifiable : voir state.articles,
+   et les fonctions arts() / groups() / grouped() de la partie 3. */
+function baseArticles() {
+  return ARTICLES.reduce(function (acc, g) {
+    return acc.concat(g[1].map(function (a) {
+      return { key: a[0], label: a[1], unit: a[2], par: a[3], group: g[0] };
+    }));
+  }, []);
+}
 
 var RAW_CHECK = {
   p1: [
@@ -168,11 +183,44 @@ var RAW_CHECK = {
 };
 
 var BIEN_INFO = {
-  p1: { capacity: '4 voyageurs', surface: '46 m²', code: 'Boîte à clés — 4821', wifi: 'NidVieuxPort / soleil2024', parking: 'Parking Estienne, place 34', linge: '2 parures, 6 serviettes' },
-  p2: { capacity: '2 voyageurs', surface: '28 m²', code: 'Digicode 12B45 · clé sous tapis', wifi: 'CanalStM / paris1900', parking: 'Aucun', linge: '1 parure, 4 serviettes' },
-  p3: { capacity: '6 voyageurs', surface: '140 m²', code: 'Portail 7788 · clé maison', wifi: 'Oliviers / cigales2025', parking: '2 places dans l’allée', linge: '3 parures, 12 serviettes' },
-  p4: { capacity: '3 voyageurs', surface: '62 m²', code: 'Boîte à clés — 9021', wifi: 'LoftBellecour / rhone77', parking: 'Parking Bellecour', linge: '2 parures, 6 serviettes' }
+  p1: { capacity: '4 voyageurs', surface: '46 m²', code: 'Boîte à clés — 4821', wifi: 'NidVieuxPort / soleil2024', parking: 'Parking Estienne, place 34', linge: '2 parures, 6 serviettes', checkin: '16:00', checkout: '11:00' },
+  p2: { capacity: '2 voyageurs', surface: '28 m²', code: 'Digicode 12B45 · clé sous tapis', wifi: 'CanalStM / paris1900', parking: 'Aucun', linge: '1 parure, 4 serviettes', checkin: '15:00', checkout: '11:00' },
+  p3: { capacity: '6 voyageurs', surface: '140 m²', code: 'Portail 7788 · clé maison', wifi: 'Oliviers / cigales2025', parking: '2 places dans l’allée', linge: '3 parures, 12 serviettes', checkin: '16:00', checkout: '10:00' },
+  p4: { capacity: '3 voyageurs', surface: '62 m²', code: 'Boîte à clés — 9021', wifi: 'LoftBellecour / rhone77', parking: 'Parking Bellecour', linge: '2 parures, 6 serviettes', checkin: '17:00', checkout: '11:00' }
 };
+
+/* Champs de la fiche bien : clé technique, libellé, et présence dans le livret. */
+var INFO_FIELDS = [
+  { k: 'capacity', label: 'Capacité' },
+  { k: 'surface', label: 'Surface' },
+  { k: 'code', label: 'Accès / clés' },
+  { k: 'wifi', label: 'Wi-Fi' },
+  { k: 'parking', label: 'Stationnement' },
+  { k: 'linge', label: 'Linge fourni' },
+  { k: 'checkin', label: 'Heure d’arrivée' },
+  { k: 'checkout', label: 'Heure de départ' }
+];
+
+/* Livret d'accueil : 4 rubriques, chacune une liste de blocs
+   { titre, texte, media } — media = adresse internet d'une photo ou d'une vidéo. */
+var LIVRET_SECTIONS = [
+  { k: 'arrivee', label: 'Arrivée autonome', hint: 'Comment entrer dans le logement, étape par étape.' },
+  { k: 'questions', label: 'Questions fréquentes', hint: 'La télé, le chauffage, la machine à laver, les poubelles…' },
+  { k: 'activites', label: 'Activités autour', hint: 'À voir, à faire, à quelle distance.' },
+  { k: 'restos', label: 'Où manger', hint: 'Vos adresses préférées du quartier.' }
+];
+
+function baseLivret() {
+  var out = {};
+  [['p1', 'Marseille'], ['p2', 'Paris'], ['p3', 'Aix-en-Provence'], ['p4', 'Lyon']].forEach(function (x) {
+    out[x[0]] = {
+      mot: 'Bienvenue ! Vous trouverez ici tout ce qu’il faut pour votre séjour à ' + x[1] + '. Bon séjour !',
+      arrivee: [{ titre: 'Entrer dans le logement', texte: 'Le code d’accès est indiqué en haut de ce livret. Composez-le, puis poussez la porte.', media: '' }],
+      questions: [], activites: [], restos: []
+    };
+  });
+  return out;
+}
 
 var BIEN_NOTES = {
   p1: 'Voisin du dessous sensible au bruit après 22 h. Aspirateur dans le placard de l’entrée.',
@@ -223,10 +271,10 @@ function buildChecklists() {
 }
 
 function baseStock() {
-  var s = {};
+  var s = {}, list = baseArticles();
   PROPS.forEach(function (p, pi) {
     s[p.id] = {};
-    FLAT.forEach(function (a, ai) {
+    list.forEach(function (a, ai) {
       var mix = (pi * 7 + ai * 3) % 11;
       var q = a.par;
       if (mix < 2) q = Math.max(0, Math.round(a.par * 0.15));
@@ -241,7 +289,9 @@ function baseStock() {
 
 function baseSeuils() {
   var s = {};
-  FLAT.forEach(function (a) { s[a.key] = a.seuil; });
+  ARTICLES.forEach(function (g) {
+    g[1].forEach(function (a) { s[a[0]] = a[4]; });
+  });
   return s;
 }
 
@@ -256,6 +306,14 @@ function initialState() {
     loginPwd: 'demo1234',
     loginPresta: 'Sofia',
 
+    // Données de référence, désormais modifiables depuis l'interface
+    props: clone(PROPS),              // les biens
+    services: clone(SERVICES),        // les prestations, communes à tous les biens
+    agents: clone(AGENTS),            // les prestataires, avec leurs biens autorisés
+    articles: baseArticles(),         // les articles de stock
+    resas: clone(RESAS),              // les réservations, par bien
+    livret: baseLivret(),             // le livret d'accueil, par bien
+
     missions: clone(MISSIONS),
     photos: {},                       // { missionId: { stepId: true } }
     stock: baseStock(),
@@ -266,6 +324,8 @@ function initialState() {
     info: clone(BIEN_INFO),
     notes: Object.assign({}, BIEN_NOTES),
     done: [],
+    reports: {},                      // { missionId: compte rendu figé d'une mission terminée }
+    payouts: {},                      // { 'Sofia:2026-07': true } — versement effectué
     problems: [],
     lastDone: null,
     extraFeeds: {},
@@ -282,12 +342,26 @@ function initialState() {
     bienTab: 'infos',
     calMonth: '2026-07',
     showNew: false,
-    nm: { prop: 'p1', type: 'menage', date: '2026-08-05', window: '11:00 → 15:00', price: 65 },
+    nm: { prop: 'p1', type: 'menage', date: '2026-08-05', window: '11:00 → 15:00', price: 65, note: '' },
     stepDrafts: {},
     newRoom: '',
     newFeed: '',
     problemKind: null,
-    problemPhoto: false
+    problemPhoto: false,
+
+    // Formulaires de création ajoutés en session 7
+    showNewBien: false,
+    nb: { name: '', city: '', address: '', color: C.terracotta },
+    showNewAgent: false,
+    na: { name: '', role: 'Ménage', email: '', color: C.terracotta },
+    showNewArticle: false,
+    nar: { label: '', unit: 'unités', par: 4, seuil: 2, group: 'Salle de bain' },
+    showNewResa: false,
+    nr: { plat: 'Airbnb', guest: '', guests: 2, start: '', end: '' },
+    newService: '',
+    coursesScope: 'bien',             // 'bien' | 'global'
+    livretSection: 'arrivee',
+    livretDrafts: {}                  // { 'pid:section': { titre, texte, media } }
   };
 }
 
@@ -317,9 +391,59 @@ function load() {
       if (Object.prototype.hasOwnProperty.call(saved, k) && saved[k] !== undefined) base[k] = saved[k];
     });
     state = base;
+    upgrade();
   } catch (e) {
     state = initialState();
   }
+}
+
+/* Mise à niveau des données déjà enregistrées dans le navigateur.
+   Une version précédente de l'application ne connaissait ni les heures
+   d'arrivée, ni les livrets, ni les biens autorisés : on complète ce qui
+   manque sans jamais écraser ce que le propriétaire a saisi. */
+function upgrade() {
+  var seedInfo = BIEN_INFO, seedLivret = baseLivret();
+
+  state.props.forEach(function (p) {
+    var pid = p.id;
+
+    // Champs de la fiche bien : on ne remplit que les cases absentes.
+    var inf = state.info[pid] || (state.info[pid] = {});
+    INFO_FIELDS.forEach(function (f) {
+      if (inf[f.k] === undefined) {
+        inf[f.k] = (seedInfo[pid] && seedInfo[pid][f.k]) ||
+          (f.k === 'checkin' ? '16:00' : f.k === 'checkout' ? '11:00' : '');
+      }
+    });
+
+    if (state.notes[pid] === undefined) state.notes[pid] = '';
+    if (!state.resas[pid]) state.resas[pid] = [];
+    if (!state.checklists[pid]) state.checklists[pid] = [];
+
+    // Livret : structure complète, même vide.
+    var lv = state.livret[pid] || (state.livret[pid] = seedLivret[pid] || {});
+    if (lv.mot === undefined) lv.mot = '';
+    LIVRET_SECTIONS.forEach(function (s) { if (!Array.isArray(lv[s.k])) lv[s.k] = []; });
+
+    // Un tarif par prestation, une quantité par article.
+    var tf = state.tariffs[pid] || (state.tariffs[pid] = {});
+    state.services.forEach(function (s) { if (tf[s.key] === undefined) tf[s.key] = 0; });
+    var st = state.stock[pid] || (state.stock[pid] = {});
+    state.articles.forEach(function (a) { if (st[a.key] === undefined) st[a.key] = 0; });
+  });
+
+  state.articles.forEach(function (a) {
+    if (state.seuils[a.key] === undefined) state.seuils[a.key] = 0;
+  });
+
+  // Sans attribution enregistrée, un prestataire garde accès à tous les biens :
+  // c'est le comportement qu'il avait avant l'arrivée de cette option.
+  state.agents.forEach(function (a) {
+    if (!Array.isArray(a.props)) a.props = state.props.map(function (p) { return p.id; });
+  });
+
+  state.missions.forEach(function (m) { if (m.note === undefined) m.note = ''; });
+  if (state.nm.note === undefined) state.nm.note = '';
 }
 
 function resetDemo() {
@@ -348,10 +472,63 @@ function fmtDate(iso) {
 
 function nights(a, b) { return Math.round((Date.parse(b) - Date.parse(a)) / 86400000); }
 
-function prop(id) { return PROPS.find(function (p) { return p.id === id; }); }
-function agent(id) { return AGENTS.find(function (a) { return a.id === id; }); }
+/* Recherches tolérantes : un bien, un prestataire ou une prestation supprimé
+   reste cité dans l'historique. On rend alors un objet de remplacement plutôt
+   que `undefined`, pour que rien ne casse à l'affichage. */
+function prop(id) {
+  return state.props.find(function (p) { return p.id === id; }) ||
+    { id: id, name: 'Bien supprimé', short: 'Supprimé', city: '', address: '', color: '#A4978C', tint: '#EFEAE2', gone: true };
+}
+function agent(id) {
+  return state.agents.find(function (a) { return a.id === id; }) ||
+    { id: id, name: id || 'Prestataire supprimé', init: '··', role: '', since: '', note: '—', email: '', iban: '—', avatarBg: '#EFEAE2', avatarFg: '#8A7D72', roleBg: '#EFEAE2', roleFg: '#8A7D72', props: [], gone: true };
+}
+function service(key) {
+  return state.services.find(function (s) { return s.key === key; }) ||
+    { key: key, label: 'Prestation supprimée', duration: '', gone: true };
+}
 function mission(id) { return state.missions.find(function (m) { return m.id === id; }); }
 function rooms(pid) { return state.checklists[pid] || []; }
+function resasOf(pid) { return state.resas[pid] || []; }
+
+/* Articles de stock : liste à plat, noms de catégories, et regroupement. */
+function arts() { return state.articles; }
+function groups() {
+  var out = [];
+  state.articles.forEach(function (a) { if (out.indexOf(a.group) < 0) out.push(a.group); });
+  return out;
+}
+function grouped() {
+  return groups().map(function (g) {
+    return [g, state.articles.filter(function (a) { return a.group === g; })];
+  });
+}
+
+/* Biens sur lesquels un prestataire a le droit de se positionner. */
+function allowedProps(agentId) {
+  var a = state.agents.find(function (x) { return x.id === agentId; });
+  return a && a.props ? a.props : [];
+}
+function mayTake(agentId, pid) { return allowedProps(agentId).indexOf(pid) >= 0; }
+
+/* Nom court pour les en-têtes de colonnes : on coupe entre deux mots,
+   jamais au milieu d'un mot. */
+function shortName(nom) {
+  var mots = String(nom).trim().split(/\s+/), out = '';
+  for (var i = 0; i < mots.length; i++) {
+    if (out && (out + ' ' + mots[i]).length > 14) break;
+    out = out ? out + ' ' + mots[i] : mots[i];
+  }
+  return out.slice(0, 16);
+}
+
+/* Identifiant unique et lisible, dérivé d'un texte saisi. */
+function slug(txt, prefix) {
+  var base = String(txt).toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 20);
+  return (prefix || '') + (base || 'x') + '_' + Date.now().toString(36).slice(-4);
+}
 
 function stepIds(pid) {
   return rooms(pid).reduce(function (a, r) {
@@ -368,14 +545,30 @@ function ledger() { return state.done.concat(HISTORY); }
 function monthRows(a, month) { return ledger().filter(function (r) { return r.agent === a && r.month === month; }); }
 function monthTotal(a, month) { return monthRows(a, month).reduce(function (n, r) { return n + r.price; }, 0); }
 
-function lowsFor(pid) {
-  return FLAT.filter(function (a) { return (state.stock[pid][a.key] || 0) <= state.seuils[a.key]; });
+/* Versement d'un prestataire pour un mois. Tant que le propriétaire n'a rien
+   coché, on retient le statut par défaut du mois (MONTHS). */
+function isPaid(agentId, month) {
+  var k = agentId + ':' + month;
+  if (Object.prototype.hasOwnProperty.call(state.payouts, k)) return !!state.payouts[k];
+  var md = MONTHS.find(function (m) { return m.key === month; });
+  return !!(md && md.paid);
 }
 
-/** Attributs d'une action cliquable : nom + paramètres optionnels. */
+function lowsFor(pid) {
+  return arts().filter(function (a) { return (state.stock[pid][a.key] || 0) <= state.seuils[a.key]; });
+}
+
+/** Attributs d'une action cliquable : nom + paramètres optionnels.
+ *  Attention : le nom de l'action occupe `data-a`. Un paramètre appelé « a »
+ *  produirait un second `data-a` et le navigateur ne garderait que le premier,
+ *  ce qui ferait lire le nom de l'action à la place de la valeur attendue.
+ *  Il est donc refusé — utiliser « ag », « id », « k »… à la place. */
 function act(name, params) {
   var out = ' data-a="' + esc(name) + '"';
-  if (params) Object.keys(params).forEach(function (k) { out += ' data-' + k + '="' + esc(params[k]) + '"'; });
+  if (params) Object.keys(params).forEach(function (k) {
+    if (k === 'a') throw new Error('act(' + name + ') : paramètre « a » réservé au nom de l\'action.');
+    out += ' data-' + k + '="' + esc(params[k]) + '"';
+  });
   return out;
 }
 
@@ -404,6 +597,9 @@ function parseRoute() {
   var h = location.hash.replace(/^#/, '');
   var seg = h.split('/').filter(Boolean);          // ex. ['app','missions','m1','checklist']
 
+  // Livret d'accueil : page publique, destinée au voyageur (pas de connexion).
+  if (seg[0] === 'livret' && seg[1]) return { name: 'livret', id: seg[1] };
+
   if (seg[0] === 'app') {
     if (seg[1] === 'missions' && seg[2]) {
       var sub = seg[3];
@@ -420,7 +616,7 @@ function parseRoute() {
   }
 
   if (seg[0] === 'admin') {
-    if (seg[1] === 'missions') return { name: 'o-missions', id: null };
+    if (seg[1] === 'missions') return { name: seg[2] ? 'o-mission' : 'o-missions', id: seg[2] || null };
     if (seg[1] === 'prestataires') return { name: 'o-agents', id: null };
     if (seg[1] === 'stocks') return { name: 'o-stocks', id: null };
     if (seg[1] === 'biens') return { name: seg[2] ? 'o-bien' : 'o-biens', id: seg[2] || null };
@@ -441,6 +637,9 @@ function guard() {
   var isPresta = r.name.indexOf('p-') === 0;
   var isOwner = r.name.indexOf('o-') === 0;
 
+  // Le livret s'ouvre sans connexion : c'est une page pour le voyageur.
+  if (r.name === 'livret') return r;
+
   if (!state.auth) {
     if (r.name !== 'login') { location.replace('#/login'); return null; }
     return r;
@@ -450,6 +649,15 @@ function guard() {
 
   // Une mission ouverte doit exister.
   if (r.id && isPresta && !mission(r.id)) { location.replace('#/app/missions'); return null; }
+
+  // La fiche mission du propriétaire suppose que la mission existe.
+  if (r.name === 'o-mission' && !mission(r.id)) { location.replace('#/admin/missions'); return null; }
+
+  // Un prestataire ne voit que les biens qui lui sont autorisés.
+  if (r.id && isPresta) {
+    var pm = mission(r.id);
+    if (pm && !mayTake(state.me, pm.prop)) { location.replace('#/app/missions'); return null; }
+  }
 
   // La checklist et le signalement ne s'ouvrent que sur une mission démarrée ;
   // le relevé de stock, qu'après la checklist.
@@ -470,7 +678,7 @@ function guard() {
 
 /** Présentation commune d'une mission (équivalent de decorate() du prototype). */
 function decorate(m) {
-  var p = prop(m.prop), ty = TYPES[m.type], st = STATUS[m.status];
+  var p = prop(m.prop), ty = service(m.type), st = STATUS[m.status];
   var total = stepIds(m.prop).length, done = photoCount(m);
   var canStart = m.date <= TODAY;
   var mine = m.taker === state.me;
@@ -489,6 +697,9 @@ function decorate(m) {
     day: m.date.split('-')[2], month: MOIS[parseInt(m.date.split('-')[1], 10) - 1],
     priceLabel: m.price + ' €',
     urgent: !!m.urgent, urgentLabel: m.urgent,
+    redoLabel: m.redo || '',
+    note: m.note || '',
+    reviewed: m.review === 'valide',
     hasRes: !!m.res, guestsLabel: m.res ? m.res.guests + ' voyageurs' : '',
     statusLabel: m.status === 'prise' && m.taker ? 'Acceptée · ' + m.taker
       : m.status === 'termine' && m.taker ? 'Faite · ' + m.taker
@@ -512,7 +723,7 @@ function prestaShell(head, body, foot, opts) {
 }
 
 function tabBar() {
-  var dispoCount = state.missions.filter(function (m) { return m.status === 'dispo'; }).length;
+  var dispoCount = dispoForMe().length;
   return '<nav class="tabbar">' + PRESTA_TABS.map(function (t) {
     var on = routeTab() === t.key;
     var badge = t.key === 'missions' && dispoCount > 0
@@ -540,12 +751,24 @@ function prestaHeader(kicker, title) {
 
 /* --- Liste des missions disponibles ------------------------------------- */
 
+/* Missions ouvertes que le prestataire connecté a le droit de prendre. */
+function dispoForMe() {
+  return state.missions.filter(function (m) {
+    return m.status === 'dispo' && mayTake(state.me, m.prop);
+  });
+}
+
 function viewPrestaMissions() {
-  var list = state.missions.filter(function (m) { return m.status === 'dispo'; }).map(decorate);
+  var list = dispoForMe().map(decorate);
+  var caches = state.missions.filter(function (m) {
+    return m.status === 'dispo' && !mayTake(state.me, m.prop);
+  }).length;
+
   var body = '<div class="stack">' + (list.length
     ? list.map(missionCard).join('')
     : '<p class="empty">Aucune mission disponible pour le moment.</p>') +
-    '<p class="center sec-note" style="padding-top:8px">Une mission apparaît dès qu\'un check-out est détecté sur l\'iCal.</p>' +
+    '<p class="center sec-note" style="padding-top:8px">Une mission apparaît dès qu\'un check-out est détecté sur l\'iCal.' +
+      (caches ? '<br>' + caches + ' mission(s) concernent des logements qui ne te sont pas attribués.' : '') + '</p>' +
     '</div>';
   return prestaShell(prestaHeader(list.length + ' missions à prendre', 'Missions'), body);
 }
@@ -564,7 +787,9 @@ function missionCard(m) {
         '<div class="mission-dur num">' + esc(m.durationLabel) + '</div>' +
       '</div>' +
     '</div>' +
+    (m.note ? '<div class="mission-note">✎ ' + esc(m.note) + '</div>' : '') +
     '<div class="mission-chips">' +
+      (m.redoLabel ? '<span class="badge badge--terra">↻ ' + esc(m.redoLabel) + '</span>' : '') +
       '<span class="badge badge--soft num">' + esc(m.dateLabel) + '</span>' +
       '<span class="badge badge--soft num">' + esc(m.windowLabel) + '</span>' +
       (m.hasRes ? '<span class="badge badge--soft num">' + esc(m.guestsLabel) + '</span>' : '') +
@@ -606,7 +831,7 @@ function viewPrestaMes() {
       return '<div class="list-row">' +
         '<span style="width:5px;height:28px;border-radius:9px;background:' + p.color + ';flex:none"></span>' +
         '<div class="grow"><div style="font:600 14px Figtree,sans-serif">' + esc(p.name) + '</div>' +
-        '<div class="num" style="font:500 11.5px Figtree,sans-serif;color:var(--muted2);margin-top:1px">' + esc(r.dateLabel) + ' · ' + esc(TYPES[r.type].label) + '</div></div>' +
+        '<div class="num" style="font:500 11.5px Figtree,sans-serif;color:var(--muted2);margin-top:1px">' + esc(r.dateLabel) + ' · ' + esc(service(r.type).label) + '</div></div>' +
         '<span class="num" style="font:700 14px Figtree,sans-serif;flex:none">' + r.price + ' €</span>' +
         '</div>';
     }).join('') : '<p class="empty">Pas encore de mission terminée.</p>') +
@@ -671,6 +896,17 @@ function viewPrestaDetail() {
       '</div>' +
     '</div>' +
     '<div class="detail-body">' +
+      (m.redo ? '<div class="redo-note">' +
+        '<div class="k">↻ ' + esc(m.redo) + '</div>' +
+        '<div class="t">Cette mission avait déjà été faite : le propriétaire demande de la reprendre. ' +
+        'La checklist est à refaire en entier.</div></div>' : '') +
+      (m.note ? '<div class="owner-note">' +
+        '<div class="k">✎ Note du propriétaire</div>' +
+        '<div class="t">' + esc(m.note) + '</div></div>' : '') +
+      '<div class="access-card">' +
+        '<div class="access-item"><div class="k">Entrée / clés</div><div class="v num">' + esc(inf.code || '—') + '</div></div>' +
+        '<div class="access-item"><div class="k">Wi-Fi</div><div class="v num">' + esc(inf.wifi || '—') + '</div></div>' +
+      '</div>' +
       (urgentNote ? '<div style="background:var(--terra-bg2);border-radius:16px;padding:13px 15px;font:600 13px/1.45 Figtree,sans-serif;color:var(--terra-dd)">' + esc(urgentNote) + '</div>' : '') +
       guest +
       '<div>' +
@@ -684,9 +920,11 @@ function viewPrestaDetail() {
         '<p class="sec-note" style="margin-top:8px">Checklist propre à ce logement, définie par le propriétaire.</p>' +
       '</div>' +
       '<div class="card">' +
-        '<h2 style="font:700 14px Figtree,sans-serif;margin:0 0 8px">Accès & consignes</h2>' +
-        [['Capacité', inf.capacity], ['Surface', inf.surface], ['Accès', inf.code],
-         ['Wi-Fi', inf.wifi], ['Linge', inf.linge], ['Consigne', state.notes[m.prop]]]
+        '<h2 style="font:700 14px Figtree,sans-serif;margin:0 0 8px">Le logement</h2>' +
+        [['Capacité', inf.capacity], ['Surface', inf.surface], ['Stationnement', inf.parking],
+         ['Linge', inf.linge], ['Départ voyageur', inf.checkout], ['Arrivée suivante', inf.checkin],
+         ['Consigne', state.notes[m.prop]]]
+          .filter(function (r) { return r[1]; })
           .map(function (r) {
             return '<div class="kv"><span class="k">' + esc(r[0]) + '</span><span class="v num">' + esc(r[1]) + '</span></div>';
           }).join('') +
@@ -768,35 +1006,35 @@ function viewPrestaStock() {
     '<h1 style="font:700 24px/1.2 Figtree,sans-serif;margin:4px 0 0;letter-spacing:-.01em">Ce qu\'il reste sur place</h1>' +
     '<p class="sec-note" style="margin:4px 0 0">Pré-rempli avec le dernier relevé. Corrige ce qui a changé.</p>' +
     '<div class="chiprow chiprow--scroll" style="margin-top:12px">' +
-      ['Tous'].concat(GROUPS).map(function (g) {
+      ['Tous'].concat(groups()).map(function (g) {
         return '<button type="button" class="chip chip--sm" aria-pressed="' + (state.mStockGroup === g) + '"' +
           act('m-stock-group', { g: g }) + '>' + esc(g) + '</button>';
       }).join('') +
     '</div></div>';
 
-  var groups = state.mStockGroup === 'Tous' ? ARTICLES : ARTICLES.filter(function (g) { return g[0] === state.mStockGroup; });
-  var body = '<div class="stack-l">' + groups.map(function (g) {
+  var blocs = state.mStockGroup === 'Tous' ? grouped() : grouped().filter(function (g) { return g[0] === state.mStockGroup; });
+  var body = '<div class="stack-l">' + blocs.map(function (g) {
     return '<section>' +
       '<h2 style="font:700 14px Figtree,sans-serif;margin:0 4px 8px;color:var(--ink-soft)">' + esc(g[0]) + '</h2>' +
       '<div class="card card--flush" style="padding:4px 14px"><div class="list">' +
       g[1].map(function (a) {
-        var key = a[0], qty = q[key] || 0, seuil = state.seuils[key], low = qty <= seuil;
+        var qty = q[a.key] || 0, seuil = state.seuils[a.key] || 0, low = qty <= seuil;
         return '<div class="list-row" style="padding:10px 0">' +
           '<div class="grow">' +
-            '<div style="font:600 14px Figtree,sans-serif;color:' + (low ? 'var(--terra-d)' : 'var(--ink)') + '">' + esc(a[1]) + '</div>' +
+            '<div style="font:600 14px Figtree,sans-serif;color:' + (low ? 'var(--terra-d)' : 'var(--ink)') + '">' + esc(a.label) + '</div>' +
             '<div class="num" style="font:500 11px Figtree,sans-serif;margin-top:1px;color:' + (low ? 'var(--terra-d)' : 'var(--muted2)') + '">' +
-              (low ? 'sous le seuil de ' + seuil + ' ' + a[2] : a[2] + ' · dotation ' + a[3]) + '</div>' +
+              esc(low ? 'sous le seuil de ' + seuil + ' ' + a.unit : a.unit + ' · dotation ' + a.par) + '</div>' +
           '</div>' +
           '<div class="stepper">' +
-            '<button type="button" aria-label="Retirer un ' + esc(a[1]) + '"' + act('bump', { k: key, d: -1 }) + '>−</button>' +
+            '<button type="button" aria-label="Retirer un ' + esc(a.label) + '"' + act('bump', { k: a.key, d: -1 }) + '>−</button>' +
             '<span class="val num">' + qty + '</span>' +
-            '<button type="button" aria-label="Ajouter un ' + esc(a[1]) + '"' + act('bump', { k: key, d: 1 }) + '>+</button>' +
+            '<button type="button" aria-label="Ajouter un ' + esc(a.label) + '"' + act('bump', { k: a.key, d: 1 }) + '>+</button>' +
           '</div></div>';
       }).join('') +
       '</div></div></section>';
   }).join('') + '</div>';
 
-  var lowCount = FLAT.filter(function (a) { return (q[a.key] || 0) <= state.seuils[a.key]; }).length;
+  var lowCount = arts().filter(function (a) { return (q[a.key] || 0) <= state.seuils[a.key]; }).length;
   var foot = '<div class="presta-foot">' +
     '<button type="button" class="btn btn--go"' + act('finish', { id: m.id }) + '>Terminer la mission</button>' +
     '<div class="note">' + (lowCount > 0
@@ -873,11 +1111,12 @@ function viewPrestaGains() {
   var months = MONTHS.filter(function (m) { return m.key !== CURRENT_MONTH; }).map(function (m) {
     var rows = monthRows(me, m.key);
     var open = state.openGainMonth === m.key;
+    var paye = isPaid(me, m.key);
     return '<article class="card" style="border-radius:22px;padding:6px 18px 10px">' +
       '<button type="button" class="gain-month"' + act('toggle-gain', { m: m.key }) + '>' +
         '<div class="grow"><div style="font:700 16px Figtree,sans-serif">' + esc(m.label) + '</div>' +
         '<div class="num" style="font:500 12px Figtree,sans-serif;color:var(--muted);margin-top:2px">' + rows.length + ' missions · ' + esc(m.payNote) + '</div></div>' +
-        '<span class="badge ' + (m.paid ? 'badge--green' : 'badge--amber') + '" style="font-size:11.5px;padding:4px 9px">' + (m.paid ? 'Payé' : 'À venir') + '</span>' +
+        '<span class="badge ' + (paye ? 'badge--green' : 'badge--amber') + '" style="font-size:11.5px;padding:4px 9px">' + (paye ? 'Payé' : 'À venir') + '</span>' +
         '<span class="serif num" style="font-size:24px;flex:none">' + rows.reduce(function (n, r) { return n + r.price; }, 0) + ' €</span>' +
       '</button>' +
       (open ? '<div style="border-top:1px solid rgba(36,30,26,.07);padding-top:4px">' +
@@ -954,7 +1193,9 @@ function ownerShell(page, content) {
   return '<div class="owner">' +
     '<aside class="rail">' +
       '<div><div class="rail-logo">WARME House</div>' +
-      '<div class="rail-sub num">4 biens · 3 prestataires · ' + TODAY_LABEL + '</div></div>' +
+      '<div class="rail-sub num">' + state.props.length + ' bien' + (state.props.length > 1 ? 's' : '') +
+        ' · ' + state.agents.length + ' prestataire' + (state.agents.length > 1 ? 's' : '') +
+        ' · ' + TODAY_LABEL + '</div></div>' +
       '<nav class="rail-nav">' + nav + '</nav>' +
       '<div class="rail-foot">' +
         '<div class="rail-sync">Calendriers synchronisés il y a 12 min · Airbnb · Booking.com' +
@@ -973,7 +1214,7 @@ function ownerShell(page, content) {
 
 function viewOwnerDash() {
   var openCount = state.missions.filter(function (m) { return m.status === 'dispo'; }).length;
-  var lowByProp = PROPS.map(function (p) { return { p: p, lows: lowsFor(p.id) }; });
+  var lowByProp = state.props.map(function (p) { return { p: p, lows: lowsFor(p.id) }; });
   var totalLow = lowByProp.reduce(function (n, x) { return n + x.lows.length; }, 0);
   var m1 = mission('m1');
 
@@ -981,7 +1222,7 @@ function viewOwnerDash() {
     { v: String(state.missions.filter(function (m) { return m.status !== 'termine'; }).length), l: 'missions à venir', c: C.ink },
     { v: String(openCount), l: 'non prises', c: C.terracotta },
     { v: String(totalLow), l: 'articles sous seuil', c: C.ambre },
-    { v: AGENTS.reduce(function (n, a) { return n + monthTotal(a.id, CURRENT_MONTH); }, 0) + ' €', l: 'à payer en juillet', c: C.vert }
+    { v: state.agents.reduce(function (n, a) { return n + monthTotal(a.id, CURRENT_MONTH); }, 0) + ' €', l: 'à payer en juillet', c: C.vert }
   ];
 
   var alerts = [
@@ -1071,12 +1312,12 @@ function viewOwnerMissions() {
       '<h2 style="font:700 16px Figtree,sans-serif;margin:0 0 16px">Nouvelle mission</h2>' +
       '<div class="cols" style="gap:14px">' +
         '<div style="flex:2;min-width:220px"><label class="lab" for="nm-prop">Bien</label>' +
-          '<select class="inp" id="nm-prop" data-fid="nm-prop" data-ch="nm-prop">' + PROPS.map(function (p) {
+          '<select class="inp" id="nm-prop" data-fid="nm-prop" data-ch="nm-prop">' + state.props.map(function (p) {
             return '<option value="' + p.id + '"' + (state.nm.prop === p.id ? ' selected' : '') + '>' + esc(p.name) + '</option>';
           }).join('') + '</select></div>' +
         '<div style="flex:1.4;min-width:180px"><label class="lab" for="nm-type">Type de prestation</label>' +
-          '<select class="inp" id="nm-type" data-fid="nm-type" data-ch="nm-type">' + TYPE_ORDER.map(function (t) {
-            return '<option value="' + t + '"' + (state.nm.type === t ? ' selected' : '') + '>' + esc(TYPES[t].label) + '</option>';
+          '<select class="inp" id="nm-type" data-fid="nm-type" data-ch="nm-type">' + state.services.map(function (s) {
+            return '<option value="' + esc(s.key) + '"' + (state.nm.type === s.key ? ' selected' : '') + '>' + esc(s.label) + '</option>';
           }).join('') + '</select></div>' +
         '<div style="flex:1;min-width:150px"><label class="lab" for="nm-date">Date</label>' +
           '<input class="inp num" id="nm-date" type="date" value="' + esc(state.nm.date) + '" data-fid="nm-date" data-ch="nm-date"></div>' +
@@ -1085,6 +1326,8 @@ function viewOwnerMissions() {
         '<div style="flex:.8;min-width:120px"><label class="lab" for="nm-price">Tarif (€)</label>' +
           '<input class="inp num" id="nm-price" type="number" min="0" value="' + esc(state.nm.price) + '" data-fid="nm-price" data-in="nm-price"></div>' +
       '</div>' +
+      '<div style="margin-top:14px"><label class="lab" for="nm-note">Note pour le prestataire (facultatif)</label>' +
+        '<input class="inp" id="nm-note" type="text" placeholder="Ex. Prendre les draps dans le placard du couloir." value="' + esc(state.nm.note || '') + '" data-fid="nm-note" data-in="nm-note"></div>' +
       '<div style="display:flex;gap:10px;align-items:center;margin-top:18px;flex-wrap:wrap">' +
         '<button type="button" class="btn btn--primary btn--sm"' + act('create-mission') + '>Créer la mission</button>' +
         '<button type="button" class="btn btn--sm" style="background:transparent;color:var(--muted)"' + act('toggle-new') + '>Annuler</button>' +
@@ -1095,7 +1338,8 @@ function viewOwnerMissions() {
   return ownerShell('missions',
     '<div class="page-head">' +
       '<div><h1 class="page-title">Missions</h1>' +
-      '<p class="page-sub">Créées automatiquement à chaque check-out, ou manuellement.</p></div>' +
+      '<p class="page-sub">Créées automatiquement à chaque check-out, ou manuellement.<br>' +
+        'Cliquez une mission pour la suivre, y laisser une note, ou revoir les photos et le relevé.</p></div>' +
       '<button type="button" class="btn btn--xs" style="' + (state.showNew ? 'background:var(--cream);color:var(--ink-soft)' : 'background:var(--terra);color:#fff') +
         ';min-height:42px;font-size:13px"' + act('toggle-new') + '>' +
         (state.showNew ? 'Fermer le formulaire' : '+ Créer une mission') + '</button>' +
@@ -1109,19 +1353,167 @@ function viewOwnerMissions() {
     '<div class="table"><div class="table-scroll">' +
       '<div class="thead"><span style="width:96px">Date</span><span style="flex:1.4">Bien</span>' +
       '<span style="flex:1">Type</span><span style="width:120px">Créneau</span>' +
-      '<span style="flex:1">Statut</span><span style="width:70px;text-align:right">Prix</span></div>' +
+      '<span style="flex:1">Statut</span><span style="width:70px;text-align:right">Prix</span>' +
+      '<span style="width:76px"></span></div>' +
       (rows.length ? rows.map(function (m) {
-        return '<div class="trow">' +
+        var done = m.raw.status === 'termine';
+        var extra = done
+          ? '<span class="badge ' + (m.reviewed ? 'badge--green' : 'badge--amber') + '">' +
+              (m.reviewed ? 'Validée' : 'À revoir') + '</span>'
+          : m.redoLabel ? '<span class="badge badge--terra">Reprise demandée</span>' : '';
+        if (m.raw.note) extra += '<span class="badge badge--soft" title="' + esc(m.raw.note) + '">✎ Note</span>';
+
+        return '<button type="button" class="trow trow--link" aria-label="' +
+            esc((done ? 'Revoir' : 'Ouvrir') + ' la mission ' + m.typeLabel + ' — ' + m.propName + ', ' + m.dateLabel) + '"' +
+            act('nav', { path: '#/admin/missions/' + m.id }) + '>' +
           '<span class="num" style="width:96px;font-weight:600">' + esc(m.dateLabel) + '</span>' +
           '<span style="flex:1.4;display:flex;align-items:center;gap:9px;min-width:0">' +
             '<span class="dot" style="width:7px;height:7px;background:' + m.color + '"></span>' + esc(m.propName) + '</span>' +
           '<span style="flex:1;color:var(--muted3)">' + esc(m.typeLabel) + '</span>' +
           '<span class="num" style="width:120px;color:var(--muted3)">' + esc(m.windowLabel) + '</span>' +
-          '<span style="flex:1"><span class="badge ' + m.statusCls + '">' + esc(m.statusLabel) + '</span></span>' +
+          '<span style="flex:1;display:flex;align-items:center;gap:7px;flex-wrap:wrap">' +
+            '<span class="badge ' + m.statusCls + '">' + esc(m.statusLabel) + '</span>' + extra + '</span>' +
           '<span class="num" style="width:70px;text-align:right;font-weight:600">' + esc(m.priceLabel) + '</span>' +
-          '</div>';
+          '<span class="trow-go">' + (done ? 'Revoir →' : 'Ouvrir →') + '</span>' +
+          '</button>';
       }).join('') : '<p class="empty">Aucune mission pour ce filtre.</p>') +
     '</div></div>');
+}
+
+/* --- Revue d'une mission terminée ---------------------------------------- */
+
+function viewOwnerMission() {
+  var m = mission(route.id), d = decorate(m);
+  var rep = state.reports[m.id];
+  var ag = m.taker ? agent(m.taker) : null;
+  var fini = m.status === 'termine';
+  var valide = m.review === 'valide';
+
+  // Comptes lus dans le compte rendu figé, et non dans la checklist actuelle
+  // du bien, qui a pu être modifiée depuis.
+  var repDone = 0, repTotal = 0;
+  if (rep) rep.rooms.forEach(function (r) {
+    repTotal += r.steps.length;
+    repDone += r.steps.filter(function (s) { return s.done; }).length;
+  });
+
+  /* Colonne de gauche : la checklist telle qu'elle a été exécutée. */
+  var checklist = !fini
+    ? '<div class="card"><p class="empty">La checklist s\'affichera ici une fois la mission terminée.</p></div>'
+    : !rep
+    ? '<div class="card"><p class="empty">Le détail de cette mission n\'a pas été conservé : ' +
+        'elle a été terminée avant la mise en place de la revue.</p></div>'
+    : rep.rooms.map(function (r) {
+        var dn = r.steps.filter(function (s) { return s.done; }).length;
+        return '<div class="card" style="padding:18px 20px">' +
+          '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">' +
+            '<span class="dot" style="background:' + d.color + '"></span>' +
+            '<span style="font:700 16px Figtree,sans-serif;flex:1;min-width:0">' + esc(r.name) + '</span>' +
+            '<span class="badge num ' + (dn === r.steps.length ? 'badge--green' : 'badge--amber') + '">' +
+              dn + '/' + r.steps.length + '</span>' +
+          '</div>' +
+          '<div class="revue-grid">' + r.steps.map(function (s) {
+            var thumb = s.photo && s.done
+              ? '<span class="revue-thumb stripe">PHOTO</span>'
+              : '<span class="revue-thumb revue-thumb--none">' + (s.done ? '✓' : '—') + '</span>';
+            return '<div class="revue-step">' + thumb +
+              '<div class="grow">' +
+                '<div style="font:600 13.5px/1.3 Figtree,sans-serif">' + esc(s.label) + '</div>' +
+                '<div style="font:500 11.5px Figtree,sans-serif;color:var(--muted2);margin-top:3px">' +
+                  (s.done ? (s.photo ? 'Photo envoyée' : 'Validé sans photo') : 'Non validé') + '</div>' +
+              '</div></div>';
+          }).join('') + '</div>' +
+          '</div>';
+      }).join('');
+
+  /* Colonne de droite : qui a fait la mission, et les deux décisions. */
+  var recap = !fini ? '' : '<div class="card" style="padding:20px">' +
+    '<h2 style="font:700 16px Figtree,sans-serif;margin:0 0 14px">Mission réalisée par</h2>' +
+    (ag ? '<div style="display:flex;align-items:center;gap:12px">' +
+      '<div class="avatar" style="width:44px;height:44px;font-size:15px;background:' + ag.avatarBg + ';color:' + ag.avatarFg + '">' + ag.init + '</div>' +
+      '<div><div style="font:700 16px Figtree,sans-serif">' + esc(ag.name) + '</div>' +
+      '<div style="font:500 12.5px Figtree,sans-serif;color:var(--muted)">' + esc(ag.role) + '</div></div>' +
+      '</div>' : '<p class="sec-note">Prestataire inconnu.</p>') +
+    '<div style="margin-top:14px;padding-top:12px;border-top:1px solid rgba(36,30,26,.07)">' +
+      [['Étapes validées', rep ? repDone + ' / ' + repTotal : '—'],
+       ['Photos envoyées', rep ? String(rep.photos) : '—'],
+       ['Articles sous le seuil', rep ? String(rep.lows.length) : '—'],
+       ['Rémunération', d.priceLabel]].map(function (r) {
+        return '<div class="kv"><span class="k">' + r[0] + '</span><span class="v num" style="font-weight:700">' + esc(r[1]) + '</span></div>';
+      }).join('') +
+    '</div></div>';
+
+  var decision = !fini ? '' : valide
+    ? '<div class="alert alert--green">' +
+        '<div style="display:flex;align-items:center;gap:8px"><span class="dot" style="background:' + C.vert + '"></span>' +
+        '<span class="kind">Mission validée</span></div>' +
+        '<div class="det" style="color:var(--green-t)">Le travail est accepté. Le montant est dû au prestataire.</div></div>'
+    : '<div class="card" style="padding:20px">' +
+        '<h2 style="font:700 16px Figtree,sans-serif;margin:0">Votre décision</h2>' +
+        '<p class="sec-note" style="margin-top:4px">Une reprise renvoie la mission au pool : ' +
+          'le montant est retiré des gains tant qu\'elle n\'est pas refaite.</p>' +
+        '<button type="button" class="btn btn--go btn--sm" style="width:100%;margin-top:14px"' +
+          act('validate-mission', { id: m.id }) + '>Valider la mission</button>' +
+        '<button type="button" class="btn btn--quiet btn--sm" style="width:100%;margin-top:10px"' +
+          act('ask-redo', { id: m.id }) + '>Demander une reprise</button>' +
+      '</div>';
+
+  /* Note libre, visible par le prestataire dans le détail de sa mission. */
+  var noteCard = '<div class="card" style="padding:20px">' +
+    '<h2 style="font:700 16px Figtree,sans-serif;margin:0">Note pour le prestataire</h2>' +
+    '<p class="sec-note" style="margin-top:4px">Elle s\'affiche en évidence sur son téléphone, avant qu\'il commence.</p>' +
+    '<textarea class="inp" style="margin-top:12px" id="mn-' + esc(m.id) + '" placeholder="Ex. Le voisin a la clé de la cave. Penser à arroser le basilic."' +
+      ' data-fid="mn-' + esc(m.id) + '" data-in="mission-note" data-id="' + esc(m.id) + '">' + esc(m.note || '') + '</textarea>' +
+  '</div>';
+
+  /* Ce que le propriétaire voit sur une mission encore en cours. */
+  var suivi = fini ? '' : '<div class="card" style="padding:20px">' +
+    '<h2 style="font:700 16px Figtree,sans-serif;margin:0 0 14px">Suivi</h2>' +
+    [['Statut', d.statusLabel],
+     ['Prestataire', m.taker ? agent(m.taker).name : 'Personne pour l\'instant'],
+     ['Étapes validées', d.done + ' / ' + d.total],
+     ['Rémunération', d.priceLabel],
+     ['Voyageur sortant', m.res ? m.res.guest + ' · ' + m.res.guests + ' voyageurs' : '—'],
+     ['Prochaine arrivée', m.next ? m.next.guest + ' · ' + m.next.at : '—']].map(function (r) {
+      return '<div class="kv"><span class="k">' + r[0] + '</span><span class="v num" style="font-weight:600">' + esc(r[1]) + '</span></div>';
+    }).join('') +
+  '</div>';
+
+  /* Bas de page : le relevé de stock envoyé avec la mission. */
+  var releve = !rep ? '' :
+    '<h2 class="sec-title" style="margin:30px 0 12px">Relevé de stock envoyé</h2>' +
+    '<div class="grid-cards">' + grouped().map(function (g) {
+      return '<div class="card">' +
+        '<div style="font:700 15px Figtree,sans-serif">' + esc(g[0]) + '</div>' +
+        '<div class="list" style="margin-top:8px">' + g[1].map(function (a) {
+          var qty = rep.qty[a.key] || 0, low = rep.lows.indexOf(a.key) >= 0;
+          var cls = qty === 0 ? 'cell-q--zero' : low ? 'cell-q--low' : 'cell-q--ok';
+          return '<div class="list-row" style="padding:9px 0">' +
+            '<span class="grow" style="font:500 13.5px Figtree,sans-serif;color:' + (low ? 'var(--terra-d)' : 'var(--ink)') + '">' +
+              esc(a.label) + '</span>' +
+            '<span class="cell-q num ' + cls + '" style="min-width:44px">' + qty + '</span>' +
+            '</div>';
+        }).join('') + '</div></div>';
+    }).join('') + '</div>';
+
+  return ownerShell('missions',
+    '<button type="button" class="btn-back" style="min-height:38px;font-size:13px;color:var(--muted)"' +
+      act('nav', { path: '#/admin/missions' }) + '>← Toutes les missions</button>' +
+    '<div class="page-head" style="margin-top:6px">' +
+      '<div><h1 class="page-title">' + esc(d.propName) + '</h1>' +
+      '<p class="page-sub num">' + esc(d.typeLabel + ' · ' + d.dateLabel + ' · ' + d.windowLabel) + '</p></div>' +
+      '<span class="badge ' + (!fini ? d.statusCls : valide ? 'badge--green' : 'badge--amber') + '" style="font-size:13px;padding:8px 14px">' +
+        esc(!fini ? d.statusLabel : valide ? 'Validée' : 'En attente de votre validation') + '</span>' +
+    '</div>' +
+
+    '<div class="cols" style="margin-top:24px">' +
+      '<section style="flex:1.7;min-width:min(100%,380px);display:flex;flex-direction:column;gap:14px">' +
+        '<h2 class="sec-title" style="margin:0">Checklist exécutée</h2>' + checklist +
+      '</section>' +
+      '<section style="flex:1;min-width:min(100%,280px);display:flex;flex-direction:column;gap:14px">' +
+        noteCard + suivi + recap + decision +
+      '</section>' +
+    '</div>' + releve);
 }
 
 /* --- Prestataires -------------------------------------------------------- */
@@ -1129,9 +1521,10 @@ function viewOwnerMissions() {
 function viewOwnerAgents() {
   var monthDef = MONTHS.find(function (m) { return m.key === state.ownerMonth; });
 
-  var cards = AGENTS.map(function (a) {
+  var cards = state.agents.map(function (a) {
     var rows = monthRows(a.id, state.ownerMonth);
     var open = state.openAgent === a.id;
+    var paye = isPaid(a.id, state.ownerMonth);
     return '<article class="card" style="padding:0;overflow:hidden">' +
       '<div style="display:flex;align-items:center;gap:16px;padding:20px 22px;flex-wrap:wrap">' +
         '<div class="avatar" style="width:52px;height:52px;font-size:17px;background:' + a.avatarBg + ';color:' + a.avatarFg + '">' + a.init + '</div>' +
@@ -1144,10 +1537,26 @@ function viewOwnerAgents() {
         '</div>' +
         '<div style="text-align:right;flex:none">' +
           '<div class="serif num" style="font-size:28px;line-height:1">' + rows.reduce(function (n, r) { return n + r.price; }, 0) + ' €</div>' +
-          '<div style="font:600 11.5px Figtree,sans-serif;color:var(--muted);margin-top:3px">' + (monthDef.paid ? 'payé' : 'à verser') + '</div>' +
+          '<div style="font:600 11.5px Figtree,sans-serif;color:' + (paye ? 'var(--green-t)' : 'var(--muted)') + ';margin-top:3px">' +
+            (paye ? 'payé' : 'à verser') + '</div>' +
         '</div>' +
+        '<button type="button" class="btn btn--xs" style="' + (paye ? 'background:var(--green-bg);color:var(--green-t)' : 'background:var(--amber-bg);color:var(--amber-t)') + '"' +
+          act('toggle-payout', { ag: a.id }) + '>' + (paye ? '✓ Payé' : 'Marquer payé') + '</button>' +
         '<button type="button" class="btn btn--xs" style="background:var(--cream);color:var(--ink-soft)"' +
-          act('toggle-agent', { a: a.id }) + '>' + (open ? 'Masquer' : 'Historique') + '</button>' +
+          act('toggle-agent', { ag: a.id }) + '>' + (open ? 'Masquer' : 'Historique') + '</button>' +
+      '</div>' +
+
+      /* Biens sur lesquels ce prestataire a le droit de se positionner. */
+      '<div class="perm-row">' +
+        '<span class="perm-label">Peut prendre les missions de :</span>' +
+        (state.props.length ? state.props.map(function (p) {
+          var on = (a.props || []).indexOf(p.id) >= 0;
+          return '<button type="button" class="perm-chip" aria-pressed="' + on + '" style="--accent:' + p.color + '"' +
+            act('toggle-perm', { ag: a.id, pid: p.id }) + '>' +
+            '<span class="dot" style="background:' + (on ? p.color : 'rgba(36,30,26,.2)') + '"></span>' + esc(p.short) + '</button>';
+        }).join('') : '<span class="sec-note">Aucun bien enregistré.</span>') +
+        '<button type="button" class="btn-danger-xs" style="margin-left:auto"' +
+          act('remove-agent', { ag: a.id }) + '>Supprimer</button>' +
       '</div>' +
       (open ? '<div class="table-scroll" style="padding:0 22px 8px">' +
         '<div class="thead" style="background:transparent;padding:10px 0;border-top:1px solid rgba(36,30,26,.07);min-width:640px">' +
@@ -1159,9 +1568,9 @@ function viewOwnerAgents() {
             '<span class="num" style="width:90px;font-weight:600">' + esc(r.dateLabel) + '</span>' +
             '<span style="flex:1.4;display:flex;align-items:center;gap:9px;min-width:0">' +
               '<span class="dot" style="width:7px;height:7px;background:' + p.color + '"></span>' + esc(p.name) + '</span>' +
-            '<span style="flex:1;color:var(--muted3)">' + esc(TYPES[r.type].label) + '</span>' +
-            '<span style="width:110px"><span class="badge ' + (monthDef.paid ? 'badge--green' : 'badge--amber') + '">' +
-              (monthDef.paid ? 'Payée' : 'À payer') + '</span></span>' +
+            '<span style="flex:1;color:var(--muted3)">' + esc(service(r.type).label) + '</span>' +
+            '<span style="width:110px"><span class="badge ' + (paye ? 'badge--green' : 'badge--amber') + '">' +
+              (paye ? 'Payée' : 'À payer') + '</span></span>' +
             '<span class="num" style="width:70px;text-align:right;font-weight:600">' + r.price + ' €</span>' +
             '</div>';
         }).join('') : '<p class="empty" style="padding:20px 0">Aucune mission sur ce mois.</p>') +
@@ -1169,29 +1578,63 @@ function viewOwnerAgents() {
       '</article>';
   }).join('');
 
+  var reste = state.agents.filter(function (a) { return !isPaid(a.id, state.ownerMonth); })
+    .reduce(function (n, a) { return n + monthTotal(a.id, state.ownerMonth); }, 0);
+
+  var form = !state.showNewAgent ? '' :
+    '<div class="card pop" style="margin-top:18px;padding:22px">' +
+      '<h2 style="font:700 16px Figtree,sans-serif;margin:0 0 16px">Nouveau prestataire</h2>' +
+      '<div class="cols" style="gap:14px">' +
+        '<div style="flex:2;min-width:200px"><label class="lab" for="na-name">Nom et prénom</label>' +
+          '<input class="inp" id="na-name" type="text" placeholder="Ex. Claire Dubois" value="' + esc(state.na.name) + '" data-fid="na-name" data-in="na-name"></div>' +
+        '<div style="flex:1.4;min-width:170px"><label class="lab" for="na-role">Rôle</label>' +
+          '<input class="inp" id="na-role" type="text" placeholder="Ex. Ménage" value="' + esc(state.na.role) + '" data-fid="na-role" data-in="na-role"></div>' +
+        '<div style="flex:2;min-width:200px"><label class="lab" for="na-email">E-mail</label>' +
+          '<input class="inp" id="na-email" type="email" placeholder="claire.dubois@mail.fr" value="' + esc(state.na.email) + '" data-fid="na-email" data-in="na-email"></div>' +
+      '</div>' +
+      '<div style="margin-top:14px"><span class="lab">Couleur</span>' +
+        '<div class="chiprow" style="margin-top:6px">' + PALETTE.map(function (c) {
+          return '<button type="button" class="swatch" aria-pressed="' + (state.na.color === c.color) + '" aria-label="Couleur"' +
+            ' style="background:' + c.color + '"' + act('na-color', { c: c.color }) + '></button>';
+        }).join('') + '</div></div>' +
+      '<div style="display:flex;gap:10px;align-items:center;margin-top:18px;flex-wrap:wrap">' +
+        '<button type="button" class="btn btn--primary btn--sm"' + act('create-agent') + '>Ajouter le prestataire</button>' +
+        '<button type="button" class="btn btn--sm" style="background:transparent;color:var(--muted)"' + act('toggle-new-agent') + '>Annuler</button>' +
+        '<span class="sec-note">Il pourra se connecter avec son nom. Cochez ensuite ses biens autorisés.</span>' +
+      '</div>' +
+    '</div>';
+
   return ownerShell('agents',
     '<div class="page-head">' +
       '<div><h1 class="page-title">Prestataires</h1>' +
-      '<p class="page-sub">Missions réalisées et rémunération due, mois par mois.</p></div>' +
-      '<div class="seg">' + MONTHS.map(function (m) {
-        return '<button type="button" aria-pressed="' + (state.ownerMonth === m.key) + '"' +
-          act('owner-month', { m: m.key }) + '>' + esc(m.label) + '</button>';
-      }).join('') + '</div>' +
-    '</div>' +
+      '<p class="page-sub">Missions réalisées, biens autorisés et rémunération, mois par mois.</p></div>' +
+      '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">' +
+        '<div class="seg">' + MONTHS.map(function (m) {
+          return '<button type="button" aria-pressed="' + (state.ownerMonth === m.key) + '"' +
+            act('owner-month', { m: m.key }) + '>' + esc(m.label) + '</button>';
+        }).join('') + '</div>' +
+        '<button type="button" class="btn btn--xs" style="' + (state.showNewAgent ? 'background:var(--cream);color:var(--ink-soft)' : 'background:var(--terra);color:#fff') +
+          ';min-height:42px;font-size:13px"' + act('toggle-new-agent') + '>' +
+          (state.showNewAgent ? 'Fermer' : '+ Ajouter un prestataire') + '</button>' +
+      '</div>' +
+    '</div>' + form +
 
     '<div class="cols" style="margin-top:22px;gap:12px">' +
       '<div class="kpi" style="min-width:200px"><div class="v num">' +
-        AGENTS.reduce(function (n, a) { return n + monthTotal(a.id, state.ownerMonth); }, 0) + ' €</div>' +
+        state.agents.reduce(function (n, a) { return n + monthTotal(a.id, state.ownerMonth); }, 0) + ' €</div>' +
         '<div class="l">total ' + esc(monthDef.label.toLowerCase()) + '</div></div>' +
       '<div class="kpi" style="min-width:200px"><div class="v num">' +
-        AGENTS.reduce(function (n, a) { return n + monthRows(a.id, state.ownerMonth).length; }, 0) + '</div>' +
+        state.agents.reduce(function (n, a) { return n + monthRows(a.id, state.ownerMonth).length; }, 0) + '</div>' +
         '<div class="l">missions réalisées</div></div>' +
-      '<div class="kpi" style="min-width:200px"><div style="font:700 15px/1.25 Figtree,sans-serif;margin-top:4px">' +
-        (monthDef.paid ? 'Mois soldé' : 'Paiement à venir') + '</div>' +
+      '<div class="kpi" style="min-width:200px"><div class="v num" style="color:' + (reste ? C.ambre : C.vert) + '">' + reste + ' €</div>' +
+        '<div class="l">' + (reste ? 'reste à verser' : 'mois soldé') + '</div></div>' +
+      '<div class="kpi" style="flex:1.4;min-width:220px"><div style="font:700 15px/1.25 Figtree,sans-serif;margin-top:4px">' +
+        esc(monthDef.label) + '</div>' +
         '<div class="l">' + esc(monthDef.payNote) + '</div></div>' +
     '</div>' +
 
-    '<div class="stack" style="gap:14px;margin-top:22px">' + cards + '</div>');
+    '<div class="stack" style="gap:14px;margin-top:22px">' +
+      (cards || '<p class="empty">Aucun prestataire. Ajoutez le premier ci-dessus.</p>') + '</div>');
 }
 
 /* --- Stocks -------------------------------------------------------------- */
@@ -1200,10 +1643,10 @@ function viewOwnerStocks() {
   var content;
 
   if (state.stockTab === 'matrice') {
-    var visible = state.stockGroup === 'Tous' ? GROUPS : [state.stockGroup];
+    var visible = state.stockGroup === 'Tous' ? groups() : [state.stockGroup];
     content =
       '<div class="chiprow" style="margin-top:20px">' +
-        ['Tous'].concat(GROUPS).map(function (g) {
+        ['Tous'].concat(groups()).map(function (g) {
           return '<button type="button" class="chip" aria-pressed="' + (state.stockGroup === g) + '"' +
             act('stock-group', { g: g }) + '>' + esc(g) + '</button>';
         }).join('') +
@@ -1212,15 +1655,16 @@ function viewOwnerStocks() {
           act('toggle-scope') + '>' + (state.stockScope === 'all' ? 'Tout afficher' : 'Sous le seuil seulement') + '</button>' +
       '</div>' +
       '<div class="stack-l" style="margin-top:16px">' + visible.map(function (gn) {
-        var rows = FLAT.filter(function (a) { return a.group === gn; })
+        var rows = arts().filter(function (a) { return a.group === gn; })
           .filter(function (a) {
-            return state.stockScope === 'all' || PROPS.some(function (p) { return (state.stock[p.id][a.key] || 0) <= state.seuils[a.key]; });
+            return state.stockScope === 'all' || state.props.some(function (p) { return (state.stock[p.id][a.key] || 0) <= state.seuils[a.key]; });
           });
         return '<div class="table"><div class="table-scroll">' +
           '<div class="thead thead--stock" style="align-items:center">' +
             '<span style="flex:1.6;font-size:13px;text-transform:none;letter-spacing:0;color:var(--ink)">' + esc(gn) + '</span>' +
             '<span style="width:118px;text-align:center">Seuil</span>' +
-            PROPS.map(function (p) { return '<span style="flex:1;text-align:center">' + esc(p.short) + '</span>'; }).join('') +
+            state.props.map(function (p) { return '<span style="flex:1;text-align:center">' + esc(p.short) + '</span>'; }).join('') +
+            '<span style="width:46px"></span>' +
           '</div>' +
           (rows.length ? rows.map(function (a) {
             return '<div class="trow trow--stock" style="padding:10px 20px">' +
@@ -1230,50 +1674,91 @@ function viewOwnerStocks() {
               '</span>' +
               '<span style="width:118px;display:flex;justify-content:center">' +
                 '<span class="stepper stepper--sm">' +
-                  '<button type="button" aria-label="Baisser le seuil"' + act('seuil', { k: a.key, d: -1 }) + '>−</button>' +
-                  '<span class="val num">' + state.seuils[a.key] + '</span>' +
-                  '<button type="button" aria-label="Monter le seuil"' + act('seuil', { k: a.key, d: 1 }) + '>+</button>' +
+                  '<button type="button" aria-label="Baisser le seuil de ' + esc(a.label) + '"' + act('seuil', { k: a.key, d: -1 }) + '>−</button>' +
+                  '<span class="val num">' + (state.seuils[a.key] || 0) + '</span>' +
+                  '<button type="button" aria-label="Monter le seuil de ' + esc(a.label) + '"' + act('seuil', { k: a.key, d: 1 }) + '>+</button>' +
                 '</span></span>' +
-              PROPS.map(function (p) {
-                var v = state.stock[p.id][a.key] || 0;
-                var cls = v === 0 ? 'cell-q--zero' : v <= state.seuils[a.key] ? 'cell-q--low' : 'cell-q--ok';
+              state.props.map(function (p) {
+                var v = (state.stock[p.id] || {})[a.key] || 0;
+                var cls = v === 0 ? 'cell-q--zero' : v <= (state.seuils[a.key] || 0) ? 'cell-q--low' : 'cell-q--ok';
                 return '<span style="flex:1;text-align:center"><span class="cell-q num ' + cls + '">' + v + '</span></span>';
               }).join('') +
+              '<span style="width:46px;text-align:right">' +
+                '<button type="button" class="x-btn" aria-label="Supprimer l\'article ' + esc(a.label) + '"' +
+                  act('remove-article', { k: a.key }) + '>×</button></span>' +
               '</div>';
           }).join('') : '<p class="empty">Rien sous le seuil dans cette catégorie.</p>') +
           '</div></div>';
-      }).join('') + '</div>';
+      }).join('') + '</div>' + formNewArticle();
   } else {
-    var blocks = PROPS.map(function (p) {
+    var blocks = state.props.map(function (p) {
       var items = lowsFor(p.id).map(function (a) {
-        return { label: a.label, need: Math.max(1, a.par - (state.stock[p.id][a.key] || 0)), unit: a.unit };
+        return { key: a.key, label: a.label, group: a.group, unit: a.unit,
+          need: Math.max(1, a.par - ((state.stock[p.id] || {})[a.key] || 0)) };
       });
       return { p: p, items: items, units: items.reduce(function (n, i) { return n + i.need; }, 0) };
     });
     var totalItems = blocks.reduce(function (n, b) { return n + b.items.length; }, 0);
     var totalUnits = blocks.reduce(function (n, b) { return n + b.units; }, 0);
 
+    /* Liste unique : un seul passage en magasin pour tous les logements. */
+    var fusion = {};
+    blocks.forEach(function (b) {
+      b.items.forEach(function (i) {
+        var f = fusion[i.key] || (fusion[i.key] = { label: i.label, unit: i.unit, group: i.group, need: 0, biens: [] });
+        f.need += i.need;
+        f.biens.push(b.p.short + ' ' + i.need);
+      });
+    });
+    var fusionGroups = groups().map(function (g) {
+      return [g, Object.keys(fusion).filter(function (k) { return fusion[k].group === g; }).map(function (k) { return fusion[k]; })];
+    }).filter(function (g) { return g[1].length; });
+
+    var bascule = '<div class="seg" style="margin-top:20px">' +
+      [['bien', 'Une liste par bien'], ['global', 'Une seule liste de courses']].map(function (t) {
+        return '<button type="button" aria-pressed="' + (state.coursesScope === t[0]) + '"' +
+          act('courses-scope', { s: t[0] }) + '>' + t[1] + '</button>';
+      }).join('') + '</div>';
+
+    var listes = state.coursesScope === 'bien'
+      ? '<div class="grid-cards" style="margin-top:20px">' + blocks.map(function (b) {
+          return '<div class="card">' +
+            '<div style="display:flex;align-items:center;gap:10px">' +
+              '<span class="dot" style="background:' + b.p.color + '"></span>' +
+              '<span style="font:700 16px Figtree,sans-serif;flex:1">' + esc(b.p.name) + '</span>' +
+              '<span class="badge badge--soft num">' + b.items.length + ' réf.</span></div>' +
+            '<div style="margin-top:10px">' + (b.items.length ? b.items.map(function (i) {
+              return '<div style="display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid rgba(36,30,26,.06)">' +
+                '<span class="checkbox-sq"></span>' +
+                '<span class="grow" style="font:500 13.5px Figtree,sans-serif">' + esc(i.label) + '</span>' +
+                '<span class="num" style="font:700 13px Figtree,sans-serif;flex:none">+' + i.need + ' ' + esc(i.unit) + '</span></div>';
+            }).join('') : '<p class="empty" style="padding:18px 0">Rien à racheter.</p>') + '</div>' +
+            '</div>';
+        }).join('') + '</div>'
+      : '<div class="grid-cards" style="margin-top:20px">' + (fusionGroups.length ? fusionGroups.map(function (g) {
+          return '<div class="card">' +
+            '<div style="display:flex;align-items:center;gap:10px">' +
+              '<span style="font:700 16px Figtree,sans-serif;flex:1">' + esc(g[0]) + '</span>' +
+              '<span class="badge badge--soft num">' + g[1].length + ' réf.</span></div>' +
+            '<div style="margin-top:10px">' + g[1].map(function (i) {
+              return '<div style="display:flex;align-items:flex-start;gap:10px;padding:9px 0;border-bottom:1px solid rgba(36,30,26,.06)">' +
+                '<span class="checkbox-sq" style="margin-top:3px"></span>' +
+                '<span class="grow"><span style="font:500 13.5px Figtree,sans-serif">' + esc(i.label) + '</span>' +
+                  '<span class="num" style="display:block;font:500 11.5px Figtree,sans-serif;color:var(--muted2);margin-top:2px">' +
+                    esc(i.biens.join(' · ')) + '</span></span>' +
+                '<span class="num" style="font:700 13.5px Figtree,sans-serif;flex:none">' + i.need + ' ' + esc(i.unit) + '</span></div>';
+            }).join('') + '</div>' +
+            '</div>';
+        }).join('') : '<p class="empty">Rien à racheter : tous les stocks sont au-dessus de leur seuil.</p>') + '</div>';
+
     content =
       '<div class="cols" style="margin-top:20px;gap:12px">' +
-        '<div class="kpi" style="min-width:200px"><div class="v num">' + totalItems + '</div><div class="l">références à racheter</div></div>' +
-        '<div class="kpi" style="min-width:200px"><div class="v num">' + totalUnits + '</div><div class="l">unités au total</div></div>' +
+        '<div class="kpi" style="min-width:190px"><div class="v num">' + Object.keys(fusion).length + '</div><div class="l">références différentes</div></div>' +
+        '<div class="kpi" style="min-width:190px"><div class="v num">' + totalUnits + '</div><div class="l">unités au total</div></div>' +
+        '<div class="kpi" style="min-width:190px"><div class="v num">' + totalItems + '</div><div class="l">lignes, biens confondus</div></div>' +
         '<div class="kpi" style="flex:2;min-width:260px"><div style="font:700 14px Figtree,sans-serif">Calculée depuis les seuils</div>' +
         '<div class="l">Chaque article sous son seuil est complété jusqu\'à sa dotation d\'origine.</div></div>' +
-      '</div>' +
-      '<div class="grid-cards" style="margin-top:20px">' + blocks.map(function (b) {
-        return '<div class="card">' +
-          '<div style="display:flex;align-items:center;gap:10px">' +
-            '<span class="dot" style="background:' + b.p.color + '"></span>' +
-            '<span style="font:700 16px Figtree,sans-serif;flex:1">' + esc(b.p.name) + '</span>' +
-            '<span class="badge badge--soft num">' + b.items.length + ' réf.</span></div>' +
-          '<div style="margin-top:10px">' + (b.items.length ? b.items.map(function (i) {
-            return '<div style="display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid rgba(36,30,26,.06)">' +
-              '<span class="checkbox-sq"></span>' +
-              '<span class="grow" style="font:500 13.5px Figtree,sans-serif">' + esc(i.label) + '</span>' +
-              '<span class="num" style="font:700 13px Figtree,sans-serif;flex:none">+' + i.need + ' ' + esc(i.unit) + '</span></div>';
-          }).join('') : '<p class="empty" style="padding:18px 0">Rien à racheter.</p>') + '</div>' +
-          '</div>';
-      }).join('') + '</div>';
+      '</div>' + bascule + listes;
   }
 
   return ownerShell('stocks',
@@ -1286,17 +1771,53 @@ function viewOwnerStocks() {
     '</div>' + content);
 }
 
+/* Ajout d'un article de stock : il apparaît aussitôt dans tous les biens,
+   dans le relevé du prestataire et dans la liste de courses. */
+function formNewArticle() {
+  var a = state.nar;
+  var cats = groups();
+  if (cats.indexOf(a.group) < 0) cats = cats.concat([a.group]);
+
+  if (!state.showNewArticle) {
+    return '<button type="button" class="btn btn--dark btn--sm" style="margin-top:16px"' +
+      act('toggle-new-article') + '>+ Ajouter un article</button>';
+  }
+  return '<div class="card pop" style="margin-top:16px;padding:22px">' +
+    '<h2 style="font:700 16px Figtree,sans-serif;margin:0 0 4px">Nouvel article</h2>' +
+    '<p class="sec-note" style="margin:0 0 14px">Il sera ajouté à tous les biens, à zéro, jusqu\'au prochain relevé.</p>' +
+    '<div class="cols" style="gap:14px">' +
+      '<div style="flex:2;min-width:200px"><label class="lab" for="nar-label">Nom</label>' +
+        '<input class="inp" id="nar-label" type="text" placeholder="Ex. Capsules de thé" value="' + esc(a.label) + '" data-fid="nar-label" data-in="nar-label"></div>' +
+      '<div style="flex:1;min-width:140px"><label class="lab" for="nar-unit">Unité</label>' +
+        '<input class="inp" id="nar-unit" type="text" placeholder="Ex. boîtes" value="' + esc(a.unit) + '" data-fid="nar-unit" data-in="nar-unit"></div>' +
+      '<div style="flex:1;min-width:130px"><label class="lab" for="nar-par">Dotation</label>' +
+        '<input class="inp num" id="nar-par" type="number" min="1" value="' + esc(a.par) + '" data-fid="nar-par" data-in="nar-par"></div>' +
+      '<div style="flex:1;min-width:130px"><label class="lab" for="nar-seuil">Seuil d\'alerte</label>' +
+        '<input class="inp num" id="nar-seuil" type="number" min="0" value="' + esc(a.seuil) + '" data-fid="nar-seuil" data-in="nar-seuil"></div>' +
+      '<div style="flex:1.4;min-width:170px"><label class="lab" for="nar-group">Catégorie</label>' +
+        '<input class="inp" id="nar-group" type="text" list="cats" value="' + esc(a.group) + '" data-fid="nar-group" data-in="nar-group">' +
+        '<datalist id="cats">' + cats.map(function (g) { return '<option value="' + esc(g) + '"></option>'; }).join('') + '</datalist></div>' +
+    '</div>' +
+    '<div style="display:flex;gap:10px;align-items:center;margin-top:18px;flex-wrap:wrap">' +
+      '<button type="button" class="btn btn--primary btn--sm"' + act('create-article') + '>Ajouter l\'article</button>' +
+      '<button type="button" class="btn btn--sm" style="background:transparent;color:var(--muted)"' + act('toggle-new-article') + '>Annuler</button>' +
+      '<span class="sec-note">Une catégorie inconnue est créée automatiquement.</span>' +
+    '</div>' +
+  '</div>';
+}
+
 /* --- Biens (liste) ------------------------------------------------------- */
 
 function viewOwnerBiens() {
-  var cards = PROPS.map(function (p) {
+  var cards = state.props.map(function (p) {
     var next = state.missions.filter(function (m) { return m.prop === p.id && m.status !== 'termine'; })[0];
     var rs = rooms(p.id);
+    var premier = state.services[0];
     var tags = [
-      'Ménage ' + state.tariffs[p.id].menage + ' €',
+      premier ? premier.label.split(' ')[0] + ' ' + ((state.tariffs[p.id] || {})[premier.key] || 0) + ' €' : 'Aucune prestation',
       rs.length + ' pièces',
       rs.reduce(function (n, r) { return n + r.steps.length; }, 0) + ' étapes',
-      RESAS[p.id].length + ' résas'
+      resasOf(p.id).length + ' résas'
     ];
     return '<button type="button" class="bien-card" style="--accent:' + p.color + '"' +
       act('open-bien', { id: p.id }) + '>' +
@@ -1304,7 +1825,7 @@ function viewOwnerBiens() {
         '<div class="bien-thumb stripe">PHOTO<br>BIEN</div>' +
         '<div style="min-width:0"><div style="font:700 18px/1.2 Figtree,sans-serif">' + esc(p.name) + '</div>' +
         '<div style="font:500 12.5px Figtree,sans-serif;color:var(--muted);margin-top:3px">' +
-          esc(state.info[p.id].capacity + ' · ' + state.info[p.id].surface + ' · ' + p.city) + '</div></div>' +
+          esc([(state.info[p.id] || {}).capacity, (state.info[p.id] || {}).surface, p.city].filter(Boolean).join(' · ')) + '</div></div>' +
       '</div>' +
       '<div class="chiprow" style="margin-top:14px;gap:8px">' + tags.map(function (t) {
         return '<span class="badge badge--soft num">' + esc(t) + '</span>';
@@ -1316,24 +1837,55 @@ function viewOwnerBiens() {
       '</div></button>';
   }).join('');
 
+  var form = !state.showNewBien ? '' :
+    '<div class="card pop" style="margin-top:18px;padding:22px">' +
+      '<h2 style="font:700 16px Figtree,sans-serif;margin:0 0 16px">Nouveau bien</h2>' +
+      '<div class="cols" style="gap:14px">' +
+        '<div style="flex:2;min-width:200px"><label class="lab" for="nb-name">Nom du logement</label>' +
+          '<input class="inp" id="nb-name" type="text" placeholder="Ex. Maison des Pins" value="' + esc(state.nb.name) + '" data-fid="nb-name" data-in="nb-name"></div>' +
+        '<div style="flex:1.4;min-width:170px"><label class="lab" for="nb-city">Ville</label>' +
+          '<input class="inp" id="nb-city" type="text" placeholder="Ex. Bordeaux" value="' + esc(state.nb.city) + '" data-fid="nb-city" data-in="nb-city"></div>' +
+        '<div style="flex:2;min-width:200px"><label class="lab" for="nb-address">Adresse</label>' +
+          '<input class="inp" id="nb-address" type="text" placeholder="Ex. 3 rue des Pins" value="' + esc(state.nb.address) + '" data-fid="nb-address" data-in="nb-address"></div>' +
+      '</div>' +
+      '<div style="margin-top:14px"><span class="lab">Couleur d\'identité</span>' +
+        '<div class="chiprow" style="margin-top:6px">' + PALETTE.map(function (c) {
+          return '<button type="button" class="swatch" aria-pressed="' + (state.nb.color === c.color) + '" aria-label="Couleur"' +
+            ' style="background:' + c.color + '"' + act('nb-color', { c: c.color }) + '></button>';
+        }).join('') + '</div></div>' +
+      '<div style="display:flex;gap:10px;align-items:center;margin-top:18px;flex-wrap:wrap">' +
+        '<button type="button" class="btn btn--primary btn--sm"' + act('create-bien') + '>Créer le bien</button>' +
+        '<button type="button" class="btn btn--sm" style="background:transparent;color:var(--muted)"' + act('toggle-new-bien') + '>Annuler</button>' +
+        '<span class="sec-note">Stocks, tarifs et checklist de départ créés automatiquement.</span>' +
+      '</div>' +
+    '</div>';
+
   return ownerShell('biens',
-    '<h1 class="page-title">Biens</h1>' +
-    '<p class="page-sub">Checklist, tarifs, calendrier des réservations et liens iCal — pour chaque logement.</p>' +
-    '<div class="grid-cards" style="margin-top:22px">' + cards + '</div>');
+    '<div class="page-head">' +
+      '<div><h1 class="page-title">Biens</h1>' +
+      '<p class="page-sub">Checklist, tarifs, réservations, livret d\'accueil et liens iCal — pour chaque logement.</p></div>' +
+      '<button type="button" class="btn btn--xs" style="' + (state.showNewBien ? 'background:var(--cream);color:var(--ink-soft)' : 'background:var(--terra);color:#fff') +
+        ';min-height:42px;font-size:13px"' + act('toggle-new-bien') + '>' +
+        (state.showNewBien ? 'Fermer' : '+ Ajouter un bien') + '</button>' +
+    '</div>' + form +
+    '<div class="grid-cards" style="margin-top:22px">' +
+      (cards || '<p class="empty">Aucun bien. Ajoutez le premier ci-dessus.</p>') + '</div>');
 }
 
 /* --- Fiche bien ---------------------------------------------------------- */
 
 function viewOwnerBien() {
   var b = prop(route.id);
-  if (!b) { location.replace('#/admin/biens'); return ''; }
+  if (b.gone) { location.replace('#/admin/biens'); return ''; }
   var pid = b.id;
-  var tabs = [['infos', 'Infos & tarifs'], ['checklist', 'Checklist ménage'], ['calendrier', 'Calendrier'], ['ical', 'Liens iCal']];
+  var tabs = [['infos', 'Infos & tarifs'], ['checklist', 'Checklist ménage'],
+    ['calendrier', 'Réservations'], ['livret', 'Livret d’accueil'], ['ical', 'Liens iCal']];
   var panel = '';
 
   if (state.bienTab === 'infos') panel = bienInfos(pid, b);
   else if (state.bienTab === 'checklist') panel = bienChecklist(pid, b);
   else if (state.bienTab === 'calendrier') panel = bienCalendar(pid);
+  else if (state.bienTab === 'livret') panel = bienLivret(pid, b);
   else panel = bienIcal(pid);
 
   return ownerShell('biens',
@@ -1349,37 +1901,66 @@ function viewOwnerBien() {
 }
 
 function bienInfos(pid, b) {
-  var inf = state.info[pid];
-  var fields = [['capacity', 'Capacité'], ['surface', 'Surface'], ['code', 'Accès / clés'],
-    ['wifi', 'Wi-Fi'], ['parking', 'Stationnement'], ['linge', 'Linge fourni']];
+  var inf = state.info[pid] || {};
 
-  return '<div class="cols" style="margin-top:22px">' +
-    '<div class="card" style="flex:1.2;min-width:min(100%,340px);padding:22px">' +
-      '<h2 style="font:700 16px Figtree,sans-serif;margin:0 0 16px">Informations transmises au prestataire</h2>' +
-      '<div class="cols" style="gap:14px">' + fields.map(function (f) {
-        var id = 'bf-' + pid + '-' + f[0];
-        return '<div style="flex:1;min-width:min(100%,180px)">' +
-          '<label class="lab" for="' + id + '">' + f[1] + '</label>' +
-          '<input class="inp" id="' + id + '" type="text" value="' + esc(inf[f[0]] || '') + '" data-fid="' + id + '" data-in="bien-field" data-pid="' + pid + '" data-k="' + f[0] + '">' +
-          '</div>';
-      }).join('') + '</div>' +
-      '<div style="margin-top:14px"><label class="lab" for="bn-' + pid + '">Consignes libres</label>' +
-        '<textarea class="inp" id="bn-' + pid + '" data-fid="bn-' + pid + '" data-in="bien-notes" data-pid="' + pid + '">' + esc(state.notes[pid] || '') + '</textarea></div>' +
-    '</div>' +
-    '<div class="card" style="flex:1;min-width:min(100%,300px);padding:22px">' +
-      '<h2 style="font:700 16px Figtree,sans-serif;margin:0">Tarifs des prestations</h2>' +
-      '<p class="sec-note" style="margin-top:4px">Ce que voit le prestataire avant d\'accepter, et le tarif pré-rempli à la création d\'une mission.</p>' +
-      '<div style="margin-top:14px">' + TYPE_ORDER.map(function (t) {
-        return '<div style="display:flex;align-items:center;gap:12px;padding:11px 0;border-bottom:1px solid rgba(36,30,26,.07)">' +
-          '<div class="grow"><div style="font:600 14px Figtree,sans-serif">' + esc(TYPES[t].label) + '</div>' +
-          '<div class="num" style="font:500 11.5px Figtree,sans-serif;color:var(--muted2);margin-top:1px">' + TYPES[t].duration + '</div></div>' +
+  var champs = '<div class="card" style="flex:1.2;min-width:min(100%,340px);padding:22px">' +
+    '<h2 style="font:700 16px Figtree,sans-serif;margin:0 0 4px">Informations du logement</h2>' +
+    '<p class="sec-note" style="margin:0 0 14px">Transmises au prestataire dans sa mission, et reprises dans le livret d\'accueil du voyageur.</p>' +
+    '<div class="cols" style="gap:14px">' + INFO_FIELDS.map(function (f) {
+      var id = 'bf-' + pid + '-' + f.k;
+      var heure = f.k === 'checkin' || f.k === 'checkout';
+      return '<div style="flex:1;min-width:min(100%,180px)">' +
+        '<label class="lab" for="' + id + '">' + f.label + '</label>' +
+        '<input class="inp' + (heure ? ' num' : '') + '" id="' + id + '" type="' + (heure ? 'time' : 'text') + '" value="' + esc(inf[f.k] || '') + '"' +
+          ' data-fid="' + id + '" data-' + (heure ? 'ch' : 'in') + '="bien-field" data-pid="' + pid + '" data-k="' + f.k + '">' +
+        '</div>';
+    }).join('') + '</div>' +
+    '<div style="margin-top:14px"><label class="lab" for="bn-' + pid + '">Consignes libres pour le prestataire</label>' +
+      '<textarea class="inp" id="bn-' + pid + '" data-fid="bn-' + pid + '" data-in="bien-notes" data-pid="' + pid + '">' + esc(state.notes[pid] || '') + '</textarea></div>' +
+  '</div>';
+
+  var presta = '<div class="card" style="flex:1;min-width:min(100%,320px);padding:22px">' +
+    '<h2 style="font:700 16px Figtree,sans-serif;margin:0">Prestations et tarifs</h2>' +
+    '<p class="sec-note" style="margin-top:4px">Le <strong>nom</strong> et la <strong>durée</strong> sont communs à tous les biens. ' +
+      'Le <strong>tarif</strong> est propre à ce logement.</p>' +
+    '<div style="margin-top:14px">' + (state.services.length ? state.services.map(function (s, si) {
+      var nid = 'sv-n-' + s.key, did = 'sv-d-' + s.key;
+      return '<div class="svc-row">' +
+        '<div class="svc-fields">' +
+          '<div style="flex:2;min-width:150px">' +
+            '<label class="lab" for="' + nid + '">Nom</label>' +
+            '<input class="inp" id="' + nid + '" type="text" value="' + esc(s.label) + '" data-fid="' + nid + '" data-in="svc-label" data-k="' + esc(s.key) + '">' +
+          '</div>' +
+          '<div style="flex:1;min-width:100px">' +
+            '<label class="lab" for="' + did + '">Durée</label>' +
+            '<input class="inp num" id="' + did + '" type="text" placeholder="≈ 2 h" value="' + esc(s.duration) + '" data-fid="' + did + '" data-in="svc-duration" data-k="' + esc(s.key) + '">' +
+          '</div>' +
+        '</div>' +
+        '<div class="svc-actions">' +
+          '<span class="lab" style="margin:0">Tarif ici</span>' +
           '<div class="stepper">' +
-            '<button type="button" aria-label="Baisser le tarif"' + act('tariff', { pid: pid, t: t, d: -5 }) + '>−</button>' +
-            '<span class="val num" style="min-width:56px">' + state.tariffs[pid][t] + ' €</span>' +
-            '<button type="button" aria-label="Monter le tarif"' + act('tariff', { pid: pid, t: t, d: 5 }) + '>+</button>' +
-          '</div></div>';
-      }).join('') + '</div>' +
-    '</div></div>';
+            '<button type="button" aria-label="Baisser le tarif"' + act('tariff', { pid: pid, t: s.key, d: -5 }) + '>−</button>' +
+            '<span class="val num" style="min-width:56px">' + (state.tariffs[pid] && state.tariffs[pid][s.key] || 0) + ' €</span>' +
+            '<button type="button" aria-label="Monter le tarif"' + act('tariff', { pid: pid, t: s.key, d: 5 }) + '>+</button>' +
+          '</div>' +
+          '<button type="button" class="btn-danger-xs"' + act('remove-service', { k: s.key, i: si }) + '>Supprimer</button>' +
+        '</div>' +
+      '</div>';
+    }).join('') : '<p class="empty">Aucune prestation. Ajoutez la première ci-dessous.</p>') + '</div>' +
+    '<div style="display:flex;gap:10px;margin-top:14px;flex-wrap:wrap">' +
+      '<input class="inp" style="flex:1;min-width:180px" type="text" placeholder="Ex. Nettoyage des vitres" value="' + esc(state.newService) + '" data-fid="new-service" data-in="new-service">' +
+      '<button type="button" class="btn btn--dark btn--sm"' + act('add-service') + '>Ajouter</button>' +
+    '</div>' +
+  '</div>';
+
+  var danger = '<div class="card danger-zone">' +
+    '<div class="grow"><div style="font:700 15px Figtree,sans-serif;color:var(--terra-dd)">Supprimer ce bien</div>' +
+    '<div class="sec-note" style="color:var(--terra-d)">Le logement, sa checklist, ses stocks, ses réservations, son livret ' +
+      'et ses missions non terminées seront effacés. Les missions déjà payées restent dans l\'historique.</div></div>' +
+    '<button type="button" class="btn btn--quiet btn--sm" style="flex:none"' + act('remove-bien', { pid: pid }) + '>Supprimer le bien</button>' +
+  '</div>';
+
+  return '<div class="cols" style="margin-top:22px">' + champs + presta + '</div>' + danger;
 }
 
 function bienChecklist(pid, b) {
@@ -1431,7 +2012,7 @@ function bienCalendar(pid) {
   var first = new Date(Date.UTC(cy, cmo - 1, 1));
   var daysIn = new Date(Date.UTC(cy, cmo, 0)).getUTCDate();
   var lead = (first.getUTCDay() + 6) % 7;
-  var resas = RESAS[pid] || [];
+  var resas = resasOf(pid) || [];
 
   var cells = '';
   for (var i = 0; i < lead; i++) cells += '<div class="cal-cell empty"></div>';
@@ -1464,18 +2045,167 @@ function bienCalendar(pid) {
           '<span style="width:14px;height:6px;border-radius:9px;background:' + PLATS[k].color + '"></span>' + k + '</span>';
       }).join('') + '</div>' +
     '</div>' +
-    '<div class="card" style="flex:1;min-width:min(100%,280px);padding:20px 22px">' +
-      '<h2 style="font:700 16px Figtree,sans-serif;margin:0">Réservations</h2>' +
-      '<div style="margin-top:10px">' + resas.map(function (r) {
+    '<div class="card" style="flex:1;min-width:min(100%,300px);padding:20px 22px">' +
+      '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">' +
+        '<h2 style="font:700 16px Figtree,sans-serif;margin:0;flex:1">Réservations</h2>' +
+        '<button type="button" class="btn btn--xs" style="' + (state.showNewResa ? 'background:var(--cream);color:var(--ink-soft)' : 'background:var(--terra);color:#fff') + '"' +
+          act('toggle-new-resa') + '>' + (state.showNewResa ? 'Fermer' : '+ Ajouter') + '</button>' +
+      '</div>' +
+      (state.showNewResa ? formNewResa(pid) : '') +
+      '<div style="margin-top:10px">' + (resas.length ? resas.map(function (r, ri) {
+        var pl = PLATS[r.plat] || PLATS['Direct'];
         return '<div style="padding:12px 0;border-top:1px solid rgba(36,30,26,.07)">' +
           '<div style="display:flex;align-items:center;gap:9px">' +
             '<span style="font:600 14.5px Figtree,sans-serif;flex:1;min-width:0">' + esc(r.guest) + '</span>' +
-            '<span class="badge" style="background:' + PLATS[r.plat].bg + ';color:' + PLATS[r.plat].fg + '">' + esc(r.plat) + '</span></div>' +
+            '<span class="badge" style="background:' + pl.bg + ';color:' + pl.fg + '">' + esc(r.plat) + '</span>' +
+            '<button type="button" aria-label="Supprimer la réservation de ' + esc(r.guest) + '" class="x-btn"' +
+              act('remove-resa', { pid: pid, ri: ri }) + '>×</button></div>' +
           '<div class="num" style="font:500 12.5px Figtree,sans-serif;color:var(--muted);margin-top:3px">' +
             fmtDate(r.start) + ' → ' + fmtDate(r.end) + ' · ' + nights(r.start, r.end) + ' nuits · ' + r.guests + ' voyageurs</div>' +
           '</div>';
-      }).join('') + '</div>' +
+      }).join('') : '<p class="empty">Aucune réservation sur ce bien.</p>') + '</div>' +
     '</div></div>';
+}
+
+/* Formulaire de réservation manuelle. À l'enregistrement, une mission de ménage
+   est créée automatiquement le jour du départ (même règle que l'iCal — D-06). */
+function formNewResa(pid) {
+  var r = state.nr;
+  var premier = state.services[0];
+  return '<div class="pop" style="margin-top:14px;padding:16px;background:var(--sand);border-radius:16px">' +
+    '<div class="cols" style="gap:12px">' +
+      '<div style="flex:1;min-width:min(100%,150px)"><label class="lab" for="nr-plat">Plateforme</label>' +
+        '<select class="inp" id="nr-plat" data-fid="nr-plat" data-ch="nr-plat">' + Object.keys(PLATS).map(function (k) {
+          return '<option value="' + esc(k) + '"' + (r.plat === k ? ' selected' : '') + '>' + esc(k) + '</option>';
+        }).join('') + '</select></div>' +
+      '<div style="flex:2;min-width:min(100%,180px)"><label class="lab" for="nr-guest">Nom du voyageur</label>' +
+        '<input class="inp" id="nr-guest" type="text" placeholder="Ex. Emma Dufour" value="' + esc(r.guest) + '" data-fid="nr-guest" data-in="nr-guest"></div>' +
+      '<div style="flex:1;min-width:min(100%,120px)"><label class="lab" for="nr-guests">Voyageurs</label>' +
+        '<input class="inp num" id="nr-guests" type="number" min="1" value="' + esc(r.guests) + '" data-fid="nr-guests" data-in="nr-guests"></div>' +
+      '<div style="flex:1;min-width:min(100%,150px)"><label class="lab" for="nr-start">Arrivée</label>' +
+        '<input class="inp num" id="nr-start" type="date" value="' + esc(r.start) + '" data-fid="nr-start" data-ch="nr-start"></div>' +
+      '<div style="flex:1;min-width:min(100%,150px)"><label class="lab" for="nr-end">Départ</label>' +
+        '<input class="inp num" id="nr-end" type="date" value="' + esc(r.end) + '" data-fid="nr-end" data-ch="nr-end"></div>' +
+    '</div>' +
+    '<div style="display:flex;gap:10px;align-items:center;margin-top:14px;flex-wrap:wrap">' +
+      '<button type="button" class="btn btn--primary btn--sm"' + act('create-resa', { pid: pid }) + '>Enregistrer la réservation</button>' +
+      '<span class="sec-note">Une mission « ' + esc(premier ? premier.label : 'ménage') + ' » sera créée automatiquement le jour du départ.</span>' +
+    '</div>' +
+  '</div>';
+}
+
+/* --- Livret d'accueil : édition ------------------------------------------ */
+
+function bienLivret(pid, b) {
+  var lv = state.livret[pid] || (state.livret[pid] = { mot: '', arrivee: [], questions: [], activites: [], restos: [] });
+  var inf = state.info[pid] || {};
+  var sec = LIVRET_SECTIONS.find(function (s) { return s.k === state.livretSection; }) || LIVRET_SECTIONS[0];
+  var blocs = lv[sec.k] || [];
+  var dkey = pid + ':' + sec.k;
+  var dr = state.livretDrafts[dkey] || { titre: '', texte: '', media: '' };
+
+  var entete = '<div class="card" style="padding:20px 22px">' +
+    '<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">' +
+      '<div class="grow"><h2 style="font:700 16px Figtree,sans-serif;margin:0">Le livret vu par le voyageur</h2>' +
+      '<p class="sec-note" style="margin-top:4px">Le code d\'accès, le Wi-Fi et les heures d\'arrivée et de départ ' +
+        'sont repris automatiquement de l\'onglet « Infos & tarifs ».</p></div>' +
+      '<button type="button" class="btn btn--dark btn--sm" style="flex:none"' +
+        act('nav', { path: '#/livret/' + pid }) + '>Ouvrir l\'aperçu</button>' +
+    '</div>' +
+    '<div class="livret-recap">' +
+      [['Arrivée', inf.checkin || '—'], ['Départ', inf.checkout || '—'],
+       ['Code d\'accès', inf.code || '—'], ['Wi-Fi', inf.wifi || '—']].map(function (r) {
+        return '<div><div class="k">' + r[0] + '</div><div class="v num">' + esc(r[1]) + '</div></div>';
+      }).join('') +
+    '</div>' +
+    '<div style="margin-top:14px"><label class="lab" for="lv-mot-' + pid + '">Mot d\'accueil</label>' +
+      '<textarea class="inp" id="lv-mot-' + pid + '" data-fid="lv-mot-' + pid + '" data-in="livret-mot" data-pid="' + pid + '">' + esc(lv.mot || '') + '</textarea></div>' +
+  '</div>';
+
+  var onglets = '<div class="seg" style="margin-top:18px">' + LIVRET_SECTIONS.map(function (s) {
+    var n = (lv[s.k] || []).length;
+    return '<button type="button" aria-pressed="' + (state.livretSection === s.k) + '"' +
+      act('livret-section', { s: s.k }) + '>' + s.label + (n ? ' · ' + n : '') + '</button>';
+  }).join('') + '</div>';
+
+  var liste = '<div class="stack" style="margin-top:14px">' + (blocs.length ? blocs.map(function (x, xi) {
+    return '<div class="card" style="padding:16px 18px">' +
+      '<div style="display:flex;align-items:flex-start;gap:10px">' +
+        '<div class="grow">' +
+          '<div style="font:700 15px Figtree,sans-serif">' + esc(x.titre) + '</div>' +
+          '<div style="font:500 13.5px/1.55 Figtree,sans-serif;color:var(--muted3);margin-top:5px;white-space:pre-wrap">' + esc(x.texte) + '</div>' +
+          (x.media ? '<div class="livret-media-url num">' + esc(x.media) + '</div>' : '') +
+        '</div>' +
+        '<div style="display:flex;gap:4px;flex:none">' +
+          '<button type="button" aria-label="Monter" class="x-btn"' + act('livret-move', { pid: pid, s: sec.k, i: xi, d: -1 }) + '>↑</button>' +
+          '<button type="button" aria-label="Descendre" class="x-btn"' + act('livret-move', { pid: pid, s: sec.k, i: xi, d: 1 }) + '>↓</button>' +
+          '<button type="button" aria-label="Supprimer" class="x-btn"' + act('livret-remove', { pid: pid, s: sec.k, i: xi }) + '>×</button>' +
+        '</div>' +
+      '</div></div>';
+  }).join('') : '<p class="empty">Rien dans cette rubrique pour le moment.</p>') + '</div>';
+
+  var ajout = '<div class="card" style="margin-top:14px;padding:18px 20px">' +
+    '<h3 style="font:700 15px Figtree,sans-serif;margin:0">Ajouter dans « ' + sec.label + ' »</h3>' +
+    '<p class="sec-note" style="margin-top:3px">' + sec.hint + '</p>' +
+    '<div style="margin-top:12px"><label class="lab" for="lvd-t">Titre</label>' +
+      '<input class="inp" id="lvd-t" type="text" placeholder="Ex. Comment allumer la télévision" value="' + esc(dr.titre) + '" data-fid="lvd-t" data-in="livret-draft" data-key="' + esc(dkey) + '" data-f="titre"></div>' +
+    '<div style="margin-top:12px"><label class="lab" for="lvd-x">Explication</label>' +
+      '<textarea class="inp" id="lvd-x" placeholder="Écrivez comme si vous parliez au voyageur." data-fid="lvd-x" data-in="livret-draft" data-key="' + esc(dkey) + '" data-f="texte">' + esc(dr.texte) + '</textarea></div>' +
+    '<div style="margin-top:12px"><label class="lab" for="lvd-m">Photo ou vidéo (adresse internet, facultatif)</label>' +
+      '<input class="inp" id="lvd-m" type="url" placeholder="https://… (lien YouTube, Google Photos, image…)" value="' + esc(dr.media) + '" data-fid="lvd-m" data-in="livret-draft" data-key="' + esc(dkey) + '" data-f="media"></div>' +
+    '<button type="button" class="btn btn--primary btn--sm" style="margin-top:14px"' +
+      act('livret-add', { pid: pid, s: sec.k }) + '>Ajouter au livret</button>' +
+  '</div>';
+
+  return '<div style="margin-top:22px">' + entete + onglets + liste + ajout + '</div>';
+}
+
+/* --- Livret d'accueil : page du voyageur --------------------------------- */
+
+function viewLivret() {
+  var b = prop(route.id);
+  if (b.gone) { location.replace(state.auth === 'owner' ? '#/admin/biens' : '#/login'); return ''; }
+  var pid = b.id;
+  var lv = state.livret[pid] || { mot: '', arrivee: [], questions: [], activites: [], restos: [] };
+  var inf = state.info[pid] || {};
+
+  var cles = [['Arrivée à partir de', inf.checkin], ['Départ avant', inf.checkout],
+    ['Code d\'accès', inf.code], ['Wi-Fi', inf.wifi]].filter(function (r) { return r[1]; });
+
+  var sections = LIVRET_SECTIONS.map(function (s) {
+    var blocs = lv[s.k] || [];
+    if (!blocs.length) return '';
+    return '<section class="lv-section">' +
+      '<h2 class="lv-h2">' + s.label + '</h2>' +
+      blocs.map(function (x) {
+        return '<article class="lv-bloc">' +
+          '<h3 class="lv-h3">' + esc(x.titre) + '</h3>' +
+          (x.texte ? '<p class="lv-p">' + esc(x.texte) + '</p>' : '') +
+          (x.media ? '<a class="lv-media" href="' + esc(x.media) + '" target="_blank" rel="noopener noreferrer">' +
+            'Voir la photo ou la vidéo →</a>' : '') +
+          '</article>';
+      }).join('') +
+      '</section>';
+  }).join('');
+
+  var retour = state.auth === 'owner'
+    ? '<div class="lv-back"><button type="button"' + act('nav', { path: '#/admin/biens/' + pid }) + '>← Revenir à la fiche du bien</button>' +
+      '<span>Aperçu — c\'est ce que verra le voyageur.</span></div>'
+    : '';
+
+  return '<div class="livret">' + retour +
+    '<header class="lv-head" style="background:' + b.tint + '">' +
+      '<div class="lv-logo">WARME House</div>' +
+      '<h1 class="lv-title">' + esc(b.name) + '</h1>' +
+      '<p class="lv-city">' + esc([b.address, b.city].filter(Boolean).join(', ')) + '</p>' +
+      (lv.mot ? '<p class="lv-mot">' + esc(lv.mot) + '</p>' : '') +
+    '</header>' +
+    (cles.length ? '<div class="lv-keys">' + cles.map(function (r) {
+      return '<div class="lv-key"><div class="k">' + r[0] + '</div><div class="v num">' + esc(r[1]) + '</div></div>';
+    }).join('') + '</div>' : '') +
+    (sections || '<p class="empty">Le livret de ce logement n\'est pas encore rempli.</p>') +
+    '<footer class="lv-foot">Bon séjour ! — WARME House</footer>' +
+    '</div>';
 }
 
 function bienIcal(pid) {
@@ -1519,7 +2249,7 @@ function viewLogin() {
     '</div>' +
     (isOwner ? '' :
       '<div class="login-field"><label class="lab" for="lg-who">Qui es-tu ?</label>' +
-        '<select class="inp" id="lg-who" data-fid="lg-who" data-ch="login-presta">' + AGENTS.map(function (a) {
+        '<select class="inp" id="lg-who" data-fid="lg-who" data-ch="login-presta">' + state.agents.map(function (a) {
           return '<option value="' + a.id + '"' + (state.loginPresta === a.id ? ' selected' : '') + '>' + esc(a.name + ' · ' + a.role) + '</option>';
         }).join('') + '</select></div>') +
     '<div class="login-field"><label class="lab" for="lg-mail">E-mail</label>' +
@@ -1579,14 +2309,35 @@ function bump(key, delta) {
 function finish(id) {
   var d = state.draft, m = mission(id);
   if (!d || !m || d.id !== id) return;
-  var low = FLAT.filter(function (a) { return (d.qty[a.key] || 0) <= state.seuils[a.key]; }).length;
+  var lowKeys = arts().filter(function (a) { return (d.qty[a.key] || 0) <= state.seuils[a.key]; })
+    .map(function (a) { return a.key; });
   var photos = photoCount(m);
+  var ph = state.photos[id] || {};
+
+  // Compte rendu figé : la checklist du bien peut être modifiée ensuite,
+  // la revue du propriétaire doit rester le reflet de ce qui a été fait.
+  state.reports[id] = {
+    agent: state.me,
+    dateLabel: '30 juil.',
+    price: m.price,
+    photos: photos,
+    rooms: rooms(m.prop).map(function (r) {
+      return {
+        name: r.name,
+        steps: r.steps.map(function (s) { return { label: s.label, photo: s.photo, done: !!ph[s.id] }; })
+      };
+    }),
+    qty: Object.assign({}, d.qty),
+    lows: lowKeys
+  };
 
   state.stock[d.prop] = Object.assign({}, d.qty);
   m.status = 'termine';
+  m.review = null;
+  m.redo = '';
   if (!m.taker) m.taker = state.me;
-  state.done.push({ agent: state.me, month: CURRENT_MONTH, prop: m.prop, type: m.type, dateLabel: '30 juil.', price: m.price });
-  state.lastDone = { price: m.price, photos: photos, low: low };
+  state.done.push({ mid: id, agent: state.me, month: CURRENT_MONTH, prop: m.prop, type: m.type, dateLabel: '30 juil.', price: m.price });
+  state.lastDone = { price: m.price, photos: photos, low: lowKeys.length };
   state.draft = null;
   save();
   go('#/app/missions/' + id + '/fin');
@@ -1662,19 +2413,45 @@ var actions = {
   'toggle-new': function () { state.showNew = !state.showNew; save(); render(); },
   'create-mission': function () {
     var nm = state.nm;
+    if (!state.props.length) { alert('Créez d\'abord un bien.'); return; }
     if (!nm.date) { alert('Choisis une date pour la mission.'); return; }
     state.missions.push({
       id: 'x' + Date.now(), prop: nm.prop, type: nm.type, date: nm.date,
       dateLabel: nm.date === TODAY ? 'Aujourd’hui' : fmtDate(nm.date),
-      windowLabel: nm.window, price: nm.price, status: 'dispo', urgent: 'Mission créée à la main'
+      windowLabel: nm.window, price: nm.price, status: 'dispo',
+      urgent: 'Mission créée à la main', note: (nm.note || '').trim()
     });
     state.missions.sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : 0; });
+    state.nm.note = '';
     state.showNew = false;
     save(); render();
   },
+  'validate-mission': function (el) {
+    var m = mission(el.dataset.id);
+    if (!m) return;
+    m.review = 'valide';
+    save(); render();
+  },
+  'ask-redo': function (el) {
+    var m = mission(el.dataset.id);
+    if (!m) return;
+    if (!confirm('Demander une reprise de cette mission ?\n\nElle repart dans les missions disponibles, ' +
+      'les photos déjà envoyées sont effacées et le montant est retiré des gains du prestataire ' +
+      'tant que la mission n\'est pas refaite.')) return;
+
+    m.status = 'dispo';
+    m.taker = null;
+    m.review = null;
+    m.redo = 'Reprise demandée par le propriétaire';
+    delete state.photos[m.id];
+    // La mission n'est plus terminée : elle sort du registre de paie.
+    state.done = state.done.filter(function (r) { return r.mid !== m.id; });
+    save();
+    go('#/admin/missions');
+  },
   'owner-month': function (el) { state.ownerMonth = el.dataset.m; save(); render(); },
   'toggle-agent': function (el) {
-    state.openAgent = state.openAgent === el.dataset.a ? null : el.dataset.a;
+    state.openAgent = state.openAgent === el.dataset.ag ? null : el.dataset.ag;
     save(); render();
   },
   'stock-tab': function (el) { state.stockTab = el.dataset.t; save(); render(); },
@@ -1741,8 +2518,261 @@ var actions = {
     state.extraFeeds[pid] = (state.extraFeeds[pid] || []).concat([u]);
     state.newFeed = '';
     save(); render();
-  }
+  },
+
+  /* Biens : création et suppression ------------------------------------- */
+  'toggle-new-bien': function () { state.showNewBien = !state.showNewBien; save(); render(); },
+  'nb-color': function (el) { state.nb.color = el.dataset.c; save(); render(); },
+  'create-bien': function () {
+    var nb = state.nb, nom = (nb.name || '').trim();
+    if (!nom) { alert('Donnez un nom au logement.'); return; }
+    var pal = PALETTE.find(function (c) { return c.color === nb.color; }) || PALETTE[0];
+    var pid = slug(nom, 'b');
+
+    state.props.push({
+      id: pid, name: nom, short: shortName(nom), city: (nb.city || '').trim(),
+      address: (nb.address || '').trim(), color: pal.color, tint: pal.tint
+    });
+    // Un bien neuf part avec des stocks à zéro, les tarifs de la première prestation,
+    // une checklist vide et un livret vierge : tout se règle depuis sa fiche.
+    state.stock[pid] = {};
+    state.articles.forEach(function (a) { state.stock[pid][a.key] = 0; });
+    state.tariffs[pid] = {};
+    state.services.forEach(function (s) { state.tariffs[pid][s.key] = 0; });
+    state.checklists[pid] = [];
+    state.info[pid] = { capacity: '', surface: '', code: '', wifi: '', parking: '', linge: '', checkin: '16:00', checkout: '11:00' };
+    state.notes[pid] = '';
+    state.resas[pid] = [];
+    state.livret[pid] = { mot: '', arrivee: [], questions: [], activites: [], restos: [] };
+
+    state.nb = { name: '', city: '', address: '', color: C.terracotta };
+    state.showNewBien = false;
+    state.bienTab = 'infos';
+    save();
+    go('#/admin/biens/' + pid);
+  },
+  'remove-bien': function (el) {
+    var pid = el.dataset.pid, p = prop(pid);
+    if (!confirm('Supprimer « ' + p.name + ' » ?\n\nSa checklist, ses stocks, ses réservations, son livret ' +
+      'et ses missions non terminées seront effacés. Les missions déjà payées restent dans l\'historique.')) return;
+
+    state.props = state.props.filter(function (x) { return x.id !== pid; });
+    state.missions = state.missions.filter(function (m) { return m.prop !== pid || m.status === 'termine'; });
+    state.agents.forEach(function (a) {
+      a.props = (a.props || []).filter(function (x) { return x !== pid; });
+    });
+    [state.stock, state.tariffs, state.checklists, state.info, state.notes,
+     state.resas, state.livret, state.extraFeeds].forEach(function (o) { delete o[pid]; });
+    if (state.nm.prop === pid) state.nm.prop = state.props.length ? state.props[0].id : '';
+    save();
+    go('#/admin/biens');
+  },
+
+  /* Prestations communes -------------------------------------------------- */
+  'add-service': function () {
+    var nom = (state.newService || '').trim();
+    if (!nom) return;
+    var key = slug(nom, 's');
+    state.services.push({ key: key, label: nom, duration: '' });
+    state.props.forEach(function (p) {
+      state.tariffs[p.id] = state.tariffs[p.id] || {};
+      state.tariffs[p.id][key] = 0;
+    });
+    state.newService = '';
+    save(); render();
+  },
+  'remove-service': function (el) {
+    var k = el.dataset.k, s = service(k);
+    if (state.services.length <= 1) { alert('Gardez au moins une prestation.'); return; }
+    if (!confirm('Supprimer la prestation « ' + s.label + ' » ?\n\nElle disparaît de tous les biens. ' +
+      'Les missions existantes gardent leur libellé.')) return;
+    state.services = state.services.filter(function (x) { return x.key !== k; });
+    if (state.nm.type === k) state.nm.type = state.services[0].key;
+    save(); render();
+  },
+
+  /* Réservations manuelles ------------------------------------------------ */
+  'toggle-new-resa': function () { state.showNewResa = !state.showNewResa; save(); render(); },
+  'create-resa': function (el) { createResa(el.dataset.pid); },
+  'remove-resa': function (el) {
+    var pid = el.dataset.pid, ri = parseInt(el.dataset.ri, 10);
+    var list = resasOf(pid);
+    var r = list[ri];
+    if (!r) return;
+    if (!confirm('Supprimer la réservation de ' + r.guest + ' ?\n\nLa mission créée à son départ, ' +
+      'si elle n\'a pas encore été prise, sera retirée elle aussi.')) return;
+    state.resas[pid] = list.filter(function (x, i) { return i !== ri; });
+    state.missions = state.missions.filter(function (m) {
+      return !(m.fromResa === pid + ':' + r.start + ':' + r.end && m.status === 'dispo');
+    });
+    save(); render();
+  },
+
+  /* Livret d'accueil ------------------------------------------------------ */
+  'livret-section': function (el) { state.livretSection = el.dataset.s; save(); render(); },
+  'livret-add': function (el) {
+    var pid = el.dataset.pid, s = el.dataset.s, key = pid + ':' + s;
+    var d = state.livretDrafts[key] || {};
+    var titre = (d.titre || '').trim();
+    if (!titre) { alert('Donnez un titre à ce bloc.'); return; }
+    var lv = state.livret[pid] || (state.livret[pid] = { mot: '', arrivee: [], questions: [], activites: [], restos: [] });
+    lv[s] = (lv[s] || []).concat([{ titre: titre, texte: (d.texte || '').trim(), media: (d.media || '').trim() }]);
+    state.livretDrafts[key] = { titre: '', texte: '', media: '' };
+    save(); render();
+  },
+  'livret-remove': function (el) {
+    var pid = el.dataset.pid, s = el.dataset.s, i = parseInt(el.dataset.i, 10);
+    var lv = state.livret[pid];
+    if (!lv || !lv[s]) return;
+    lv[s] = lv[s].filter(function (x, xi) { return xi !== i; });
+    save(); render();
+  },
+  'livret-move': function (el) {
+    var pid = el.dataset.pid, s = el.dataset.s;
+    var i = parseInt(el.dataset.i, 10), d = parseInt(el.dataset.d, 10);
+    var lv = state.livret[pid];
+    if (!lv || !lv[s]) return;
+    var list = lv[s].slice(), j = i + d;
+    if (j < 0 || j >= list.length) return;
+    var tmp = list[i]; list[i] = list[j]; list[j] = tmp;
+    lv[s] = list;
+    save(); render();
+  },
+
+  /* Prestataires ---------------------------------------------------------- */
+  'toggle-new-agent': function () { state.showNewAgent = !state.showNewAgent; save(); render(); },
+  'na-color': function (el) { state.na.color = el.dataset.c; save(); render(); },
+  'create-agent': function () {
+    var na = state.na, nom = (na.name || '').trim();
+    if (!nom) { alert('Donnez un nom au prestataire.'); return; }
+    if (state.agents.some(function (a) { return a.name.toLowerCase() === nom.toLowerCase(); })) {
+      alert('Un prestataire porte déjà ce nom.'); return;
+    }
+    var pal = PALETTE.find(function (c) { return c.color === na.color; }) || PALETTE[0];
+    var mots = nom.split(/\s+/);
+    var init = (mots[0][0] + (mots[1] ? mots[1][0] : '')).toUpperCase();
+
+    state.agents.push({
+      id: slug(nom, 'a'), name: nom, init: init, role: (na.role || 'Ménage').trim(),
+      since: MONTHS[0].label.toLowerCase(), note: '—', email: (na.email || '').trim(),
+      iban: 'IBAN à renseigner',
+      avatarBg: pal.tint, avatarFg: pal.fg, roleBg: pal.tint, roleFg: pal.fg,
+      props: state.props.map(function (p) { return p.id; })
+    });
+    state.na = { name: '', role: 'Ménage', email: '', color: C.terracotta };
+    state.showNewAgent = false;
+    save(); render();
+  },
+  'remove-agent': function (el) {
+    var id = el.dataset.ag, a = agent(id);
+    if (state.agents.length <= 1) { alert('Gardez au moins un prestataire.'); return; }
+    var enCours = state.missions.filter(function (m) {
+      return m.taker === id && m.status !== 'termine';
+    });
+    if (enCours.length && !confirm(enCours.length + ' mission(s) en cours lui sont attribuées. ' +
+      'Elles repartiront dans les missions disponibles.\n\nSupprimer ' + a.name + ' ?')) return;
+    if (!enCours.length && !confirm('Supprimer ' + a.name + ' ?\n\nSes missions déjà réalisées restent dans l\'historique des paiements.')) return;
+
+    enCours.forEach(function (m) { m.status = 'dispo'; m.taker = null; });
+    state.agents = state.agents.filter(function (x) { return x.id !== id; });
+    if (state.me === id) state.me = state.agents[0].id;
+    if (state.loginPresta === id) state.loginPresta = state.agents[0].id;
+    if (state.openAgent === id) state.openAgent = null;
+    save(); render();
+  },
+  'toggle-perm': function (el) {
+    var a = state.agents.find(function (x) { return x.id === el.dataset.ag; });
+    if (!a) return;
+    var pid = el.dataset.pid;
+    a.props = a.props || [];
+    a.props = a.props.indexOf(pid) >= 0
+      ? a.props.filter(function (x) { return x !== pid; })
+      : a.props.concat([pid]);
+    save(); render();
+  },
+  'toggle-payout': function (el) {
+    var k = el.dataset.ag + ':' + state.ownerMonth;
+    state.payouts[k] = !isPaid(el.dataset.ag, state.ownerMonth);
+    save(); render();
+  },
+
+  /* Articles de stock ------------------------------------------------------ */
+  'toggle-new-article': function () { state.showNewArticle = !state.showNewArticle; save(); render(); },
+  'create-article': function () {
+    var n = state.nar, nom = (n.label || '').trim();
+    if (!nom) { alert('Donnez un nom à l\'article.'); return; }
+    var key = slug(nom, 'a');
+    var par = Math.max(1, parseInt(n.par, 10) || 1);
+    state.articles.push({
+      key: key, label: nom, unit: (n.unit || 'unités').trim(),
+      par: par, group: (n.group || 'Divers').trim()
+    });
+    state.seuils[key] = Math.max(0, parseInt(n.seuil, 10) || 0);
+    state.props.forEach(function (p) {
+      state.stock[p.id] = state.stock[p.id] || {};
+      state.stock[p.id][key] = 0;
+    });
+    if (state.draft) state.draft.qty[key] = 0;
+    state.nar = { label: '', unit: 'unités', par: 4, seuil: 2, group: (n.group || 'Salle de bain').trim() };
+    state.showNewArticle = false;
+    save(); render();
+  },
+  'remove-article': function (el) {
+    var k = el.dataset.k;
+    var a = state.articles.find(function (x) { return x.key === k; });
+    if (!a) return;
+    if (!confirm('Supprimer « ' + a.label + ' » ?\n\nIl disparaît du relevé de tous les biens et de la liste de courses.')) return;
+    state.articles = state.articles.filter(function (x) { return x.key !== k; });
+    delete state.seuils[k];
+    state.props.forEach(function (p) { if (state.stock[p.id]) delete state.stock[p.id][k]; });
+    if (state.draft) delete state.draft.qty[k];
+    save(); render();
+  },
+
+  'courses-scope': function (el) { state.coursesScope = el.dataset.s; save(); render(); }
 };
+
+/* Enregistre une réservation saisie à la main et crée, comme le ferait l'iCal,
+   la mission de ménage du jour du départ (D-06). Le nom et le nombre de
+   voyageurs sont recopiés sur la mission : le prestataire les voit. */
+function createResa(pid) {
+  var r = state.nr;
+  var nom = (r.guest || '').trim();
+  if (!nom) { alert('Indiquez le nom du voyageur.'); return; }
+  if (!r.start || !r.end) { alert('Indiquez les dates d\'arrivée et de départ.'); return; }
+  if (r.end <= r.start) { alert('Le départ doit être après l\'arrivée.'); return; }
+
+  var guests = Math.max(1, parseInt(r.guests, 10) || 1);
+  var resa = { plat: r.plat, guest: nom, guests: guests, start: r.start, end: r.end };
+  state.resas[pid] = resasOf(pid).concat([resa]).sort(function (a, b) {
+    return a.start < b.start ? -1 : a.start > b.start ? 1 : 0;
+  });
+
+  var sv = state.services[0];
+  if (sv) {
+    // Séjour qui commence le jour du départ : c'est un turnover.
+    var suivante = resasOf(pid).find(function (x) { return x.start === r.end && x !== resa; });
+    var inf = state.info[pid] || {};
+    state.missions.push({
+      id: slug(nom, 'm'), prop: pid, type: sv.key, date: r.end,
+      dateLabel: r.end === TODAY ? 'Aujourd’hui' : fmtDate(r.end),
+      windowLabel: (inf.checkout || '11:00') + ' → ' + (inf.checkin || '16:00'),
+      price: (state.tariffs[pid] || {})[sv.key] || 0,
+      status: 'dispo',
+      urgent: suivante ? 'Turnover · arrivée ' + (inf.checkin || '16:00') : '',
+      turnover: !!suivante,
+      note: '',
+      fromResa: pid + ':' + r.start + ':' + r.end,
+      res: { plat: r.plat, guest: nom, guests: guests, nights: nights(r.start, r.end) },
+      next: suivante ? { guest: suivante.guest, guests: suivante.guests, at: inf.checkin || '16:00' } : null
+    });
+    state.missions.sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : 0; });
+  }
+
+  state.nr = { plat: r.plat, guest: '', guests: 2, start: '', end: '' };
+  state.showNewResa = false;
+  save(); render();
+}
 
 /* Saisies silencieuses : mettent l'état à jour sans redessiner l'écran,
    pour ne pas faire perdre le curseur pendant la frappe. */
@@ -1751,12 +2781,62 @@ var inputs = {
   'login-pwd': function (el) { state.loginPwd = el.value; },
   'nm-window': function (el) { state.nm.window = el.value; },
   'nm-price': function (el) { state.nm.price = parseInt(el.value || '0', 10) || 0; },
-  'bien-field': function (el) { state.info[el.dataset.pid][el.dataset.k] = el.value; save(); },
+  'nm-note': function (el) { state.nm.note = el.value; },
+  'bien-field': function (el) { setBienField(el); },
   'bien-notes': function (el) { state.notes[el.dataset.pid] = el.value; save(); },
   'step-draft': function (el) { state.stepDrafts[el.dataset.key] = el.value; },
   'new-room': function (el) { state.newRoom = el.value; },
-  'new-feed': function (el) { state.newFeed = el.value; }
+  'new-feed': function (el) { state.newFeed = el.value; },
+
+  /* Note libre du propriétaire sur une mission, vue par le prestataire. */
+  'mission-note': function (el) {
+    var m = mission(el.dataset.id);
+    if (m) { m.note = el.value; save(); }
+  },
+
+  /* Prestations : nom et durée, communs à tous les biens. */
+  'svc-label': function (el) {
+    var s = state.services.find(function (x) { return x.key === el.dataset.k; });
+    if (s) { s.label = el.value; save(); }
+  },
+  'svc-duration': function (el) {
+    var s = state.services.find(function (x) { return x.key === el.dataset.k; });
+    if (s) { s.duration = el.value; save(); }
+  },
+  'new-service': function (el) { state.newService = el.value; },
+
+  /* Formulaires de création. */
+  'nb-name': function (el) { state.nb.name = el.value; },
+  'nb-city': function (el) { state.nb.city = el.value; },
+  'nb-address': function (el) { state.nb.address = el.value; },
+  'na-name': function (el) { state.na.name = el.value; },
+  'na-role': function (el) { state.na.role = el.value; },
+  'na-email': function (el) { state.na.email = el.value; },
+  'nar-label': function (el) { state.nar.label = el.value; },
+  'nar-unit': function (el) { state.nar.unit = el.value; },
+  'nar-par': function (el) { state.nar.par = el.value; },
+  'nar-seuil': function (el) { state.nar.seuil = el.value; },
+  'nar-group': function (el) { state.nar.group = el.value; },
+  'nr-guest': function (el) { state.nr.guest = el.value; },
+  'nr-guests': function (el) { state.nr.guests = el.value; },
+
+  /* Livret d'accueil. */
+  'livret-mot': function (el) {
+    var lv = state.livret[el.dataset.pid];
+    if (lv) { lv.mot = el.value; save(); }
+  },
+  'livret-draft': function (el) {
+    var k = el.dataset.key;
+    var d = state.livretDrafts[k] || (state.livretDrafts[k] = { titre: '', texte: '', media: '' });
+    d[el.dataset.f] = el.value;
+  }
 };
+
+function setBienField(el) {
+  var inf = state.info[el.dataset.pid] || (state.info[el.dataset.pid] = {});
+  inf[el.dataset.k] = el.value;
+  save();
+}
 
 /* Changements qui demandent un redessin (listes déroulantes, dates). */
 var changes = {
@@ -1767,15 +2847,21 @@ var changes = {
   },
   'nm-prop': function (el) {
     state.nm.prop = el.value;
-    state.nm.price = state.tariffs[el.value][state.nm.type];
+    state.nm.price = (state.tariffs[el.value] || {})[state.nm.type] || 0;
     save(); render();
   },
   'nm-type': function (el) {
     state.nm.type = el.value;
-    state.nm.price = state.tariffs[state.nm.prop][el.value];
+    state.nm.price = (state.tariffs[state.nm.prop] || {})[el.value] || 0;
     save(); render();
   },
-  'nm-date': function (el) { state.nm.date = el.value; save(); }
+  'nm-date': function (el) { state.nm.date = el.value; save(); },
+
+  // Les champs d'heure et de date redessinent l'écran : le livret les reprend.
+  'bien-field': function (el) { setBienField(el); render(); },
+  'nr-plat': function (el) { state.nr.plat = el.value; save(); },
+  'nr-start': function (el) { state.nr.start = el.value; save(); },
+  'nr-end': function (el) { state.nr.end = el.value; save(); }
 };
 
 /* ==========================================================================
@@ -1784,6 +2870,7 @@ var changes = {
 
 var VIEWS = {
   'login': viewLogin,
+  'livret': viewLivret,
   'p-missions': viewPrestaMissions,
   'p-mes': viewPrestaMes,
   'p-gains': viewPrestaGains,
@@ -1795,6 +2882,7 @@ var VIEWS = {
   'p-incident': viewPrestaIncident,
   'o-dash': viewOwnerDash,
   'o-missions': viewOwnerMissions,
+  'o-mission': viewOwnerMission,
   'o-agents': viewOwnerAgents,
   'o-stocks': viewOwnerStocks,
   'o-biens': viewOwnerBiens,
