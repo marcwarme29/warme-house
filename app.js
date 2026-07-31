@@ -201,13 +201,16 @@ var INFO_FIELDS = [
   { k: 'checkout', label: 'Heure de départ' }
 ];
 
-/* Livret d'accueil : 4 rubriques, chacune une liste de blocs
-   { titre, texte, media } — media = adresse internet d'une photo ou d'une vidéo. */
+/* Livret d'accueil : 5 rubriques, chacune une liste de blocs
+   { titre, texte, media } — media = adresse internet d'une photo ou d'une vidéo.
+   Le voyageur voit d'abord ces rubriques en grandes tuiles, puis ouvre celle
+   qui l'intéresse : `icon` et `hint` sont ce qu'il lit sur la tuile. */
 var LIVRET_SECTIONS = [
-  { k: 'arrivee', label: 'Arrivée autonome', hint: 'Comment entrer dans le logement, étape par étape.' },
-  { k: 'questions', label: 'Questions fréquentes', hint: 'La télé, le chauffage, la machine à laver, les poubelles…' },
-  { k: 'activites', label: 'Activités autour', hint: 'À voir, à faire, à quelle distance.' },
-  { k: 'restos', label: 'Où manger', hint: 'Vos adresses préférées du quartier.' }
+  { k: 'arrivee', label: 'Arrivée autonome', icon: '🔑', hint: 'Comment entrer dans le logement, étape par étape.' },
+  { k: 'questions', label: 'Questions fréquentes', icon: '💡', hint: 'La télé, le chauffage, la machine à laver, les poubelles…' },
+  { k: 'activites', label: 'Activités autour', icon: '🗺️', hint: 'À voir, à faire, à quelle distance.' },
+  { k: 'restos', label: 'Où manger', icon: '🍽️', hint: 'Vos adresses préférées du quartier.' },
+  { k: 'depart', label: 'Instructions de départ', icon: '👋', hint: 'Poubelles, clés, fenêtres : ce qu\'il reste à faire avant de partir.' }
 ];
 
 function baseLivret() {
@@ -216,7 +219,11 @@ function baseLivret() {
     out[x[0]] = {
       mot: 'Bienvenue ! Vous trouverez ici tout ce qu’il faut pour votre séjour à ' + x[1] + '. Bon séjour !',
       arrivee: [{ titre: 'Entrer dans le logement', texte: 'Le code d’accès est indiqué en haut de ce livret. Composez-le, puis poussez la porte.', media: '' }],
-      questions: [], activites: [], restos: []
+      questions: [], activites: [], restos: [],
+      depart: [
+        { titre: 'Avant de fermer la porte', texte: 'Sortez les poubelles, laissez la vaisselle propre et rangée, fermez les fenêtres.', media: '' },
+        { titre: 'Les clés', texte: 'Remettez les clés là où vous les avez trouvées à votre arrivée.', media: '' }
+      ]
     };
   });
   return out;
@@ -314,6 +321,13 @@ function initialState() {
     resas: clone(RESAS),              // les réservations, par bien
     livret: baseLivret(),             // le livret d'accueil, par bien
 
+    durations: {},                    // { pid: { prestation: '≈ 2 h' } } — la durée est propre à chaque bien
+
+    // Ce que le voyageur renvoie depuis son livret
+    departs: {},                      // { 'pid:début:fin': 'HH:MM' } — « j'ai quitté le logement »
+    ready: {},                        // { pid: { date, at, mid, agent } } — ménage terminé, logement prêt
+    avis: [],                         // [{ id, pid, resa, kind, stars, texte, agent, mid, dateLabel }]
+
     missions: clone(MISSIONS),
     photos: {},                       // { missionId: { stepId: true } }
     stock: baseStock(),
@@ -360,8 +374,10 @@ function initialState() {
     nr: { plat: 'Airbnb', guest: '', guests: 2, start: '', end: '' },
     newService: '',
     coursesScope: 'bien',             // 'bien' | 'global'
+    coursesProps: null,               // biens cochés dans la liste de courses (null = tous)
     livretSection: 'arrivee',
-    livretDrafts: {}                  // { 'pid:section': { titre, texte, media } }
+    livretDrafts: {},                 // { 'pid:section': { titre, texte, media } }
+    avisDrafts: {}                    // { 'pid:kind': { stars, texte } } — la note en cours de saisie
   };
 }
 
@@ -384,17 +400,20 @@ function save() {
 function load() {
   try {
     var raw = localStorage.getItem(STORE_KEY);
-    if (!raw) return;
-    var saved = JSON.parse(raw);
-    var base = initialState();
-    Object.keys(base).forEach(function (k) {
-      if (Object.prototype.hasOwnProperty.call(saved, k) && saved[k] !== undefined) base[k] = saved[k];
-    });
-    state = base;
-    upgrade();
+    if (raw) {
+      var saved = JSON.parse(raw);
+      var base = initialState();
+      Object.keys(base).forEach(function (k) {
+        if (Object.prototype.hasOwnProperty.call(saved, k) && saved[k] !== undefined) base[k] = saved[k];
+      });
+      state = base;
+    }
   } catch (e) {
     state = initialState();
   }
+  // Appelé aussi sur un navigateur neuf : c'est upgrade() qui pose les valeurs
+  // dérivées (durées par bien, arrivée anticipée…) absentes des constantes.
+  upgrade();
 }
 
 /* Mise à niveau des données déjà enregistrées dans le navigateur.
@@ -403,6 +422,15 @@ function load() {
    manque sans jamais écraser ce que le propriétaire a saisi. */
 function upgrade() {
   var seedInfo = BIEN_INFO, seedLivret = baseLivret();
+
+  // Nouveautés de la session 8 : durées par bien, départs signalés, avis.
+  // Posées d'abord : les boucles ci-dessous s'appuient dessus.
+  if (!state.durations) state.durations = {};
+  if (!state.departs) state.departs = {};
+  if (!state.ready) state.ready = {};
+  if (!Array.isArray(state.avis)) state.avis = [];
+  if (!state.avisDrafts) state.avisDrafts = {};
+  if (state.coursesProps === undefined) state.coursesProps = null;
 
   state.props.forEach(function (p) {
     var pid = p.id;
@@ -425,9 +453,16 @@ function upgrade() {
     if (lv.mot === undefined) lv.mot = '';
     LIVRET_SECTIONS.forEach(function (s) { if (!Array.isArray(lv[s.k])) lv[s.k] = []; });
 
-    // Un tarif par prestation, une quantité par article.
+    // Arrivée anticipée autorisée par défaut : c'est le service rendu au voyageur.
+    if (inf.early === undefined) inf.early = true;
+
+    // Un tarif et une durée par prestation, une quantité par article.
     var tf = state.tariffs[pid] || (state.tariffs[pid] = {});
     state.services.forEach(function (s) { if (tf[s.key] === undefined) tf[s.key] = 0; });
+    // La durée était commune à tous les biens : on la recopie une fois dans chacun,
+    // puis chaque logement suit la sienne.
+    var du = state.durations[pid] || (state.durations[pid] = {});
+    state.services.forEach(function (s) { if (du[s.key] === undefined) du[s.key] = s.duration || ''; });
     var st = state.stock[pid] || (state.stock[pid] = {});
     state.articles.forEach(function (a) { if (st[a.key] === undefined) st[a.key] = 0; });
   });
@@ -444,11 +479,17 @@ function upgrade() {
 
   state.missions.forEach(function (m) { if (m.note === undefined) m.note = ''; });
   if (state.nm.note === undefined) state.nm.note = '';
+
+  // Les biens supprimés ne doivent pas rester cochés dans la liste de courses.
+  if (Array.isArray(state.coursesProps)) {
+    state.coursesProps = state.coursesProps.filter(function (pid) { return !prop(pid).gone; });
+  }
 }
 
 function resetDemo() {
   var auth = state.auth, me = state.me;
   state = initialState();
+  upgrade();
   state.auth = auth;
   state.me = me;
   state.loginPresta = me;
@@ -541,6 +582,122 @@ function photoCount(m) {
   return stepIds(m.prop).filter(function (s) { return ph[s]; }).length;
 }
 
+/* --------------------------------------------------------------------------
+   Séjours en cours, départs signalés, logement prêt
+   -------------------------------------------------------------------------- */
+
+/** Heure de l'horloge, au format 09:05. */
+function nowHM() {
+  var d = new Date();
+  return ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2);
+}
+
+/** Identifiant d'un séjour : il n'y a pas d'identifiant sur les réservations. */
+function resaKey(pid, r) { return pid + ':' + r.start + ':' + r.end; }
+
+/* Le jour d'un turnover, deux voyageurs différents ouvrent le même livret :
+   celui qui s'en va et celui qui arrive. On les distingue par les dates.
+
+   stayLeaving  — celui qui part aujourd'hui : bouton de départ, note du séjour.
+   stayCurrent  — celui qui occupe le logement : note de la propreté trouvée.
+   stayArriving — celui qui arrive aujourd'hui : message « le logement est prêt ». */
+
+function stayLeaving(pid) {
+  return resasOf(pid).find(function (r) { return r.end === TODAY; }) || null;
+}
+
+function stayCurrent(pid) {
+  return resasOf(pid).find(function (r) { return r.start <= TODAY && TODAY < r.end; }) || null;
+}
+
+function stayArriving(pid) {
+  return resasOf(pid).find(function (r) { return r.start === TODAY; }) || null;
+}
+
+/** Le séjour concerné par une note : la propreté est notée par celui qui
+    occupe le logement, le séjour par celui qui s'en va. */
+function stayForAvis(pid, kind) {
+  return kind === 'menage' ? stayCurrent(pid) : stayLeaving(pid);
+}
+
+/** Le voyageur a-t-il signalé son départ ? Rend l'heure, ou null. */
+function departAt(pid, r) {
+  return (r && state.departs[resaKey(pid, r)]) || null;
+}
+
+/** Un logement est libre pour une mission dès que le voyageur qui part
+    ce jour-là a appuyé sur « J'ai quitté le logement ». */
+function freeAt(m) {
+  var r = resasOf(m.prop).find(function (x) { return x.end === m.date && departAt(m.prop, x); });
+  return r ? departAt(m.prop, r) : null;
+}
+
+/** Durée d'une prestation dans ce logement (le nom reste commun, la durée non). */
+function duration(pid, key) {
+  var d = (state.durations[pid] || {})[key];
+  return d !== undefined && d !== '' ? d : (service(key).duration || '');
+}
+
+/** Heure à laquelle le prochain voyageur peut réellement entrer.
+    Rend null si rien n'est avancé par rapport à l'heure officielle. */
+function readyInfo(pid) {
+  var rd = state.ready[pid];
+  if (!rd || rd.date !== TODAY) return null;
+  var inf = state.info[pid] || {};
+  if (inf.early === false) return null;
+  var officielle = inf.checkin || '16:00';
+  return { at: rd.at < officielle ? rd.at : officielle, fin: rd.at, avance: rd.at < officielle, agent: rd.agent };
+}
+
+/* --------------------------------------------------------------------------
+   Avis des voyageurs (propreté à l'arrivée, séjour au départ)
+   -------------------------------------------------------------------------- */
+
+/** La mission de ménage qui a préparé le logement pour ce séjour :
+    la dernière mission terminée du bien, au plus tard le jour de l'arrivée. */
+function cleanerFor(pid, r) {
+  return state.missions
+    .filter(function (m) { return m.prop === pid && m.status === 'termine' && m.date <= r.start; })
+    .sort(function (a, b) { return a.date < b.date ? 1 : a.date > b.date ? -1 : 0; })[0] || null;
+}
+
+function avisOf(kind, test) {
+  return state.avis.filter(function (v) { return v.kind === kind && (!test || test(v)); });
+}
+
+/** Avis déjà déposé pour ce séjour et ce type de note. */
+function avisDone(pid, r, kind) {
+  if (!r) return null;
+  var k = resaKey(pid, r);
+  return state.avis.find(function (v) { return v.resa === k && v.kind === kind; }) || null;
+}
+
+/** Note globale d'un prestataire : la moyenne de toutes les notes de ménage
+    reçues. Rend null tant qu'il n'a été noté par personne. */
+function agentRating(agentId) {
+  var list = avisOf('menage', function (v) { return v.agent === agentId; });
+  if (!list.length) return null;
+  var somme = list.reduce(function (n, v) { return n + v.stars; }, 0);
+  return { avg: Math.round(somme / list.length * 10) / 10, n: list.length, list: list };
+}
+
+/** « 4,7 » plutôt que « 4.7 » : virgule décimale française. */
+function fmtNote(n) { return String(n).replace('.', ','); }
+
+/** Cinq étoiles pleines ou vides, en lecture seule. */
+function starsRead(n) {
+  var out = '';
+  for (var i = 1; i <= 5; i++) out += '<span class="star' + (i <= n ? ' star--on' : '') + '">★</span>';
+  return '<span class="stars">' + out + '</span>';
+}
+
+/** Biens retenus pour la liste de courses. null = tous, y compris les biens
+    créés après le dernier réglage : c'est le comportement le plus sûr. */
+function coursesPropIds() {
+  if (!Array.isArray(state.coursesProps)) return state.props.map(function (p) { return p.id; });
+  return state.coursesProps.slice();
+}
+
 function ledger() { return state.done.concat(HISTORY); }
 function monthRows(a, month) { return ledger().filter(function (r) { return r.agent === a && r.month === month; }); }
 function monthTotal(a, month) { return monthRows(a, month).reduce(function (n, r) { return n + r.price; }, 0); }
@@ -576,7 +733,7 @@ function act(name, params) {
    4. Routage
    ========================================================================== */
 
-var route = { name: 'login', id: null };
+var route = { name: 'login', id: null, sec: null };
 
 var PRESTA_TABS = [
   { key: 'missions', path: '#/app/missions', label: 'Disponibles' },
@@ -598,7 +755,10 @@ function parseRoute() {
   var seg = h.split('/').filter(Boolean);          // ex. ['app','missions','m1','checklist']
 
   // Livret d'accueil : page publique, destinée au voyageur (pas de connexion).
-  if (seg[0] === 'livret' && seg[1]) return { name: 'livret', id: seg[1] };
+  // Sans troisième segment, c'est l'accueil : les grandes rubriques à choisir.
+  if (seg[0] === 'livret' && seg[1]) {
+    return { name: seg[2] ? 'livret-sec' : 'livret', id: seg[1], sec: seg[2] || null };
+  }
 
   if (seg[0] === 'app') {
     if (seg[1] === 'missions' && seg[2]) {
@@ -639,6 +799,11 @@ function guard() {
 
   // Le livret s'ouvre sans connexion : c'est une page pour le voyageur.
   if (r.name === 'livret') return r;
+  if (r.name === 'livret-sec') {
+    var ok = LIVRET_SECTIONS.some(function (s) { return s.k === r.sec; });
+    if (!ok) { location.replace('#/livret/' + r.id); return null; }
+    return r;
+  }
 
   if (!state.auth) {
     if (r.name !== 'login') { location.replace('#/login'); return null; }
@@ -680,7 +845,11 @@ function guard() {
 function decorate(m) {
   var p = prop(m.prop), ty = service(m.type), st = STATUS[m.status];
   var total = stepIds(m.prop).length, done = photoCount(m);
-  var canStart = m.date <= TODAY;
+
+  // Le voyageur a signalé son départ : le logement est libre, la mission peut
+  // démarrer même si l'heure de départ officielle n'est pas encore passée.
+  var free = freeAt(m);
+  var canStart = m.date <= TODAY || !!free;
   var mine = m.taker === state.me;
 
   var ctaLabel, ctaCls, ctaAction = '';
@@ -692,8 +861,9 @@ function decorate(m) {
   return {
     id: m.id, raw: m, mine: mine,
     propName: p.name, city: p.city, address: p.address + ', ' + p.city, color: p.color, tint: p.tint,
-    typeLabel: ty.label, durationLabel: ty.duration,
+    typeLabel: ty.label, durationLabel: duration(m.prop, m.type),
     dateLabel: m.dateLabel, windowLabel: m.windowLabel,
+    free: free, freeLabel: free ? 'Logement libre depuis ' + free : '',
     day: m.date.split('-')[2], month: MOIS[parseInt(m.date.split('-')[1], 10) - 1],
     priceLabel: m.price + ' €',
     urgent: !!m.urgent, urgentLabel: m.urgent,
@@ -790,6 +960,7 @@ function missionCard(m) {
     (m.note ? '<div class="mission-note">✎ ' + esc(m.note) + '</div>' : '') +
     '<div class="mission-chips">' +
       (m.redoLabel ? '<span class="badge badge--terra">↻ ' + esc(m.redoLabel) + '</span>' : '') +
+      (m.free ? '<span class="badge badge--green num">✓ ' + esc(m.freeLabel) + '</span>' : '') +
       '<span class="badge badge--soft num">' + esc(m.dateLabel) + '</span>' +
       '<span class="badge badge--soft num">' + esc(m.windowLabel) + '</span>' +
       (m.hasRes ? '<span class="badge badge--soft num">' + esc(m.guestsLabel) + '</span>' : '') +
@@ -859,7 +1030,8 @@ function viewPrestaDetail() {
   } else if (m.status === 'encours') {
     btn = { label: 'Reprendre la checklist', cls: 'btn--go', action: 'resume', note: 'À faire dans le créneau indiqué' };
   } else if (d.canStart) {
-    btn = { label: 'Commencer la mission', cls: 'btn--go', action: 'start', note: 'À faire dans le créneau indiqué' };
+    btn = { label: 'Commencer la mission', cls: 'btn--go', action: 'start',
+      note: d.free ? 'Le voyageur est parti : tu peux y aller' : 'À faire dans le créneau indiqué' };
   } else {
     btn = { label: 'Démarrage le ' + m.dateLabel.toLowerCase(), cls: 'btn--muted', action: '',
       note: 'La checklist s’ouvrira le jour de la mission' };
@@ -896,6 +1068,10 @@ function viewPrestaDetail() {
       '</div>' +
     '</div>' +
     '<div class="detail-body">' +
+      (d.free ? '<div class="free-note">' +
+        '<div class="k">✓ Le logement est libre</div>' +
+        '<div class="t">' + esc(m.res ? m.res.guest : 'Le voyageur') + ' a signalé son départ à ' + esc(d.free) + '. ' +
+        'Tu peux commencer sans attendre l\'heure de départ prévue.</div></div>' : '') +
       (m.redo ? '<div class="redo-note">' +
         '<div class="k">↻ ' + esc(m.redo) + '</div>' +
         '<div class="t">Cette mission avait déjà été faite : le propriétaire demande de la reprendre. ' +
@@ -1147,19 +1323,48 @@ function viewPrestaGains() {
 
 function viewPrestaProfil() {
   var me = agent(state.me);
+  var r = agentRating(state.me);
+  var autorises = (me.props || []).length;
+
   var rows = [
-    ['Biens autorisés', '4 sur 4'],
-    ['Note propriétaire', me.note + ' / 5'],
+    ['Biens autorisés', autorises + ' sur ' + state.props.length],
+    ['Note des voyageurs', r ? fmtNote(r.avg) + ' / 5' : 'Pas encore de note'],
     ['Coordonnées bancaires', me.iban],
     ['Notifications', 'Nouvelles missions']
   ];
 
+  /* Les notes de propreté laissées par les voyageurs sur les ménages qu'elle
+     a réellement faits. La moyenne de tout cela est sa note globale. */
+  var notes = '<article class="card" style="border-radius:22px">' +
+    '<div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">' +
+      '<div class="grow"><h2 style="font:700 16px Figtree,sans-serif;margin:0">Mes notes</h2>' +
+      '<div style="font:500 12.5px Figtree,sans-serif;color:var(--muted);margin-top:3px">' +
+        (r ? r.n + ' voyageur(s) ont noté ton ménage' : 'Les voyageurs noteront ton ménage depuis leur livret d\'accueil.') +
+      '</div></div>' +
+      (r ? '<div style="text-align:right;flex:none">' +
+        '<div class="serif num" style="font-size:34px;line-height:1;color:var(--amber-t)">' + fmtNote(r.avg) + '</div>' +
+        '<div>' + starsRead(Math.round(r.avg)) + '</div></div>' : '') +
+    '</div>' +
+    (r ? '<div class="stack" style="gap:10px;margin-top:16px">' + r.list.slice().reverse().map(function (v) {
+      return '<div class="avis">' +
+        '<div class="avis-top">' + starsRead(v.stars) +
+          '<span class="avis-meta num">' + esc(prop(v.pid).short + ' · ' + v.dateLabel) + '</span></div>' +
+        (v.texte ? '<p class="avis-txt">« ' + esc(v.texte) + ' »</p>' : '') +
+        '</div>';
+    }).join('') + '</div>' : '') +
+    '</article>';
+
   var body = '<div class="stack" style="gap:14px">' +
     '<article class="card" style="border-radius:22px;display:flex;align-items:center;gap:14px">' +
       '<div class="avatar" style="width:56px;height:56px;font-size:19px;background:' + me.avatarBg + ';color:' + me.avatarFg + '">' + me.init + '</div>' +
-      '<div><div style="font:700 20px Figtree,sans-serif">' + esc(me.name) + '</div>' +
+      '<div class="grow"><div style="font:700 20px Figtree,sans-serif">' + esc(me.name) + '</div>' +
       '<div style="font:500 13px Figtree,sans-serif;color:var(--muted)">' + esc(me.role) + ' · depuis ' + esc(me.since) + '</div></div>' +
+      (r ? '<div style="text-align:right;flex:none">' +
+        '<div class="serif num" style="font-size:22px;line-height:1">' + fmtNote(r.avg) + '</div>' +
+        '<div style="font:600 10.5px Figtree,sans-serif;color:var(--muted);letter-spacing:.05em;text-transform:uppercase">sur 5</div>' +
+        '</div>' : '') +
     '</article>' +
+    notes +
     '<article class="card card--flush" style="border-radius:22px"><div class="list">' +
       rows.map(function (r) {
         return '<div class="kv" style="padding:14px 0;font-size:15px;min-height:48px;align-items:center">' +
@@ -1241,6 +1446,28 @@ function viewOwnerDash() {
       title: state.problems.length ? state.problems.length + ' problème(s) signalé(s)' : 'Mitigeur qui fuit · Canal Saint-Martin',
       det: state.problems.length ? 'Envoyé pendant une mission, photo jointe.' : 'Mission de réparation créée pour le 1er août, 45 €.' }
   ];
+
+  /* Départs signalés par les voyageurs eux-mêmes, depuis leur livret d'accueil. */
+  var libres = state.props.map(function (p) {
+    var r = resasOf(p.id).find(function (x) { return x.end === TODAY && departAt(p.id, x); });
+    return r ? { p: p, at: departAt(p.id, r), guest: r.guest } : null;
+  }).filter(Boolean);
+
+  var prets = state.props.map(function (p) {
+    var rd = readyInfo(p.id);
+    return rd && rd.avance ? { p: p, rd: rd } : null;
+  }).filter(Boolean);
+
+  if (libres.length) {
+    alerts.push({ cls: 'alert--green', dot: C.vert, kind: 'Logement libre',
+      title: libres.length + ' voyageur(s) ont signalé leur départ',
+      det: libres.map(function (x) { return x.p.short + ' · ' + x.guest + ' à ' + x.at; }).join(' · ') });
+  }
+  if (prets.length) {
+    alerts.push({ cls: 'alert--green', dot: C.vert, kind: 'Prêt en avance',
+      title: prets.length + ' logement(s) prêts avant l\'heure',
+      det: prets.map(function (x) { return x.p.short + ' · arrivée possible dès ' + x.rd.at; }).join(' · ') });
+  }
 
   var upcoming = state.missions.filter(function (m) { return m.status !== 'termine'; }).map(decorate);
 
@@ -1525,6 +1752,8 @@ function viewOwnerAgents() {
     var rows = monthRows(a.id, state.ownerMonth);
     var open = state.openAgent === a.id;
     var paye = isPaid(a.id, state.ownerMonth);
+    var rt = agentRating(a.id);
+    var noteLabel = rt ? fmtNote(rt.avg) + '/5 (' + rt.n + ' avis)' : 'pas encore noté';
     return '<article class="card" style="padding:0;overflow:hidden">' +
       '<div style="display:flex;align-items:center;gap:16px;padding:20px 22px;flex-wrap:wrap">' +
         '<div class="avatar" style="width:52px;height:52px;font-size:17px;background:' + a.avatarBg + ';color:' + a.avatarFg + '">' + a.init + '</div>' +
@@ -1533,7 +1762,7 @@ function viewOwnerAgents() {
             '<span style="font:700 18px Figtree,sans-serif">' + esc(a.name) + '</span>' +
             '<span class="badge" style="background:' + a.roleBg + ';color:' + a.roleFg + ';font-weight:600">' + esc(a.role) + '</span>' +
           '</div>' +
-          '<div class="num" style="font:500 12.5px Figtree,sans-serif;color:var(--muted);margin-top:3px">Depuis ' + esc(a.since) + ' · note ' + a.note + '/5 · ' + rows.length + ' mission(s) ce mois</div>' +
+          '<div class="num" style="font:500 12.5px Figtree,sans-serif;color:var(--muted);margin-top:3px">Depuis ' + esc(a.since) + ' · ' + esc(noteLabel) + ' · ' + rows.length + ' mission(s) ce mois</div>' +
         '</div>' +
         '<div style="text-align:right;flex:none">' +
           '<div class="serif num" style="font-size:28px;line-height:1">' + rows.reduce(function (n, r) { return n + r.price; }, 0) + ' €</div>' +
@@ -1558,6 +1787,15 @@ function viewOwnerAgents() {
         '<button type="button" class="btn-danger-xs" style="margin-left:auto"' +
           act('remove-agent', { ag: a.id }) + '>Supprimer</button>' +
       '</div>' +
+      /* Ce que les voyageurs ont pensé de ses ménages. */
+      (rt ? '<div class="avis-row">' +
+        '<span class="perm-label">Avis des voyageurs :</span>' +
+        rt.list.slice().reverse().slice(0, 4).map(function (v) {
+          return '<span class="avis-chip" title="' + esc(v.texte || 'Sans commentaire') + '">' +
+            starsRead(v.stars) + '<span class="num">' + esc(prop(v.pid).short) + '</span></span>';
+        }).join('') +
+        (rt.n > 4 ? '<span class="sec-note">+ ' + (rt.n - 4) + ' autres</span>' : '') +
+        '</div>' : '') +
       (open ? '<div class="table-scroll" style="padding:0 22px 8px">' +
         '<div class="thead" style="background:transparent;padding:10px 0;border-top:1px solid rgba(36,30,26,.07);min-width:640px">' +
           '<span style="width:90px">Date</span><span style="flex:1.4">Bien</span><span style="flex:1">Type</span>' +
@@ -1574,7 +1812,16 @@ function viewOwnerAgents() {
             '<span class="num" style="width:70px;text-align:right;font-weight:600">' + r.price + ' €</span>' +
             '</div>';
         }).join('') : '<p class="empty" style="padding:20px 0">Aucune mission sur ce mois.</p>') +
-        '</div>' : '') +
+        '</div>' +
+        (rt ? '<div style="padding:6px 22px 20px">' +
+          '<h3 class="sec-title" style="margin:0 0 10px">Commentaires des voyageurs</h3>' +
+          '<div class="stack" style="gap:10px">' + rt.list.slice().reverse().map(function (v) {
+            return '<div class="avis">' +
+              '<div class="avis-top">' + starsRead(v.stars) +
+                '<span class="avis-meta num">' + esc(prop(v.pid).name + ' · ' + v.dateLabel) + '</span></div>' +
+              (v.texte ? '<p class="avis-txt">« ' + esc(v.texte) + ' »</p>' : '<p class="avis-txt avis-txt--none">Sans commentaire.</p>') +
+              '</div>';
+          }).join('') + '</div></div>' : '') : '') +
       '</article>';
   }).join('');
 
@@ -1608,11 +1855,13 @@ function viewOwnerAgents() {
     '<div class="page-head">' +
       '<div><h1 class="page-title">Prestataires</h1>' +
       '<p class="page-sub">Missions réalisées, biens autorisés et rémunération, mois par mois.</p></div>' +
-      '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">' +
-        '<div class="seg">' + MONTHS.map(function (m) {
-          return '<button type="button" aria-pressed="' + (state.ownerMonth === m.key) + '"' +
-            act('owner-month', { m: m.key }) + '>' + esc(m.label) + '</button>';
-        }).join('') + '</div>' +
+      '<div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap">' +
+        '<div style="min-width:190px">' +
+          '<label class="lab" for="om-month">Mois</label>' +
+          '<select class="inp" id="om-month" data-fid="om-month" data-ch="owner-month">' + MONTHS.map(function (m) {
+            return '<option value="' + esc(m.key) + '"' + (state.ownerMonth === m.key ? ' selected' : '') + '>' + esc(m.label) + '</option>';
+          }).join('') + '</select>' +
+        '</div>' +
         '<button type="button" class="btn btn--xs" style="' + (state.showNewAgent ? 'background:var(--cream);color:var(--ink-soft)' : 'background:var(--terra);color:#fff') +
           ';min-height:42px;font-size:13px"' + act('toggle-new-agent') + '>' +
           (state.showNewAgent ? 'Fermer' : '+ Ajouter un prestataire') + '</button>' +
@@ -1691,7 +1940,9 @@ function viewOwnerStocks() {
           '</div></div>';
       }).join('') + '</div>' + formNewArticle();
   } else {
-    var blocks = state.props.map(function (p) {
+    /* Biens retenus pour les courses. Tant que rien n'a été décoché, ils y sont tous. */
+    var choisis = coursesPropIds();
+    var blocks = state.props.filter(function (p) { return choisis.indexOf(p.id) >= 0; }).map(function (p) {
       var items = lowsFor(p.id).map(function (a) {
         return { key: a.key, label: a.label, group: a.group, unit: a.unit,
           need: Math.max(1, a.par - ((state.stock[p.id] || {})[a.key] || 0)) };
@@ -1720,7 +1971,26 @@ function viewOwnerStocks() {
           act('courses-scope', { s: t[0] }) + '>' + t[1] + '</button>';
       }).join('') + '</div>';
 
-    var listes = state.coursesScope === 'bien'
+    /* Choix des logements à mettre dans les courses : on ne rachète pas
+       forcément pour tous les biens le même jour. */
+    var tous = choisis.length === state.props.length;
+    var picker = '<div class="card" style="margin-top:16px;padding:16px 20px">' +
+      '<div class="perm-row" style="border:0;padding:0">' +
+        '<span class="perm-label">Logements dans la liste :</span>' +
+        (state.props.length ? state.props.map(function (p) {
+          var on = choisis.indexOf(p.id) >= 0;
+          return '<button type="button" class="perm-chip" aria-pressed="' + on + '" style="--accent:' + p.color + '"' +
+            act('courses-prop', { pid: p.id }) + '>' +
+            '<span class="checkbox-sq' + (on ? ' checkbox-sq--on' : '') + '" style="--accent:' + p.color + '"></span>' +
+            esc(p.short) + '</button>';
+        }).join('') : '<span class="sec-note">Aucun bien enregistré.</span>') +
+        '<button type="button" class="btn btn--xs" style="background:var(--cream);color:var(--ink-soft);margin-left:auto"' +
+          act('courses-all', { v: tous ? '0' : '1' }) + '>' + (tous ? 'Tout décocher' : 'Tout cocher') + '</button>' +
+      '</div></div>';
+
+    var listes = !blocks.length
+      ? '<p class="empty" style="margin-top:20px">Cochez au moins un logement pour obtenir une liste de courses.</p>'
+      : state.coursesScope === 'bien'
       ? '<div class="grid-cards" style="margin-top:20px">' + blocks.map(function (b) {
           return '<div class="card">' +
             '<div style="display:flex;align-items:center;gap:10px">' +
@@ -1756,9 +2026,10 @@ function viewOwnerStocks() {
         '<div class="kpi" style="min-width:190px"><div class="v num">' + Object.keys(fusion).length + '</div><div class="l">références différentes</div></div>' +
         '<div class="kpi" style="min-width:190px"><div class="v num">' + totalUnits + '</div><div class="l">unités au total</div></div>' +
         '<div class="kpi" style="min-width:190px"><div class="v num">' + totalItems + '</div><div class="l">lignes, biens confondus</div></div>' +
-        '<div class="kpi" style="flex:2;min-width:260px"><div style="font:700 14px Figtree,sans-serif">Calculée depuis les seuils</div>' +
+        '<div class="kpi" style="flex:2;min-width:260px"><div style="font:700 14px Figtree,sans-serif">' +
+        choisis.length + ' logement(s) sur ' + state.props.length + '</div>' +
         '<div class="l">Chaque article sous son seuil est complété jusqu\'à sa dotation d\'origine.</div></div>' +
-      '</div>' + bascule + listes;
+      '</div>' + picker + bascule + listes;
   }
 
   return ownerShell('stocks',
@@ -1915,25 +2186,35 @@ function bienInfos(pid, b) {
           ' data-fid="' + id + '" data-' + (heure ? 'ch' : 'in') + '="bien-field" data-pid="' + pid + '" data-k="' + f.k + '">' +
         '</div>';
     }).join('') + '</div>' +
+    /* Arrivée anticipée : si le ménage finit avant l'heure, le livret du
+       voyageur suivant lui annonce que le logement est déjà prêt. */
+    '<button type="button" class="switch-row" aria-pressed="' + (inf.early !== false) + '"' +
+      act('toggle-early', { pid: pid }) + '>' +
+      '<span class="switch"><span class="knob"></span></span>' +
+      '<span class="grow"><span class="switch-t">Autoriser l\'arrivée anticipée</span>' +
+      '<span class="switch-s">Quand le ménage est terminé avant ' + esc(inf.checkin || '16:00') + ', le voyageur suivant ' +
+        'voit « Le logement est prêt ! » dans son livret, avec l\'heure réelle.</span></span>' +
+      '</button>' +
     '<div style="margin-top:14px"><label class="lab" for="bn-' + pid + '">Consignes libres pour le prestataire</label>' +
       '<textarea class="inp" id="bn-' + pid + '" data-fid="bn-' + pid + '" data-in="bien-notes" data-pid="' + pid + '">' + esc(state.notes[pid] || '') + '</textarea></div>' +
   '</div>';
 
   var presta = '<div class="card" style="flex:1;min-width:min(100%,320px);padding:22px">' +
     '<h2 style="font:700 16px Figtree,sans-serif;margin:0">Prestations et tarifs</h2>' +
-    '<p class="sec-note" style="margin-top:4px">Le <strong>nom</strong> et la <strong>durée</strong> sont communs à tous les biens. ' +
-      'Le <strong>tarif</strong> est propre à ce logement.</p>' +
+    '<p class="sec-note" style="margin-top:4px">Le <strong>nom</strong> est commun à tous les biens. ' +
+      'La <strong>durée</strong> et le <strong>tarif</strong> sont propres à ce logement : ' +
+      'un studio et une villa ne demandent pas le même temps.</p>' +
     '<div style="margin-top:14px">' + (state.services.length ? state.services.map(function (s, si) {
-      var nid = 'sv-n-' + s.key, did = 'sv-d-' + s.key;
+      var nid = 'sv-n-' + s.key, did = 'sv-d-' + pid + '-' + s.key;
       return '<div class="svc-row">' +
         '<div class="svc-fields">' +
           '<div style="flex:2;min-width:150px">' +
-            '<label class="lab" for="' + nid + '">Nom</label>' +
+            '<label class="lab" for="' + nid + '">Nom (commun)</label>' +
             '<input class="inp" id="' + nid + '" type="text" value="' + esc(s.label) + '" data-fid="' + nid + '" data-in="svc-label" data-k="' + esc(s.key) + '">' +
           '</div>' +
-          '<div style="flex:1;min-width:100px">' +
-            '<label class="lab" for="' + did + '">Durée</label>' +
-            '<input class="inp num" id="' + did + '" type="text" placeholder="≈ 2 h" value="' + esc(s.duration) + '" data-fid="' + did + '" data-in="svc-duration" data-k="' + esc(s.key) + '">' +
+          '<div style="flex:1;min-width:110px">' +
+            '<label class="lab" for="' + did + '">Durée ici</label>' +
+            '<input class="inp num" id="' + did + '" type="text" placeholder="≈ 2 h" value="' + esc((state.durations[pid] || {})[s.key] || '') + '" data-fid="' + did + '" data-in="svc-duration" data-pid="' + pid + '" data-k="' + esc(s.key) + '">' +
           '</div>' +
         '</div>' +
         '<div class="svc-actions">' +
@@ -2061,10 +2342,36 @@ function bienCalendar(pid) {
             '<button type="button" aria-label="Supprimer la réservation de ' + esc(r.guest) + '" class="x-btn"' +
               act('remove-resa', { pid: pid, ri: ri }) + '>×</button></div>' +
           '<div class="num" style="font:500 12.5px Figtree,sans-serif;color:var(--muted);margin-top:3px">' +
-            fmtDate(r.start) + ' → ' + fmtDate(r.end) + ' · ' + nights(r.start, r.end) + ' nuits · ' + r.guests + ' voyageurs</div>' +
+            fmtDate(r.start) + ' → ' + fmtDate(r.end) + ' · ' + nights(r.start, r.end) + ' nuits · ' + r.guests + ' voyageurs' +
+            (departAt(pid, r) ? ' · départ signalé ' + departAt(pid, r) : '') + '</div>' +
+          (avisDone(pid, r, 'sejour') ? '<div style="margin-top:6px">' + starsRead(avisDone(pid, r, 'sejour').stars) + '</div>' : '') +
           '</div>';
       }).join('') : '<p class="empty">Aucune réservation sur ce bien.</p>') + '</div>' +
-    '</div></div>';
+    '</div></div>' + avisSejour(pid);
+}
+
+/* Ce que les voyageurs ont dit de leur séjour dans ce logement. */
+function avisSejour(pid) {
+  var list = avisOf('sejour', function (v) { return v.pid === pid; }).slice().reverse();
+  var moy = list.length
+    ? Math.round(list.reduce(function (n, v) { return n + v.stars; }, 0) / list.length * 10) / 10 : null;
+
+  return '<div class="card" style="margin-top:16px;padding:22px">' +
+    '<div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">' +
+      '<div class="grow"><h2 style="font:700 16px Figtree,sans-serif;margin:0">Avis sur le séjour</h2>' +
+      '<p class="sec-note" style="margin-top:4px">Laissés par les voyageurs à la fin de leur séjour, depuis le livret d\'accueil.</p></div>' +
+      (moy !== null ? '<div style="text-align:right;flex:none">' +
+        '<div class="serif num" style="font-size:30px;line-height:1;color:var(--amber-t)">' + fmtNote(moy) + '</div>' +
+        '<div>' + starsRead(Math.round(moy)) + '</div></div>' : '') +
+    '</div>' +
+    (list.length ? '<div class="stack" style="gap:10px;margin-top:16px">' + list.map(function (v) {
+      return '<div class="avis">' +
+        '<div class="avis-top">' + starsRead(v.stars) +
+          '<span class="avis-meta num">' + esc((v.guest || 'Voyageur') + ' · ' + v.dateLabel) + '</span></div>' +
+        (v.texte ? '<p class="avis-txt">« ' + esc(v.texte) + ' »</p>' : '<p class="avis-txt avis-txt--none">Sans commentaire.</p>') +
+        '</div>';
+    }).join('') + '</div>' : '<p class="empty" style="padding:20px 0">Aucun avis pour le moment.</p>') +
+    '</div>';
 }
 
 /* Formulaire de réservation manuelle. À l'enregistrement, une mission de ménage
@@ -2097,7 +2404,7 @@ function formNewResa(pid) {
 /* --- Livret d'accueil : édition ------------------------------------------ */
 
 function bienLivret(pid, b) {
-  var lv = state.livret[pid] || (state.livret[pid] = { mot: '', arrivee: [], questions: [], activites: [], restos: [] });
+  var lv = state.livret[pid] || (state.livret[pid] = lvVide());
   var inf = state.info[pid] || {};
   var sec = LIVRET_SECTIONS.find(function (s) { return s.k === state.livretSection; }) || LIVRET_SECTIONS[0];
   var blocs = lv[sec.k] || [];
@@ -2162,38 +2469,44 @@ function bienLivret(pid, b) {
 
 /* --- Livret d'accueil : page du voyageur --------------------------------- */
 
+/** Bandeau de retour, visible seulement quand le propriétaire regarde l'aperçu. */
+function lvBack(path, label) {
+  if (state.auth !== 'owner') return '';
+  return '<div class="lv-back"><button type="button"' + act('nav', { path: path }) + '>← ' + label + '</button>' +
+    '<span>Aperçu — c\'est ce que verra le voyageur.</span></div>';
+}
+
+function lvVide() {
+  return { mot: '', arrivee: [], questions: [], activites: [], restos: [], depart: [] };
+}
+
+/* Accueil du livret : les grandes rubriques, à toucher pour ouvrir le détail. */
 function viewLivret() {
   var b = prop(route.id);
   if (b.gone) { location.replace(state.auth === 'owner' ? '#/admin/biens' : '#/login'); return ''; }
   var pid = b.id;
-  var lv = state.livret[pid] || { mot: '', arrivee: [], questions: [], activites: [], restos: [] };
+  var lv = state.livret[pid] || lvVide();
   var inf = state.info[pid] || {};
 
-  var cles = [['Arrivée à partir de', inf.checkin], ['Départ avant', inf.checkout],
+  // L'heure d'arrivée affichée est la vraie : elle avance si le ménage est déjà fait.
+  var rd = readyInfo(pid);
+  var heureArrivee = rd ? rd.at : (inf.checkin || '');
+
+  var cles = [['Arrivée à partir de', heureArrivee], ['Départ avant', inf.checkout],
     ['Code d\'accès', inf.code], ['Wi-Fi', inf.wifi]].filter(function (r) { return r[1]; });
 
-  var sections = LIVRET_SECTIONS.map(function (s) {
-    var blocs = lv[s.k] || [];
-    if (!blocs.length) return '';
-    return '<section class="lv-section">' +
-      '<h2 class="lv-h2">' + s.label + '</h2>' +
-      blocs.map(function (x) {
-        return '<article class="lv-bloc">' +
-          '<h3 class="lv-h3">' + esc(x.titre) + '</h3>' +
-          (x.texte ? '<p class="lv-p">' + esc(x.texte) + '</p>' : '') +
-          (x.media ? '<a class="lv-media" href="' + esc(x.media) + '" target="_blank" rel="noopener noreferrer">' +
-            'Voir la photo ou la vidéo →</a>' : '') +
-          '</article>';
-      }).join('') +
-      '</section>';
+  var tuiles = LIVRET_SECTIONS.filter(function (s) { return (lv[s.k] || []).length; }).map(function (s) {
+    var n = lv[s.k].length;
+    return '<button type="button" class="lv-tile"' + act('nav', { path: '#/livret/' + pid + '/' + s.k }) + '>' +
+      '<span class="lv-tile-ico" aria-hidden="true">' + s.icon + '</span>' +
+      '<span class="lv-tile-txt"><span class="lv-tile-h">' + esc(s.label) + '</span>' +
+        '<span class="lv-tile-s">' + esc(s.hint) + '</span></span>' +
+      '<span class="lv-tile-n num">' + n + '</span>' +
+      '<span class="lv-tile-go" aria-hidden="true">→</span>' +
+      '</button>';
   }).join('');
 
-  var retour = state.auth === 'owner'
-    ? '<div class="lv-back"><button type="button"' + act('nav', { path: '#/admin/biens/' + pid }) + '>← Revenir à la fiche du bien</button>' +
-      '<span>Aperçu — c\'est ce que verra le voyageur.</span></div>'
-    : '';
-
-  return '<div class="livret">' + retour +
+  return '<div class="livret">' + lvBack('#/admin/biens/' + pid, 'Revenir à la fiche du bien') +
     '<header class="lv-head" style="background:' + b.tint + '">' +
       '<div class="lv-logo">WARME House</div>' +
       '<h1 class="lv-title">' + esc(b.name) + '</h1>' +
@@ -2203,9 +2516,148 @@ function viewLivret() {
     (cles.length ? '<div class="lv-keys">' + cles.map(function (r) {
       return '<div class="lv-key"><div class="k">' + r[0] + '</div><div class="v num">' + esc(r[1]) + '</div></div>';
     }).join('') + '</div>' : '') +
-    (sections || '<p class="empty">Le livret de ce logement n\'est pas encore rempli.</p>') +
+    livretVoyageur(pid, inf) +
+    (tuiles
+      ? '<div class="lv-tiles">' + tuiles + '</div>'
+      : '<p class="empty" style="padding:30px 24px">Le livret de ce logement n\'est pas encore rempli.</p>') +
     '<footer class="lv-foot">Bon séjour ! — WARME House</footer>' +
     '</div>';
+}
+
+/* Détail d'une rubrique du livret. */
+function viewLivretSection() {
+  var b = prop(route.id);
+  if (b.gone) { location.replace(state.auth === 'owner' ? '#/admin/biens' : '#/login'); return ''; }
+  var pid = b.id;
+  var lv = state.livret[pid] || lvVide();
+  var s = LIVRET_SECTIONS.find(function (x) { return x.k === route.sec; });
+  var blocs = lv[s.k] || [];
+
+  return '<div class="livret">' + lvBack('#/admin/biens/' + pid, 'Revenir à la fiche du bien') +
+    '<header class="lv-head lv-head--sec" style="background:' + b.tint + '">' +
+      '<button type="button" class="lv-return"' + act('nav', { path: '#/livret/' + pid }) + '>← Le livret</button>' +
+      '<div class="lv-sec-ico" aria-hidden="true">' + s.icon + '</div>' +
+      '<h1 class="lv-title">' + esc(s.label) + '</h1>' +
+      '<p class="lv-city">' + esc(b.name) + '</p>' +
+    '</header>' +
+    '<section class="lv-section">' + (blocs.length ? blocs.map(function (x) {
+      return '<article class="lv-bloc">' +
+        '<h3 class="lv-h3">' + esc(x.titre) + '</h3>' +
+        (x.texte ? '<p class="lv-p">' + esc(x.texte) + '</p>' : '') +
+        (x.media ? '<a class="lv-media" href="' + esc(x.media) + '" target="_blank" rel="noopener noreferrer">' +
+          'Voir la photo ou la vidéo →</a>' : '') +
+        '</article>';
+    }).join('') : '<p class="empty">Cette rubrique est vide.</p>') + '</section>' +
+    (s.k === 'depart' ? livretDepart(pid) : '') +
+    '<div class="lv-section"><button type="button" class="btn btn--quiet"' +
+      act('nav', { path: '#/livret/' + pid }) + '>← Revenir au livret</button></div>' +
+    '<footer class="lv-foot">Bon séjour ! — WARME House</footer>' +
+    '</div>';
+}
+
+/* --------------------------------------------------------------------------
+   Ce que le voyageur peut faire depuis son livret : signaler son départ,
+   noter le ménage à son arrivée, noter son séjour à la fin.
+   -------------------------------------------------------------------------- */
+
+/** Cinq étoiles à toucher. `key` = 'pid:kind', identifiant du brouillon. */
+function starsPick(key, n) {
+  var out = '';
+  for (var i = 1; i <= 5; i++) {
+    out += '<button type="button" class="star-btn' + (i <= n ? ' star-btn--on' : '') + '"' +
+      ' aria-label="' + i + ' étoile' + (i > 1 ? 's' : '') + '" aria-pressed="' + (i <= n) + '"' +
+      act('avis-star', { key: key, n: String(i) }) + '>★</button>';
+  }
+  return '<div class="star-pick">' + out + '</div>';
+}
+
+/** Formulaire de notation : étoiles + commentaire libre. */
+function avisForm(pid, kind, titre, sous, placeholder) {
+  var key = pid + ':' + kind;
+  var dr = state.avisDrafts[key] || { stars: 0, texte: '' };
+  return '<div class="lv-card lv-card--rate">' +
+    '<h2 class="lv-card-h">' + esc(titre) + '</h2>' +
+    '<p class="lv-card-p">' + esc(sous) + '</p>' +
+    starsPick(key, dr.stars) +
+    '<textarea class="inp" id="av-' + esc(key) + '" placeholder="' + esc(placeholder) + '"' +
+      ' data-fid="av-' + esc(key) + '" data-in="avis-texte" data-key="' + esc(key) + '">' + esc(dr.texte) + '</textarea>' +
+    '<button type="button" class="btn btn--primary" style="margin-top:12px"' +
+      act('avis-send', { pid: pid, kind: kind }) + '>Envoyer ma note</button>' +
+    '</div>';
+}
+
+/** Merci affiché une fois la note envoyée. */
+function avisMerci(v, titre) {
+  return '<div class="lv-card lv-card--done">' +
+    '<h2 class="lv-card-h">' + esc(titre) + '</h2>' +
+    starsRead(v.stars) +
+    (v.texte ? '<p class="lv-card-p">« ' + esc(v.texte) + ' »</p>' : '') +
+    '<p class="lv-card-p" style="margin-top:8px">Merci, c\'est bien enregistré.</p>' +
+    '</div>';
+}
+
+/** Le bloc « départ » : rappel et bouton, réutilisé sur la rubrique du même nom. */
+function livretDepart(pid) {
+  var cur = stayLeaving(pid);
+  if (!cur) return '';
+  var parti = departAt(pid, cur);
+  var inf = state.info[pid] || {};
+
+  if (parti) {
+    return '<div class="lv-section"><div class="lv-card lv-card--done">' +
+      '<h2 class="lv-card-h">✓ Votre départ est signalé</h2>' +
+      '<p class="lv-card-p">Enregistré à ' + esc(parti) + '. Le ménage a été prévenu que le logement est libre. ' +
+      'Merci et à bientôt !</p></div></div>';
+  }
+  return '<div class="lv-section"><div class="lv-card lv-card--go">' +
+    '<h2 class="lv-card-h">Vous quittez le logement ?</h2>' +
+    '<p class="lv-card-p">Prévenez-nous en un geste : la personne qui fait le ménage saura que le logement ' +
+      'est libre et pourra commencer plus tôt. Départ prévu avant ' + esc(inf.checkout || '11:00') + '.</p>' +
+    '<button type="button" class="btn btn--primary" style="margin-top:14px"' +
+      act('livret-depart', { pid: pid }) + '>J\'ai quitté le logement</button>' +
+    '</div></div>';
+}
+
+/** Tout ce qui s'adresse personnellement au voyageur, sur l'accueil du livret. */
+function livretVoyageur(pid, inf) {
+  var out = '';
+
+  // 1. Le ménage est fini avant l'heure : le logement est prêt en avance.
+  var rd = readyInfo(pid);
+  if (rd && rd.avance && stayArriving(pid)) {
+    out += '<div class="lv-section"><div class="lv-card lv-card--ready">' +
+      '<div class="lv-ready-badge">✨ Le logement est prêt !</div>' +
+      '<p class="lv-card-p">Le ménage s\'est terminé à ' + esc(rd.fin) + '. Vous n\'avez pas besoin d\'attendre ' +
+      esc(inf.checkin || '16:00') + ' : vous pouvez arriver dès <strong>' + esc(rd.at) + '</strong>.</p>' +
+      '</div></div>';
+  }
+
+  // 2. Départ du jour : bouton avant, accusé de réception après.
+  out += livretDepart(pid);
+
+  // 3. Note de la propreté, par celui qui occupe le logement.
+  var cur = stayCurrent(pid);
+  if (cur) {
+    var aMenage = avisDone(pid, cur, 'menage');
+    out += '<div class="lv-section">' + (aMenage
+      ? avisMerci(aMenage, 'Votre note sur la propreté')
+      : avisForm(pid, 'menage', 'Le logement était-il bien propre ?',
+          'Notez la propreté que vous avez trouvée en arrivant. Votre note va directement à la personne qui a fait le ménage.',
+          'Un mot sur la propreté (facultatif)')) + '</div>';
+  }
+
+  // 4. Note du séjour, par celui qui s'en va.
+  var part = stayLeaving(pid);
+  if (part) {
+    var aSejour = avisDone(pid, part, 'sejour');
+    out += '<div class="lv-section">' + (aSejour
+      ? avisMerci(aSejour, 'Votre avis sur le séjour')
+      : avisForm(pid, 'sejour', 'Comment s\'est passé votre séjour ?',
+          'Votre avis nous aide à améliorer le logement pour les prochains voyageurs.',
+          'Ce que vous avez aimé, ce qui pourrait être mieux (facultatif)')) + '</div>';
+  }
+
+  return out;
 }
 
 function bienIcal(pid) {
@@ -2335,6 +2787,10 @@ function finish(id) {
   m.status = 'termine';
   m.review = null;
   m.redo = '';
+
+  // Logement prêt : si c'est avant l'heure d'arrivée prévue et que le bien
+  // l'autorise, le voyageur suivant le verra dans son livret d'accueil.
+  state.ready[m.prop] = { date: m.date, at: nowHM(), mid: id, agent: state.me };
   if (!m.taker) m.taker = state.me;
   state.done.push({ mid: id, agent: state.me, month: CURRENT_MONTH, prop: m.prop, type: m.type, dateLabel: '30 juil.', price: m.price });
   state.lastDone = { price: m.price, photos: photos, low: lowKeys.length };
@@ -2538,12 +2994,16 @@ var actions = {
     state.stock[pid] = {};
     state.articles.forEach(function (a) { state.stock[pid][a.key] = 0; });
     state.tariffs[pid] = {};
-    state.services.forEach(function (s) { state.tariffs[pid][s.key] = 0; });
+    state.durations[pid] = {};
+    state.services.forEach(function (s) {
+      state.tariffs[pid][s.key] = 0;
+      state.durations[pid][s.key] = s.duration || '';
+    });
     state.checklists[pid] = [];
-    state.info[pid] = { capacity: '', surface: '', code: '', wifi: '', parking: '', linge: '', checkin: '16:00', checkout: '11:00' };
+    state.info[pid] = { capacity: '', surface: '', code: '', wifi: '', parking: '', linge: '', checkin: '16:00', checkout: '11:00', early: true };
     state.notes[pid] = '';
     state.resas[pid] = [];
-    state.livret[pid] = { mot: '', arrivee: [], questions: [], activites: [], restos: [] };
+    state.livret[pid] = lvVide();
 
     state.nb = { name: '', city: '', address: '', color: C.terracotta };
     state.showNewBien = false;
@@ -2561,8 +3021,16 @@ var actions = {
     state.agents.forEach(function (a) {
       a.props = (a.props || []).filter(function (x) { return x !== pid; });
     });
-    [state.stock, state.tariffs, state.checklists, state.info, state.notes,
-     state.resas, state.livret, state.extraFeeds].forEach(function (o) { delete o[pid]; });
+    [state.stock, state.tariffs, state.durations, state.checklists, state.info, state.notes,
+     state.resas, state.livret, state.extraFeeds, state.ready].forEach(function (o) { delete o[pid]; });
+    // Départs signalés et avis de ce logement : ils n'ont plus d'objet.
+    Object.keys(state.departs).forEach(function (k) {
+      if (k.indexOf(pid + ':') === 0) delete state.departs[k];
+    });
+    state.avis = state.avis.filter(function (v) { return v.pid !== pid; });
+    if (Array.isArray(state.coursesProps)) {
+      state.coursesProps = state.coursesProps.filter(function (x) { return x !== pid; });
+    }
     if (state.nm.prop === pid) state.nm.prop = state.props.length ? state.props[0].id : '';
     save();
     go('#/admin/biens');
@@ -2577,6 +3045,8 @@ var actions = {
     state.props.forEach(function (p) {
       state.tariffs[p.id] = state.tariffs[p.id] || {};
       state.tariffs[p.id][key] = 0;
+      state.durations[p.id] = state.durations[p.id] || {};
+      state.durations[p.id][key] = '';
     });
     state.newService = '';
     save(); render();
@@ -2615,7 +3085,7 @@ var actions = {
     var d = state.livretDrafts[key] || {};
     var titre = (d.titre || '').trim();
     if (!titre) { alert('Donnez un titre à ce bloc.'); return; }
-    var lv = state.livret[pid] || (state.livret[pid] = { mot: '', arrivee: [], questions: [], activites: [], restos: [] });
+    var lv = state.livret[pid] || (state.livret[pid] = lvVide());
     lv[s] = (lv[s] || []).concat([{ titre: titre, texte: (d.texte || '').trim(), media: (d.media || '').trim() }]);
     state.livretDrafts[key] = { titre: '', texte: '', media: '' };
     save(); render();
@@ -2636,6 +3106,49 @@ var actions = {
     if (j < 0 || j >= list.length) return;
     var tmp = list[i]; list[i] = list[j]; list[j] = tmp;
     lv[s] = list;
+    save(); render();
+  },
+
+  /* Ce que le voyageur fait depuis son livret ------------------------------ */
+
+  /* « J'ai quitté le logement » : la mission du jour passe en logement libre. */
+  'livret-depart': function (el) {
+    var pid = el.dataset.pid;
+    var r = stayLeaving(pid);
+    if (!r) return;
+    state.departs[resaKey(pid, r)] = nowHM();
+    save(); render();
+  },
+
+  /* Choix du nombre d'étoiles, avant l'envoi. */
+  'avis-star': function (el) {
+    var key = el.dataset.key;
+    var d = state.avisDrafts[key] || (state.avisDrafts[key] = { stars: 0, texte: '' });
+    d.stars = parseInt(el.dataset.n, 10) || 0;
+    save(); render();
+  },
+
+  /* Envoi de la note. Une note de ménage est rattachée à la mission qui a
+     préparé le logement, donc au prestataire qui l'a faite. */
+  'avis-send': function (el) {
+    var pid = el.dataset.pid, kind = el.dataset.kind, key = pid + ':' + kind;
+    var d = state.avisDrafts[key] || { stars: 0, texte: '' };
+    if (!d.stars) { alert('Choisissez d\'abord un nombre d\'étoiles.'); return; }
+    var r = stayForAvis(pid, kind);
+    if (!r) return;
+    if (avisDone(pid, r, kind)) return;
+
+    var m = kind === 'menage' ? cleanerFor(pid, r) : null;
+    state.avis.push({
+      id: 'av' + Date.now(),
+      pid: pid, resa: resaKey(pid, r), kind: kind,
+      stars: d.stars, texte: (d.texte || '').trim(),
+      guest: r.guest,
+      agent: m ? (m.taker || null) : null,
+      mid: m ? m.id : null,
+      dateLabel: fmtDate(TODAY)
+    });
+    delete state.avisDrafts[key];
     save(); render();
   },
 
@@ -2729,7 +3242,29 @@ var actions = {
     save(); render();
   },
 
-  'courses-scope': function (el) { state.coursesScope = el.dataset.s; save(); render(); }
+  'courses-scope': function (el) { state.coursesScope = el.dataset.s; save(); render(); },
+
+  /* Choix des logements retenus dans la liste de courses. */
+  'courses-prop': function (el) {
+    var pid = el.dataset.pid;
+    var list = coursesPropIds();
+    var i = list.indexOf(pid);
+    if (i >= 0) list.splice(i, 1); else list.push(pid);
+    state.coursesProps = list;
+    save(); render();
+  },
+  'courses-all': function (el) {
+    state.coursesProps = el.dataset.v === '1' ? state.props.map(function (p) { return p.id; }) : [];
+    save(); render();
+  },
+
+  /* Arrivée anticipée autorisée, logement par logement. */
+  'toggle-early': function (el) {
+    var inf = state.info[el.dataset.pid];
+    if (!inf) return;
+    inf.early = inf.early === false;
+    save(); render();
+  }
 };
 
 /* Enregistre une réservation saisie à la main et crée, comme le ferait l'iCal,
@@ -2794,14 +3329,16 @@ var inputs = {
     if (m) { m.note = el.value; save(); }
   },
 
-  /* Prestations : nom et durée, communs à tous les biens. */
+  /* Prestations : le nom est commun à tous les biens, la durée non. */
   'svc-label': function (el) {
     var s = state.services.find(function (x) { return x.key === el.dataset.k; });
     if (s) { s.label = el.value; save(); }
   },
   'svc-duration': function (el) {
-    var s = state.services.find(function (x) { return x.key === el.dataset.k; });
-    if (s) { s.duration = el.value; save(); }
+    var pid = el.dataset.pid;
+    var du = state.durations[pid] || (state.durations[pid] = {});
+    du[el.dataset.k] = el.value;
+    save();
   },
   'new-service': function (el) { state.newService = el.value; },
 
@@ -2829,6 +3366,13 @@ var inputs = {
     var k = el.dataset.key;
     var d = state.livretDrafts[k] || (state.livretDrafts[k] = { titre: '', texte: '', media: '' });
     d[el.dataset.f] = el.value;
+  },
+
+  /* Commentaire que le voyageur écrit avec sa note. */
+  'avis-texte': function (el) {
+    var k = el.dataset.key;
+    var d = state.avisDrafts[k] || (state.avisDrafts[k] = { stars: 0, texte: '' });
+    d.texte = el.value;
   }
 };
 
@@ -2861,7 +3405,8 @@ var changes = {
   'bien-field': function (el) { setBienField(el); render(); },
   'nr-plat': function (el) { state.nr.plat = el.value; save(); },
   'nr-start': function (el) { state.nr.start = el.value; save(); },
-  'nr-end': function (el) { state.nr.end = el.value; save(); }
+  'nr-end': function (el) { state.nr.end = el.value; save(); },
+  'owner-month': function (el) { state.ownerMonth = el.value; save(); render(); }
 };
 
 /* ==========================================================================
@@ -2871,6 +3416,7 @@ var changes = {
 var VIEWS = {
   'login': viewLogin,
   'livret': viewLivret,
+  'livret-sec': viewLivretSection,
   'p-missions': viewPrestaMissions,
   'p-mes': viewPrestaMes,
   'p-gains': viewPrestaGains,
@@ -2904,7 +3450,7 @@ function render() {
 
   // Mémorise la position de lecture, pour ne pas renvoyer en haut de liste
   // à chaque photo validée ou chaque quantité modifiée.
-  var key = route.name + ':' + (route.id || '');
+  var key = route.name + ':' + (route.id || '') + ':' + (route.sec || '');
   var same = key === lastKey;
   var pane = document.querySelector('.presta-body');
   var paneTop = pane ? pane.scrollTop : 0;
