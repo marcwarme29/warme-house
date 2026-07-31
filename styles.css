@@ -413,6 +413,13 @@ textarea.inp { min-height: 90px; resize: vertical; line-height: 1.5; }
 .tabbar .tab-dot { height: 4px; width: 20px; border-radius: 9px; margin: 0 auto 7px; background: transparent; }
 .tabbar button[aria-current="page"] .tab-dot { background: var(--terra); }
 .tabbar .tab-label { font: 600 11px Figtree, sans-serif; color: var(--muted2); }
+/* Cinq onglets depuis « Mes notes » : on resserre sur les écrans étroits
+   plutôt que de couper les libellés. */
+@media (max-width: 389px) {
+  .tabbar { padding-left: 2px; padding-right: 2px; }
+  .tabbar .tab-label { font-size: 10px; letter-spacing: -.01em; }
+  .tabbar .tab-dot { width: 16px; margin-bottom: 6px; }
+}
 .tabbar button[aria-current="page"] .tab-label { color: var(--ink); }
 .tabbar .tab-badge { font: 700 10px Figtree, sans-serif; color: var(--terra-d); margin-top: 2px; }
 
@@ -1141,6 +1148,64 @@ textarea.inp { min-height: 90px; resize: vertical; line-height: 1.5; }
   font: 600 11.5px Figtree, sans-serif;
   color: var(--amber-t);
 }
+
+/* Carte de commentaire, rubrique Commentaires du propriétaire. */
+.avis-card { display: flex; flex-direction: column; }
+.avis-card--low { border-left: 3px solid var(--terra); }
+.avis-card .avis-txt { flex: 1; }
+.avis-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(36,30,26,.07);
+  font: 600 12.5px Figtree, sans-serif;
+  color: var(--ink-soft);
+}
+.avis-foot .num { color: var(--muted); font-weight: 500; }
+.avis-foot--who {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 0;
+  font-weight: 500;
+  color: var(--muted);
+}
+.avis-link { font: 700 12.5px Figtree, sans-serif; color: var(--terra-d); min-height: 32px; }
+
+/* Répartition des notes, écran « Mes notes » du prestataire. */
+.note-bar { display: flex; align-items: center; gap: 10px; padding: 5px 0; }
+.note-bar-n { font: 600 12px Figtree, sans-serif; color: var(--muted); width: 34px; flex: none; }
+.note-bar-c { font: 700 12px Figtree, sans-serif; color: var(--ink-soft); width: 22px; text-align: right; flex: none; }
+.note-bar-track {
+  flex: 1;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--fill);
+  overflow: hidden;
+}
+.note-bar-track span {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--amber);
+  transition: width .35s cubic-bezier(.4,0,.2,1);
+}
+
+/* Invitation d'un prestataire. */
+.invite-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 12px 22px 16px;
+  border-top: 1px solid rgba(36,30,26,.07);
+}
+.invite-state { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; flex: 1; min-width: 200px; }
+.invite-ok   { font: 600 12.5px Figtree, sans-serif; color: var(--green-t); }
+.invite-todo { font: 600 12.5px Figtree, sans-serif; color: var(--muted); }
+.invite-mail { font: 500 12px Figtree, sans-serif; color: var(--muted2); overflow-wrap: anywhere; }
+.invite-mail--none { font-style: italic; color: var(--terra-d); }
 
 /* Interrupteur simple : arrivée anticipée autorisée ou non. */
 .switch-row {

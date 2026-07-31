@@ -375,7 +375,9 @@ function initialState() {
     newService: '',
     coursesScope: 'bien',             // 'bien' | 'global'
     coursesProps: null,               // biens cochés dans la liste de courses (null = tous)
+    avisFilter: { kind: 'tous', prop: 'tous', stars: 'toutes' },
     livretSection: 'arrivee',
+    livretCopie: [],                  // logements cochés pour recopier une rubrique
     livretDrafts: {},                 // { 'pid:section': { titre, texte, media } }
     avisDrafts: {}                    // { 'pid:kind': { stars, texte } } — la note en cours de saisie
   };
@@ -430,6 +432,8 @@ function upgrade() {
   if (!state.ready) state.ready = {};
   if (!Array.isArray(state.avis)) state.avis = [];
   if (!state.avisDrafts) state.avisDrafts = {};
+  if (!state.avisFilter) state.avisFilter = { kind: 'tous', prop: 'tous', stars: 'toutes' };
+  if (!Array.isArray(state.livretCopie)) state.livretCopie = [];
   if (state.coursesProps === undefined) state.coursesProps = null;
 
   state.props.forEach(function (p) {
@@ -638,15 +642,33 @@ function duration(pid, key) {
   return d !== undefined && d !== '' ? d : (service(key).duration || '');
 }
 
+/* Une arrivée anticipée ne descend jamais sous cette heure : un ménage bouclé
+   à 8 h du matin ne doit pas faire venir le voyageur à 8 h. */
+var EARLY_FLOOR = '12:00';
+
 /** Heure à laquelle le prochain voyageur peut réellement entrer.
-    Rend null si rien n'est avancé par rapport à l'heure officielle. */
+    Rend null si rien n'est avancé par rapport à l'heure officielle.
+
+    Trois conditions, toutes nécessaires :
+      1. quelqu'un arrive aujourd'hui dans ce logement ;
+      2. le ménage a été fait **le jour même de cette arrivée** — un ménage
+         terminé trois jours plus tôt n'avance rien du tout ;
+      3. le bien autorise l'arrivée anticipée. */
 function readyInfo(pid) {
+  var arr = stayArriving(pid);
+  if (!arr) return null;
+
   var rd = state.ready[pid];
-  if (!rd || rd.date !== TODAY) return null;
+  if (!rd || rd.date !== arr.start) return null;
+
   var inf = state.info[pid] || {};
   if (inf.early === false) return null;
+
   var officielle = inf.checkin || '16:00';
-  return { at: rd.at < officielle ? rd.at : officielle, fin: rd.at, avance: rd.at < officielle, agent: rd.agent };
+  var at = rd.at < EARLY_FLOOR ? EARLY_FLOOR : rd.at;   // jamais avant midi
+  if (at >= officielle) return null;                    // rien à gagner
+
+  return { at: at, fin: rd.at, avance: true, plancher: rd.at < EARLY_FLOOR, agent: rd.agent };
 }
 
 /* --------------------------------------------------------------------------
@@ -683,6 +705,46 @@ function agentRating(agentId) {
 
 /** « 4,7 » plutôt que « 4.7 » : virgule décimale française. */
 function fmtNote(n) { return String(n).replace('.', ','); }
+
+/* --------------------------------------------------------------------------
+   Invitation d'un prestataire
+
+   Un site statique ne peut envoyer aucun message par lui-même : il faudrait un
+   serveur. On prépare donc le message et on l'ouvre dans le logiciel de
+   messagerie du propriétaire, qui n'a plus qu'à appuyer sur « Envoyer ».
+   Le vrai envoi automatique arrivera avec la phase 3.
+   -------------------------------------------------------------------------- */
+
+/** Adresse publique de l'application, sans la partie après le # . */
+function appUrl() {
+  return location.origin + location.pathname;
+}
+
+/** Texte de l'invitation. Il dit la vérité : aujourd'hui il n'y a pas de mot
+    de passe à créer, le prestataire choisit son nom dans une liste. */
+function inviteTexte(a) {
+  var prenom = String(a.name || '').split(/\s+/)[0] || '';
+  return 'Bonjour ' + prenom + ',\n\n' +
+    'Tu peux désormais suivre tes missions depuis ton téléphone avec WARME House : ' +
+    'les ménages à prendre, la checklist de chaque logement, le relevé des stocks et tes gains du mois.\n\n' +
+    'Voici ton lien :\n' + appUrl() + '\n\n' +
+    'Pour te connecter :\n' +
+    '1. Ouvre le lien sur ton téléphone\n' +
+    '2. Choisis « Prestataire »\n' +
+    '3. Sélectionne ton nom dans la liste : ' + a.name + '\n' +
+    '4. Appuie sur « Se connecter »\n\n' +
+    'Aucun mot de passe ne t\'est demandé pour le moment.\n\n' +
+    'Astuce : depuis ton navigateur, choisis « Ajouter à l\'écran d\'accueil ». ' +
+    'L\'application s\'ouvrira ensuite comme une vraie application.\n\n' +
+    'À bientôt,\nWARME House';
+}
+
+/** Le lien mailto complet, prêt à ouvrir. */
+function inviteMailto(a) {
+  return 'mailto:' + encodeURIComponent(a.email || '') +
+    '?subject=' + encodeURIComponent('Ton accès à WARME House') +
+    '&body=' + encodeURIComponent(inviteTexte(a));
+}
 
 /** Cinq étoiles pleines ou vides, en lecture seule. */
 function starsRead(n) {
@@ -738,6 +800,7 @@ var route = { name: 'login', id: null, sec: null };
 var PRESTA_TABS = [
   { key: 'missions', path: '#/app/missions', label: 'Disponibles' },
   { key: 'mes-missions', path: '#/app/mes-missions', label: 'Mes missions' },
+  { key: 'notes', path: '#/app/notes', label: 'Mes notes' },
   { key: 'gains', path: '#/app/gains', label: 'Gains' },
   { key: 'profil', path: '#/app/profil', label: 'Profil' }
 ];
@@ -746,6 +809,7 @@ var OWNER_NAV = [
   { key: 'dash', path: '#/admin', label: 'Tableau de bord', color: C.terracotta },
   { key: 'missions', path: '#/admin/missions', label: 'Missions', color: C.bleu },
   { key: 'agents', path: '#/admin/prestataires', label: 'Prestataires', color: '#8A6A4F' },
+  { key: 'avis', path: '#/admin/commentaires', label: 'Commentaires', color: '#7A6BA8' },
   { key: 'stocks', path: '#/admin/stocks', label: 'Stocks', color: C.ambre },
   { key: 'biens', path: '#/admin/biens', label: 'Biens & iCal', color: C.vert }
 ];
@@ -770,6 +834,7 @@ function parseRoute() {
       return { name: 'p-detail', id: seg[2] };
     }
     if (seg[1] === 'mes-missions') return { name: 'p-mes', id: null };
+    if (seg[1] === 'notes') return { name: 'p-notes', id: null };
     if (seg[1] === 'gains') return { name: 'p-gains', id: null };
     if (seg[1] === 'profil') return { name: 'p-profil', id: null };
     return { name: 'p-missions', id: null };
@@ -778,6 +843,7 @@ function parseRoute() {
   if (seg[0] === 'admin') {
     if (seg[1] === 'missions') return { name: seg[2] ? 'o-mission' : 'o-missions', id: seg[2] || null };
     if (seg[1] === 'prestataires') return { name: 'o-agents', id: null };
+    if (seg[1] === 'commentaires') return { name: 'o-avis', id: null };
     if (seg[1] === 'stocks') return { name: 'o-stocks', id: null };
     if (seg[1] === 'biens') return { name: seg[2] ? 'o-bien' : 'o-biens', id: seg[2] || null };
     return { name: 'o-dash', id: null };
@@ -905,6 +971,7 @@ function tabBar() {
 
 function routeTab() {
   if (route.name === 'p-mes') return 'mes-missions';
+  if (route.name === 'p-notes') return 'notes';
   if (route.name === 'p-gains') return 'gains';
   if (route.name === 'p-profil') return 'profil';
   return 'missions';
@@ -1319,6 +1386,61 @@ function viewPrestaGains() {
   return prestaShell(prestaHeader(agent(me).name, 'Mes gains'), body);
 }
 
+/* --- Mes notes ----------------------------------------------------------- */
+
+/* Les notes de propreté laissées par les voyageurs sur les ménages que ce
+   prestataire a réellement faits. Leur moyenne est sa note globale. */
+function viewPrestaNotes() {
+  var r = agentRating(state.me);
+
+  var entete = '<article class="card" style="border-radius:22px;text-align:center">' +
+    (r
+      ? '<div class="serif num" style="font-size:52px;line-height:1;color:var(--amber-t)">' + fmtNote(r.avg) + '</div>' +
+        '<div style="margin-top:8px">' + starsRead(Math.round(r.avg)) + '</div>' +
+        '<div style="font:500 13px Figtree,sans-serif;color:var(--muted);margin-top:8px">' +
+          'Moyenne sur ' + r.n + ' avis de voyageurs</div>'
+      : '<div style="font-size:34px;line-height:1">⭐</div>' +
+        '<h2 style="font:700 17px Figtree,sans-serif;margin:12px 0 0">Pas encore de note</h2>' +
+        '<p class="sec-note" style="margin-top:6px">Après chaque séjour, le voyageur note la propreté ' +
+          'depuis son livret d\'accueil. Ses étoiles et son commentaire arrivent ici.</p>') +
+    '</article>';
+
+  /* Répartition : combien de 5 étoiles, de 4… Utile pour situer une note isolée. */
+  var repartition = '';
+  if (r) {
+    var lignes = [5, 4, 3, 2, 1].map(function (n) {
+      var c = r.list.filter(function (v) { return v.stars === n; }).length;
+      var pct = Math.round(c / r.n * 100);
+      return '<div class="note-bar">' +
+        '<span class="note-bar-n num">' + n + ' ★</span>' +
+        '<span class="note-bar-track"><span style="width:' + pct + '%"></span></span>' +
+        '<span class="note-bar-c num">' + c + '</span></div>';
+    }).join('');
+    repartition = '<article class="card" style="border-radius:22px">' +
+      '<h2 style="font:700 15px Figtree,sans-serif;margin:0 0 12px">Répartition</h2>' + lignes + '</article>';
+  }
+
+  var liste = r
+    ? '<div class="stack" style="gap:12px">' + r.list.slice().reverse().map(function (v) {
+        return '<article class="card" style="border-radius:20px">' +
+          '<div class="avis-top">' + starsRead(v.stars) +
+            '<span class="avis-meta num">' + esc(v.dateLabel) + '</span></div>' +
+          (v.texte
+            ? '<p class="avis-txt" style="font-size:15px">« ' + esc(v.texte) + ' »</p>'
+            : '<p class="avis-txt avis-txt--none">Sans commentaire.</p>') +
+          '<div class="num" style="font:600 12px Figtree,sans-serif;color:var(--muted);margin-top:10px">' +
+            esc(prop(v.pid).name) + '</div>' +
+          '</article>';
+      }).join('') + '</div>'
+    : '';
+
+  var body = '<div class="stack" style="gap:14px">' + entete + repartition +
+    (r ? '<h2 class="sec-title" style="margin:6px 0 0">Ce que les voyageurs ont écrit</h2>' : '') +
+    liste + '</div>';
+
+  return prestaShell(prestaHeader(agent(state.me).name, 'Mes notes'), body);
+}
+
 /* --- Profil -------------------------------------------------------------- */
 
 function viewPrestaProfil() {
@@ -1333,38 +1455,16 @@ function viewPrestaProfil() {
     ['Notifications', 'Nouvelles missions']
   ];
 
-  /* Les notes de propreté laissées par les voyageurs sur les ménages qu'elle
-     a réellement faits. La moyenne de tout cela est sa note globale. */
-  var notes = '<article class="card" style="border-radius:22px">' +
-    '<div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">' +
-      '<div class="grow"><h2 style="font:700 16px Figtree,sans-serif;margin:0">Mes notes</h2>' +
-      '<div style="font:500 12.5px Figtree,sans-serif;color:var(--muted);margin-top:3px">' +
-        (r ? r.n + ' voyageur(s) ont noté ton ménage' : 'Les voyageurs noteront ton ménage depuis leur livret d\'accueil.') +
-      '</div></div>' +
-      (r ? '<div style="text-align:right;flex:none">' +
-        '<div class="serif num" style="font-size:34px;line-height:1;color:var(--amber-t)">' + fmtNote(r.avg) + '</div>' +
-        '<div>' + starsRead(Math.round(r.avg)) + '</div></div>' : '') +
-    '</div>' +
-    (r ? '<div class="stack" style="gap:10px;margin-top:16px">' + r.list.slice().reverse().map(function (v) {
-      return '<div class="avis">' +
-        '<div class="avis-top">' + starsRead(v.stars) +
-          '<span class="avis-meta num">' + esc(prop(v.pid).short + ' · ' + v.dateLabel) + '</span></div>' +
-        (v.texte ? '<p class="avis-txt">« ' + esc(v.texte) + ' »</p>' : '') +
-        '</div>';
-    }).join('') + '</div>' : '') +
-    '</article>';
-
   var body = '<div class="stack" style="gap:14px">' +
     '<article class="card" style="border-radius:22px;display:flex;align-items:center;gap:14px">' +
       '<div class="avatar" style="width:56px;height:56px;font-size:19px;background:' + me.avatarBg + ';color:' + me.avatarFg + '">' + me.init + '</div>' +
       '<div class="grow"><div style="font:700 20px Figtree,sans-serif">' + esc(me.name) + '</div>' +
       '<div style="font:500 13px Figtree,sans-serif;color:var(--muted)">' + esc(me.role) + ' · depuis ' + esc(me.since) + '</div></div>' +
-      (r ? '<div style="text-align:right;flex:none">' +
+      (r ? '<button type="button" style="text-align:right;flex:none"' + act('nav', { path: '#/app/notes' }) + '>' +
         '<div class="serif num" style="font-size:22px;line-height:1">' + fmtNote(r.avg) + '</div>' +
         '<div style="font:600 10.5px Figtree,sans-serif;color:var(--muted);letter-spacing:.05em;text-transform:uppercase">sur 5</div>' +
-        '</div>' : '') +
+        '</button>' : '') +
     '</article>' +
-    notes +
     '<article class="card card--flush" style="border-radius:22px"><div class="list">' +
       rows.map(function (r) {
         return '<div class="kv" style="padding:14px 0;font-size:15px;min-height:48px;align-items:center">' +
@@ -1455,7 +1555,7 @@ function viewOwnerDash() {
 
   var prets = state.props.map(function (p) {
     var rd = readyInfo(p.id);
-    return rd && rd.avance ? { p: p, rd: rd } : null;
+    return rd ? { p: p, rd: rd } : null;
   }).filter(Boolean);
 
   if (libres.length) {
@@ -1787,6 +1887,22 @@ function viewOwnerAgents() {
         '<button type="button" class="btn-danger-xs" style="margin-left:auto"' +
           act('remove-agent', { ag: a.id }) + '>Supprimer</button>' +
       '</div>' +
+
+      /* Invitation : le message est préparé ici, l'envoi se fait depuis la
+         messagerie du propriétaire (voir inviteMailto). */
+      '<div class="invite-row">' +
+        '<span class="invite-state">' +
+          (a.invited
+            ? '<span class="invite-ok">✓ Invitation envoyée le ' + esc(a.invited) + '</span>'
+            : '<span class="invite-todo">Pas encore invité</span>') +
+          (a.email ? '<span class="invite-mail num">' + esc(a.email) + '</span>'
+                   : '<span class="invite-mail invite-mail--none">aucune adresse e-mail</span>') +
+        '</span>' +
+        '<button type="button" class="btn btn--xs" style="background:var(--ink);color:#fff"' +
+          act('invite-agent', { ag: a.id }) + '>✉ ' + (a.invited ? 'Renvoyer l\'invitation' : 'Inviter par mail') + '</button>' +
+        '<button type="button" class="btn btn--xs" style="background:var(--cream);color:var(--ink-soft)"' +
+          act('invite-copy', { ag: a.id }) + '>Copier le message</button>' +
+      '</div>' +
       /* Ce que les voyageurs ont pensé de ses ménages. */
       (rt ? '<div class="avis-row">' +
         '<span class="perm-label">Avis des voyageurs :</span>' +
@@ -1847,7 +1963,8 @@ function viewOwnerAgents() {
       '<div style="display:flex;gap:10px;align-items:center;margin-top:18px;flex-wrap:wrap">' +
         '<button type="button" class="btn btn--primary btn--sm"' + act('create-agent') + '>Ajouter le prestataire</button>' +
         '<button type="button" class="btn btn--sm" style="background:transparent;color:var(--muted)"' + act('toggle-new-agent') + '>Annuler</button>' +
-        '<span class="sec-note">Il pourra se connecter avec son nom. Cochez ensuite ses biens autorisés.</span>' +
+        '<span class="sec-note">Cochez ensuite ses biens autorisés, puis envoyez-lui son invitation ' +
+          'avec le bouton « ✉ Inviter par mail » de sa fiche.</span>' +
       '</div>' +
     '</div>';
 
@@ -1884,6 +2001,101 @@ function viewOwnerAgents() {
 
     '<div class="stack" style="gap:14px;margin-top:22px">' +
       (cards || '<p class="empty">Aucun prestataire. Ajoutez le premier ci-dessus.</p>') + '</div>');
+}
+
+/* --- Commentaires des voyageurs ------------------------------------------ */
+
+/* Tous les avis au même endroit : la propreté (qui vise un prestataire) et le
+   séjour (qui vise un logement). Filtrables par type et par bien. */
+function viewOwnerAvis() {
+  var f = state.avisFilter;
+
+  var liste = state.avis.slice().reverse().filter(function (v) {
+    if (f.kind !== 'tous' && v.kind !== f.kind) return false;
+    if (f.prop !== 'tous' && v.pid !== f.prop) return false;
+    if (f.stars !== 'toutes' && v.stars !== parseInt(f.stars, 10)) return false;
+    return true;
+  });
+
+  var moyenne = function (rows) {
+    if (!rows.length) return null;
+    return Math.round(rows.reduce(function (n, v) { return n + v.stars; }, 0) / rows.length * 10) / 10;
+  };
+  var mMenage = moyenne(avisOf('menage'));
+  var mSejour = moyenne(avisOf('sejour'));
+  var basses = state.avis.filter(function (v) { return v.stars <= 3; }).length;
+
+  var kpis = '<div class="cols" style="margin-top:22px;gap:12px">' +
+    '<div class="kpi" style="min-width:190px"><div class="v num">' + state.avis.length + '</div>' +
+      '<div class="l">avis reçus</div></div>' +
+    '<div class="kpi" style="min-width:190px"><div class="v num" style="color:' + C.ambre + '">' +
+      (mMenage !== null ? fmtNote(mMenage) : '—') + '</div><div class="l">moyenne ménage</div></div>' +
+    '<div class="kpi" style="min-width:190px"><div class="v num" style="color:' + C.ambre + '">' +
+      (mSejour !== null ? fmtNote(mSejour) : '—') + '</div><div class="l">moyenne séjour</div></div>' +
+    '<div class="kpi" style="min-width:190px"><div class="v num" style="color:' + (basses ? C.terracotta : C.vert) + '">' +
+      basses + '</div><div class="l">' + (basses ? 'avis à 3 étoiles ou moins' : 'aucun avis négatif') + '</div></div>' +
+    '</div>';
+
+  var filtres = '<div class="card" style="margin-top:20px;padding:18px 20px">' +
+    '<div class="cols" style="gap:14px;align-items:flex-end">' +
+      '<div style="flex:1;min-width:170px"><label class="lab" for="af-kind">Type de commentaire</label>' +
+        '<select class="inp" id="af-kind" data-fid="af-kind" data-ch="avis-filter" data-f="kind">' +
+        [['tous', 'Tous les commentaires'], ['menage', 'Ménage seulement'], ['sejour', 'Séjour seulement']]
+          .map(function (o) {
+            return '<option value="' + o[0] + '"' + (f.kind === o[0] ? ' selected' : '') + '>' + o[1] + '</option>';
+          }).join('') + '</select></div>' +
+      '<div style="flex:1;min-width:170px"><label class="lab" for="af-prop">Logement</label>' +
+        '<select class="inp" id="af-prop" data-fid="af-prop" data-ch="avis-filter" data-f="prop">' +
+        '<option value="tous"' + (f.prop === 'tous' ? ' selected' : '') + '>Tous les logements</option>' +
+        state.props.map(function (p) {
+          return '<option value="' + esc(p.id) + '"' + (f.prop === p.id ? ' selected' : '') + '>' + esc(p.name) + '</option>';
+        }).join('') + '</select></div>' +
+      '<div style="flex:1;min-width:150px"><label class="lab" for="af-stars">Note</label>' +
+        '<select class="inp" id="af-stars" data-fid="af-stars" data-ch="avis-filter" data-f="stars">' +
+        ['toutes', '5', '4', '3', '2', '1'].map(function (o) {
+          return '<option value="' + o + '"' + (f.stars === o ? ' selected' : '') + '>' +
+            (o === 'toutes' ? 'Toutes les notes' : o + ' étoile' + (o === '1' ? '' : 's')) + '</option>';
+        }).join('') + '</select></div>' +
+    '</div></div>';
+
+  var cartes = liste.length
+    ? '<div class="grid-cards" style="margin-top:20px">' + liste.map(function (v) {
+        var p = prop(v.pid);
+        var menage = v.kind === 'menage';
+        return '<article class="card avis-card' + (v.stars <= 3 ? ' avis-card--low' : '') + '">' +
+          '<div class="avis-top">' + starsRead(v.stars) +
+            '<span class="badge ' + (menage ? 'badge--blue' : 'badge--green') + '">' +
+              (menage ? 'Ménage' : 'Séjour') + '</span></div>' +
+          (v.texte
+            ? '<p class="avis-txt" style="font-size:14.5px">« ' + esc(v.texte) + ' »</p>'
+            : '<p class="avis-txt avis-txt--none">Sans commentaire.</p>') +
+          '<div class="avis-foot">' +
+            '<span class="dot" style="background:' + p.color + '"></span>' +
+            '<span class="grow">' + esc(p.name) + '</span>' +
+            '<span class="num">' + esc(v.dateLabel) + '</span>' +
+          '</div>' +
+          '<div class="avis-foot avis-foot--who">' +
+            '<span class="grow">' + esc(v.guest || 'Voyageur') + '</span>' +
+            (menage
+              ? (v.agent
+                  ? '<button type="button" class="avis-link"' + act('nav', { path: '#/admin/prestataires' }) + '>' +
+                    esc(agent(v.agent).name) + ' →</button>'
+                  : '<span class="sec-note">prestataire inconnu</span>')
+              : '<button type="button" class="avis-link"' + act('open-bien', { id: v.pid }) + '>Voir le bien →</button>') +
+          '</div>' +
+          '</article>';
+      }).join('') + '</div>'
+    : '<p class="empty" style="margin-top:24px">' +
+      (state.avis.length
+        ? 'Aucun commentaire ne correspond à ces filtres.'
+        : 'Aucun commentaire pour le moment. Les voyageurs notent la propreté à leur arrivée et ' +
+          'leur séjour à la fin, depuis le livret d\'accueil.') + '</p>';
+
+  return ownerShell('avis',
+    '<div class="page-head">' +
+      '<div><h1 class="page-title">Commentaires</h1>' +
+      '<p class="page-sub">Tout ce que les voyageurs ont écrit : la propreté à leur arrivée, le séjour à leur départ.</p></div>' +
+    '</div>' + kpis + filtres + cartes);
 }
 
 /* --- Stocks -------------------------------------------------------------- */
@@ -2193,7 +2405,8 @@ function bienInfos(pid, b) {
       '<span class="switch"><span class="knob"></span></span>' +
       '<span class="grow"><span class="switch-t">Autoriser l\'arrivée anticipée</span>' +
       '<span class="switch-s">Quand le ménage est terminé avant ' + esc(inf.checkin || '16:00') + ', le voyageur suivant ' +
-        'voit « Le logement est prêt ! » dans son livret, avec l\'heure réelle.</span></span>' +
+        'voit « Le logement est prêt ! » dans son livret, avec l\'heure réelle. Jamais avant ' + EARLY_FLOOR + ', ' +
+        'et seulement si le ménage a été fait le jour de son arrivée.</span></span>' +
       '</button>' +
     '<div style="margin-top:14px"><label class="lab" for="bn-' + pid + '">Consignes libres pour le prestataire</label>' +
       '<textarea class="inp" id="bn-' + pid + '" data-fid="bn-' + pid + '" data-in="bien-notes" data-pid="' + pid + '">' + esc(state.notes[pid] || '') + '</textarea></div>' +
@@ -2464,7 +2677,49 @@ function bienLivret(pid, b) {
       act('livret-add', { pid: pid, s: sec.k }) + '>Ajouter au livret</button>' +
   '</div>';
 
-  return '<div style="margin-top:22px">' + entete + onglets + liste + ajout + '</div>';
+  return '<div style="margin-top:22px">' + entete + onglets + liste +
+    livretCopie(pid, sec, blocs) + ajout + '</div>';
+}
+
+/* Recopier une rubrique vers d'autres logements. Les activités et les
+   restaurants d'un quartier valent souvent pour plusieurs biens : on évite
+   de les ressaisir logement par logement. */
+function livretCopie(pid, sec, blocs) {
+  var autres = state.props.filter(function (p) { return p.id !== pid; });
+  if (!autres.length) return '';
+
+  var cibles = state.livretCopie || [];
+
+  if (!blocs.length) {
+    return '<div class="card" style="margin-top:14px;padding:18px 20px">' +
+      '<h3 style="font:700 15px Figtree,sans-serif;margin:0">Copier vers d\'autres logements</h3>' +
+      '<p class="sec-note" style="margin-top:3px">Cette rubrique est vide : ajoutez d\'abord un bloc ci-dessous.</p>' +
+      '</div>';
+  }
+
+  return '<div class="card" style="margin-top:14px;padding:18px 20px">' +
+    '<h3 style="font:700 15px Figtree,sans-serif;margin:0">Copier « ' + esc(sec.label) + ' » vers d\'autres logements</h3>' +
+    '<p class="sec-note" style="margin-top:3px">' + blocs.length + ' bloc(s) à recopier. ' +
+      'Pratique pour les activités et les restaurants d\'un même quartier.</p>' +
+    '<div class="perm-row" style="border:0;padding:12px 0 0;background:transparent">' +
+      '<span class="perm-label">Copier vers :</span>' +
+      autres.map(function (p) {
+        var on = cibles.indexOf(p.id) >= 0;
+        return '<button type="button" class="perm-chip" aria-pressed="' + on + '" style="--accent:' + p.color + '"' +
+          act('livret-cible', { pid: p.id }) + '>' +
+          '<span class="checkbox-sq' + (on ? ' checkbox-sq--on' : '') + '" style="--accent:' + p.color + '"></span>' +
+          esc(p.short) + '</button>';
+      }).join('') +
+    '</div>' +
+    '<div style="display:flex;gap:10px;margin-top:14px;flex-wrap:wrap;align-items:center">' +
+      '<button type="button" class="btn btn--dark btn--sm"' +
+        act('livret-copie', { pid: pid, s: sec.k, mode: 'ajout' }) + '>Ajouter à la suite</button>' +
+      '<button type="button" class="btn btn--sm" style="background:var(--terra-bg);color:var(--terra-dd)"' +
+        act('livret-copie', { pid: pid, s: sec.k, mode: 'remplace' }) + '>Remplacer</button>' +
+      '<span class="sec-note">« Ajouter » conserve ce qui existe déjà. « Remplacer » efface la rubrique ' +
+        'des logements cochés avant d\'y copier celle-ci.</span>' +
+    '</div>' +
+    '</div>';
 }
 
 /* --- Livret d'accueil : page du voyageur --------------------------------- */
@@ -2624,11 +2879,12 @@ function livretVoyageur(pid, inf) {
 
   // 1. Le ménage est fini avant l'heure : le logement est prêt en avance.
   var rd = readyInfo(pid);
-  if (rd && rd.avance && stayArriving(pid)) {
+  if (rd) {
     out += '<div class="lv-section"><div class="lv-card lv-card--ready">' +
       '<div class="lv-ready-badge">✨ Le logement est prêt !</div>' +
       '<p class="lv-card-p">Le ménage s\'est terminé à ' + esc(rd.fin) + '. Vous n\'avez pas besoin d\'attendre ' +
-      esc(inf.checkin || '16:00') + ' : vous pouvez arriver dès <strong>' + esc(rd.at) + '</strong>.</p>' +
+      esc(inf.checkin || '16:00') + ' : vous pouvez arriver dès <strong>' + esc(rd.at) + '</strong>.' +
+      (rd.plancher ? ' Nous ne proposons pas d\'arrivée avant ' + EARLY_FLOOR + '.' : '') + '</p>' +
       '</div></div>';
   }
 
@@ -3109,6 +3365,44 @@ var actions = {
     save(); render();
   },
 
+  /* Recopie d'une rubrique de livret vers d'autres logements --------------- */
+  'livret-cible': function (el) {
+    var pid = el.dataset.pid;
+    var list = (state.livretCopie || []).slice();
+    var i = list.indexOf(pid);
+    if (i >= 0) list.splice(i, 1); else list.push(pid);
+    state.livretCopie = list;
+    save(); render();
+  },
+  'livret-copie': function (el) {
+    var pid = el.dataset.pid, s = el.dataset.s, mode = el.dataset.mode;
+    var cibles = (state.livretCopie || []).filter(function (x) { return x !== pid && !prop(x).gone; });
+    if (!cibles.length) { alert('Cochez d\'abord les logements vers lesquels copier.'); return; }
+
+    var source = (state.livret[pid] || lvVide())[s] || [];
+    if (!source.length) return;
+
+    var sec = LIVRET_SECTIONS.find(function (x) { return x.k === s; });
+    var noms = cibles.map(function (x) { return prop(x).name; }).join(', ');
+    var question = mode === 'remplace'
+      ? 'Remplacer la rubrique « ' + sec.label +' » de ' + noms + ' ?\n\n' +
+        'Ce qui s\'y trouve aujourd\'hui sera effacé, puis les ' + source.length +
+        ' bloc(s) de ce logement y seront copiés.'
+      : 'Copier les ' + source.length + ' bloc(s) de « ' + sec.label + ' » vers ' + noms + ' ?\n\n' +
+        'Ils s\'ajouteront à la suite de ce qui existe déjà.';
+    if (!confirm(question)) return;
+
+    cibles.forEach(function (cid) {
+      var lv = state.livret[cid] || (state.livret[cid] = lvVide());
+      var copie = clone(source);
+      lv[s] = mode === 'remplace' ? copie : (lv[s] || []).concat(copie);
+    });
+
+    state.livretCopie = [];
+    save(); render();
+    alert('Copié vers ' + cibles.length + ' logement(s).');
+  },
+
   /* Ce que le voyageur fait depuis son livret ------------------------------ */
 
   /* « J'ai quitté le logement » : la mission du jour passe en logement libre. */
@@ -3203,6 +3497,48 @@ var actions = {
       : a.props.concat([pid]);
     save(); render();
   },
+  /* Ouvre le message d'invitation dans la messagerie du propriétaire.
+     L'application ne peut pas l'envoyer elle-même : il n'y a pas de serveur. */
+  'invite-agent': function (el) {
+    var a = state.agents.find(function (x) { return x.id === el.dataset.ag; });
+    if (!a) return;
+    if (!a.email) {
+      alert('Ce prestataire n\'a pas d\'adresse e-mail.\n\n' +
+        'Supprimez-le et recréez-le avec son adresse, ou utilisez « Copier le message » ' +
+        'pour le lui envoyer par SMS ou WhatsApp.');
+      return;
+    }
+    a.invited = fmtDate(TODAY);
+    save();
+    location.href = inviteMailto(a);
+    render();
+  },
+
+  /* Repli sans messagerie : le texte part dans le presse-papiers, pour être
+     collé dans un SMS ou un WhatsApp. Si le navigateur refuse le
+     presse-papiers, on affiche quand même le texte : il ne faut jamais que
+     le bouton reste sans effet visible. */
+  'invite-copy': function (el) {
+    var a = state.agents.find(function (x) { return x.id === el.dataset.ag; });
+    if (!a) return;
+    var texte = inviteTexte(a);
+
+    var marquer = function () { a.invited = fmtDate(TODAY); save(); render(); };
+    var replier = function () {
+      marquer();
+      prompt('Sélectionnez ce message et copiez-le :', texte);
+    };
+
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(texte).then(function () {
+        marquer();
+        alert('Message copié.\n\nCollez-le dans un SMS, un WhatsApp ou un e-mail.');
+      }, replier);
+    } else {
+      replier();
+    }
+  },
+
   'toggle-payout': function (el) {
     var k = el.dataset.ag + ':' + state.ownerMonth;
     state.payouts[k] = !isPaid(el.dataset.ag, state.ownerMonth);
@@ -3406,7 +3742,8 @@ var changes = {
   'nr-plat': function (el) { state.nr.plat = el.value; save(); },
   'nr-start': function (el) { state.nr.start = el.value; save(); },
   'nr-end': function (el) { state.nr.end = el.value; save(); },
-  'owner-month': function (el) { state.ownerMonth = el.value; save(); render(); }
+  'owner-month': function (el) { state.ownerMonth = el.value; save(); render(); },
+  'avis-filter': function (el) { state.avisFilter[el.dataset.f] = el.value; save(); render(); }
 };
 
 /* ==========================================================================
@@ -3419,6 +3756,7 @@ var VIEWS = {
   'livret-sec': viewLivretSection,
   'p-missions': viewPrestaMissions,
   'p-mes': viewPrestaMes,
+  'p-notes': viewPrestaNotes,
   'p-gains': viewPrestaGains,
   'p-profil': viewPrestaProfil,
   'p-detail': viewPrestaDetail,
@@ -3430,6 +3768,7 @@ var VIEWS = {
   'o-missions': viewOwnerMissions,
   'o-mission': viewOwnerMission,
   'o-agents': viewOwnerAgents,
+  'o-avis': viewOwnerAvis,
   'o-stocks': viewOwnerStocks,
   'o-biens': viewOwnerBiens,
   'o-bien': viewOwnerBien
