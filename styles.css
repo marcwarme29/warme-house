@@ -276,6 +276,115 @@ textarea.inp { min-height: 90px; resize: vertical; line-height: 1.5; }
   font: 500 14.5px Figtree, sans-serif;
 }
 
+/* Bascule Français / English, en haut du livret et de la porte d'entrée (D-57). */
+.lv-lang {
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 999px;
+  background: rgba(255,255,255,.55);
+  width: fit-content;
+  margin: 0 0 14px auto;
+}
+.lv-lang button {
+  min-width: 42px;
+  min-height: 32px;
+  padding: 5px 12px;
+  border-radius: 999px;
+  font: 700 12px Figtree, sans-serif;
+  letter-spacing: .04em;
+  color: var(--muted);
+  transition: background .16s ease, color .16s ease;
+}
+.lv-lang button[aria-pressed="true"] { background: var(--ink); color: #fff; }
+
+/* Le texte français rappelé au-dessus du champ de traduction. */
+.lv-src {
+  font: 500 12.5px/1.5 Figtree, sans-serif;
+  color: var(--muted2);
+  background: var(--cream);
+  border-radius: 10px;
+  padding: 8px 11px;
+  margin-bottom: 6px;
+  white-space: pre-wrap;
+}
+.seg--lang { max-width: 320px; }
+
+/* Compteur dans une puce de filtre : détaché du libellé. */
+.chip-n {
+  display: inline-block;
+  margin-left: 7px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: rgba(36,30,26,.09);
+  font-size: 11.5px;
+}
+.chip[aria-pressed="true"] .chip-n { background: rgba(255,255,255,.22); }
+
+/* Répertoire des voyageurs (D-55). */
+.rep-card { padding: 18px 20px; }
+.rep-top { display: flex; align-items: flex-start; gap: 14px; flex-wrap: wrap; }
+.rep-nom { font: 700 16px Figtree, sans-serif; display: flex; align-items: center; flex-wrap: wrap; gap: 4px; }
+.rep-meta { font: 500 12.5px Figtree, sans-serif; color: var(--muted); margin-top: 4px; }
+.rep-manque { color: var(--terra-d); font-style: italic; }
+.rep-props { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.rep-prop {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: var(--cream);
+  font: 600 11.5px Figtree, sans-serif;
+  color: var(--ink-soft);
+}
+
+/* Case d'accord au démarchage, dans le formulaire du voyageur (D-56). */
+.bv-optin {
+  display: flex; align-items: flex-start; gap: 11px;
+  width: 100%;
+  margin-top: 16px;
+  padding: 13px 14px;
+  border-radius: 14px;
+  background: var(--cream);
+  text-align: left;
+  font: 600 13px/1.45 Figtree, sans-serif;
+  color: var(--ink-soft);
+  min-height: 44px;
+}
+.bv-optin .checkbox-sq { margin-top: 1px; flex: none; }
+.bv-optin-s { display: block; font: 500 11.5px Figtree, sans-serif; color: var(--muted2); margin-top: 3px; }
+
+/* Ligne de réservation cliquable, au tableau de bord (D-54). */
+.list-row--go {
+  width: 100%;
+  text-align: left;
+  border-radius: 14px;
+  padding: 13px 10px;
+  margin: 0 -10px;
+  transition: background .14s ease;
+}
+.list-row--go:hover { background: var(--cream); }
+.list-row--go > .grow { min-width: min(100%, 190px); }
+.resa-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 7px; }
+.resa-tags .badge { font-size: 11px; padding: 4px 9px; }
+.resa-notes { display: flex; gap: 14px; flex: none; }
+
+/* Sur téléphone, les notes et « Ouvrir → » passent sous le séjour plutôt que
+   d'écraser le nom du voyageur en colonne d'une lettre de large. */
+@media (max-width: 620px) {
+  .list-row--go { flex-wrap: wrap; }
+  .list-row--go > .grow { min-width: 100%; order: 1; }
+  .list-row--go .day-badge, .list-row--go .bar { order: 0; }
+  .list-row--go .resa-notes { order: 2; margin-left: auto; }
+  .list-row--go .trow-go { order: 3; }
+}
+.resa-note { display: flex; flex-direction: column; align-items: center; gap: 2px; }
+.resa-note-l {
+  font: 600 10px Figtree, sans-serif;
+  color: var(--muted2);
+  text-transform: uppercase;
+  letter-spacing: .05em;
+}
+
 .progress { height: 6px; border-radius: 9px; background: var(--fill); overflow: hidden; }
 .progress > span { display: block; height: 100%; border-radius: 9px; transition: width .4s cubic-bezier(.4,0,.2,1); }
 .progress--lg { height: 8px; }
@@ -910,6 +1019,103 @@ textarea.inp { min-height: 90px; resize: vertical; line-height: 1.5; }
 .lv-city { font: 500 14px Figtree, sans-serif; color: var(--muted3); margin-top: 5px; }
 .lv-mot { font: 500 15px/1.6 Figtree, sans-serif; color: var(--ink-soft); margin-top: 16px; white-space: pre-wrap; }
 
+/* ---------------------------------------------------------------------------
+   Porte d'entrée du livret (#/bienvenue) — le lien unique envoyé à tous les
+   voyageurs, toutes plateformes confondues. Voir D-46 à D-48.
+   --------------------------------------------------------------------------- */
+.bienvenue .lv-head.bv-head {
+  background: linear-gradient(140deg, var(--terra-bg2), var(--sand));
+}
+.bv-card {
+  background: #fff;
+  border-radius: 20px;
+  padding: 22px;
+  box-shadow: var(--sh-card);
+}
+.bv-h { font: 700 20px/1.3 Figtree, sans-serif; margin: 0; }
+.bv-p { font: 500 14px/1.6 Figtree, sans-serif; color: var(--ink-soft); margin: 8px 0 16px; }
+.bv-card .lab { display: block; margin-bottom: 5px; }
+
+/* Les 4 chiffres : gros, espacés, centrés — on ne peut pas se tromper. */
+.bv-code {
+  font-size: 26px;
+  letter-spacing: .34em;
+  text-align: center;
+  padding: 12px;
+}
+.bv-go { width: 100%; margin-top: 18px; min-height: 50px; }
+.bv-lien {
+  display: block;
+  width: 100%;
+  margin-top: 14px;
+  padding: 10px;
+  min-height: 44px;
+  font: 600 13.5px Figtree, sans-serif;
+  color: var(--terra-d);
+  text-align: center;
+}
+.bv-err {
+  margin-top: 14px;
+  padding: 11px 13px;
+  border-radius: 12px;
+  background: var(--terra-bg);
+  color: var(--terra-dd);
+  font: 600 13px/1.45 Figtree, sans-serif;
+}
+.bv-note {
+  margin-top: 14px;
+  font: 500 12.5px/1.55 Figtree, sans-serif;
+  color: var(--muted);
+}
+.bv-trouve {
+  display: inline-block;
+  padding: 5px 11px;
+  border-radius: 999px;
+  background: var(--green-bg);
+  color: var(--green-t);
+  font: 700 12px Figtree, sans-serif;
+  margin-bottom: 10px;
+}
+/* Cas rare : deux séjours correspondent, le voyageur choisit son logement. */
+.bv-pick {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 14px 16px;
+  border-radius: 16px;
+  background: var(--cream);
+  text-align: left;
+  min-height: 60px;
+}
+.bv-pick-dot { width: 10px; height: 10px; border-radius: 999px; background: var(--accent); flex: none; }
+.bv-pick-n { display: block; font: 700 14.5px Figtree, sans-serif; }
+.bv-pick-s { display: block; font: 500 12.5px Figtree, sans-serif; color: var(--muted); margin-top: 2px; }
+.bv-pick-go { font-size: 17px; color: var(--terra); flex: none; }
+
+/* Ligne « voyageur à confirmer », côté propriétaire. */
+.acces-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 14px 0;
+  border-bottom: 1px solid rgba(36,30,26,.07);
+}
+.acces-row:last-child { border-bottom: 0; }
+/* D'où vient l'information : la plateforme, ou le voyageur lui-même. */
+.src-tag {
+  display: inline-block;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: var(--fill);
+  color: var(--muted2);
+  font: 600 10.5px Figtree, sans-serif;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  vertical-align: middle;
+}
+
 .lv-keys {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
@@ -1036,6 +1242,24 @@ textarea.inp { min-height: 90px; resize: vertical; line-height: 1.5; }
 .lv-card--done  { background: var(--green-bg); border: 1px solid #CFE5D9; box-shadow: none; }
 .lv-card--go    { background: var(--terra-bg2); border: 1px solid #F3D3C6; box-shadow: none; }
 .lv-card--rate  { border: 1px solid rgba(36,30,26,.07); }
+/* Code d'accès et Wi-Fi retenus tant que le voyageur n'est pas identifié. */
+.lv-card--lock  { background: var(--fill); border: 1px solid rgba(36,30,26,.09); box-shadow: none; }
+
+/* Rappel discret pour celui qui a répondu « plus tard » au formulaire. */
+.lv-relance {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 14px 16px;
+  border-radius: 16px;
+  background: var(--terra-bg2);
+  color: var(--terra-dd);
+  font: 600 13.5px/1.4 Figtree, sans-serif;
+  text-align: left;
+  min-height: 44px;
+}
+.lv-relance-go { font-size: 16px; flex: none; }
 .lv-card--rate textarea.inp { margin-top: 14px; min-height: 76px; }
 .lv-ready-badge {
   font: 700 20px/1.3 Figtree, sans-serif;
@@ -1118,6 +1342,7 @@ textarea.inp { min-height: 90px; resize: vertical; line-height: 1.5; }
   color: var(--ink-soft);
 }
 .kd-flag--green { background: var(--green-bg); color: var(--green-t); }
+.kd-flag--blue  { background: var(--blue-bg);  color: var(--blue-t); }
 
 .kd-head { display: flex; align-items: center; gap: 9px; }
 .kd-prop { font: 700 16px Figtree, sans-serif; }
