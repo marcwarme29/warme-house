@@ -1934,12 +1934,20 @@ function viewPrestaMissions() {
     return mayTake(state.me, m.prop) && !mayDo(state.me, m.type);
   }).length;
 
+  // Cas le plus fréquent quand « rien ne s'affiche » : aucun logement n'a été
+  // coché sur la fiche. On le dit franchement, plutôt que de laisser un écran
+  // vide qui ressemble à une panne.
+  var sansLogement = !(agent(state.me).props || []).length;
+
   var body = '<div class="stack">' + (list.length
     ? list.map(missionCard).join('')
-    : '<p class="empty">Aucune mission disponible pour le moment.</p>') +
+    : '<p class="empty">' + (sansLogement
+        ? 'Aucun logement ne t’a encore été attribué.<br>Le propriétaire doit cocher tes logements ; les missions apparaîtront ensuite ici.'
+        : 'Aucune mission disponible pour le moment.') + '</p>') +
     '<p class="center sec-note" style="padding-top:8px">Une mission apparaît dès qu\'un check-out est détecté sur l\'iCal.' +
       (horsBien ? '<br>' + horsBien + ' mission(s) concernent des logements qui ne te sont pas attribués.' : '') +
-      (horsMetier ? '<br>' + horsMetier + ' mission(s) concernent des prestations que tu ne fais pas.' : '') + '</p>' +
+      (horsMetier ? '<br>' + horsMetier + ' mission(s) concernent des prestations que tu ne fais pas.' : '') +
+      '<br><a href="#/app/profil" style="color:var(--terra);font-weight:600">Voir mon accès</a></p>' +
     '</div>';
   return prestaShell(prestaHeader(list.length + ' missions à prendre', 'Missions'), body);
 }
@@ -2490,6 +2498,48 @@ function viewPrestaCles() {
   return prestaShell(prestaHeader(auj.length + ' remise(s) de clés aujourd’hui', 'Calendrier'), body);
 }
 
+/* Encadré de diagnostic, sur le profil du prestataire (session 13).
+   Quand « rien ne marche », il faut pouvoir lire d'un coup d'œil ce que
+   l'application sait du compte connecté, plutôt que de deviner. */
+function blocDiagnostic() {
+  if (typeof DB === 'undefined' || !DB.estDispo()) return '';
+  var p = DB.profil();
+  if (!p) {
+    return '<article class="card" style="border-radius:22px;border-left:4px solid var(--terra)">' +
+      '<div style="font:700 14px Figtree,sans-serif;margin-bottom:6px">Mode démonstration</div>' +
+      '<p class="sec-note" style="margin:0">Tu n\'es pas connecté avec un vrai compte : ' +
+      'les données restent sur cet appareil.</p></article>';
+  }
+
+  var fiche = (state.agents || []).filter(function (a) { return a.id === state.me; })[0];
+  var lignes = [
+    ['Compte', p.email || '—'],
+    ['Rôle', p.role === 'owner' ? 'propriétaire' : 'prestataire'],
+    ['Fiche reconnue', fiche ? '✅ ' + fiche.name : '⚠️ aucune fiche pour « ' + state.me + ' »'],
+    ['Métier', isCles(state.me) ? 'remise des clés' : 'ménage / entretien'],
+    ['Logements attribués', ((fiche && fiche.props) || []).length + ' sur ' + state.props.length],
+    ['Prestations autorisées', allowedServices(state.me).length + ' sur ' + state.services.length],
+    ['Missions visibles', dispoForMe().length + ' à prendre · ' +
+      state.missions.filter(function (m) { return m.taker === state.me; }).length + ' à moi']
+  ];
+
+  var souci = !fiche ? 'Ta fiche n\'a pas été retrouvée : préviens le propriétaire.'
+    : !((fiche.props || []).length) ? 'Aucun logement ne t\'a été attribué : c\'est pour ça que la liste est vide. Le propriétaire doit cocher tes logements dans sa rubrique Prestataires.'
+      : '';
+
+  return '<article class="card card--flush" style="border-radius:22px' +
+    (souci ? ';border-left:4px solid var(--terra)' : '') + '">' +
+    '<div style="padding:16px 18px 4px;font:700 14px Figtree,sans-serif">Mon accès</div>' +
+    '<div class="list" style="padding:0 18px">' + lignes.map(function (l) {
+      return '<div class="kv" style="padding:12px 0;font-size:14px;min-height:44px;align-items:center">' +
+        '<span style="color:var(--muted)">' + esc(l[0]) + '</span>' +
+        '<span class="num" style="text-align:right">' + esc(l[1]) + '</span></div>';
+    }).join('') + '</div>' +
+    (souci ? '<p class="sec-note" style="margin:0;padding:4px 18px 16px;color:var(--terra)">' +
+      esc(souci) + '</p>' : '') +
+    '</article>';
+}
+
 function viewPrestaProfil() {
   var me = agent(state.me);
   var r = agentRating(state.me);
@@ -2508,6 +2558,7 @@ function viewPrestaProfil() {
   ];
 
   var body = '<div class="stack" style="gap:14px">' +
+    blocDiagnostic() +
     '<article class="card" style="border-radius:22px;display:flex;align-items:center;gap:14px">' +
       '<div class="avatar" style="width:56px;height:56px;font-size:19px;background:' + me.avatarBg + ';color:' + me.avatarFg + '">' + me.init + '</div>' +
       '<div class="grow"><div style="font:700 20px Figtree,sans-serif">' + esc(me.name) + '</div>' +

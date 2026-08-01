@@ -476,15 +476,22 @@ var DB = (function () {
       var erreur = r.filter(function (x) { return x.error; })[0];
       if (erreur) throw erreur.error;
 
-      // Aucun bien dans la base : le déménagement n'a pas encore eu lieu.
-      // On laisse `state` tel quel plutôt que de vider les écrans — mais on
-      // a bien lu, donc l'écriture est désormais autorisée.
+      // TOUJOURS EN PREMIER : c'est ce qui reconstitue la fiche du compte
+      // connecté sur son propre appareil. Le faire plus bas serait un piège —
+      // un prestataire à qui aucun logement n'a été coché ne voit AUCUN bien,
+      // on sortirait avant, sa fiche ne serait jamais créée, et il ne pourrait
+      // cliquer sur rien sans comprendre pourquoi.
+      comptesDepuisBase(r[4].data || []);
+
+      // Aucun bien lisible : soit le déménagement n'a pas eu lieu, soit ce
+      // prestataire n'a encore aucun logement attribué. Dans les deux cas on
+      // laisse `state` tel quel plutôt que de vider les écrans — mais on a
+      // bien lu, donc l'écriture est désormais autorisée.
       if (!r[0].data || !r[0].data.length) {
         premiereLectureFaite = true;
         return false;
       }
 
-      comptesDepuisBase(r[4].data || []);
       biensDepuisBase(r[0].data, r[1].data || []);
 
       // RÈGLE DE SÛRETÉ : le cahier ne vide jamais le navigateur.
