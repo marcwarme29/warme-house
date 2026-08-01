@@ -290,6 +290,13 @@ var DB = (function () {
      3. LECTURE — remplir `state` depuis la base
      ---------------------------------------------------------------------- */
 
+  /* Garde-fou capital : tant qu'on n'a pas LU le cahier au moins une fois,
+     on ne lui écrit rien. Sans cela, ouvrir l'application sur un navigateur
+     resté sur les données de démonstration écraserait les vraies données du
+     cahier à la première modification — le temps que la lecture arrive.
+     Seul le déménagement, qui est un geste volontaire, passe outre. */
+  var premiereLectureFaite = false;
+
   function charger() {
     if (!dispo || !profil) return Promise.resolve(false);
     return Promise.all([
@@ -303,14 +310,19 @@ var DB = (function () {
       if (erreur) throw erreur.error;
 
       // Aucun bien dans la base : le déménagement n'a pas encore eu lieu.
-      // On laisse `state` tel quel plutôt que de vider les écrans.
-      if (!r[0].data || !r[0].data.length) return false;
+      // On laisse `state` tel quel plutôt que de vider les écrans — mais on
+      // a bien lu, donc l'écriture est désormais autorisée.
+      if (!r[0].data || !r[0].data.length) {
+        premiereLectureFaite = true;
+        return false;
+      }
 
       comptesDepuisBase(r[4].data || []);
       biensDepuisBase(r[0].data, r[1].data || []);
       resasDepuisBase(r[2].data || []);
       missionsDepuisBase(r[3].data || []);
       if (typeof upgrade === 'function') upgrade();
+      premiereLectureFaite = true;
       return true;
     });
   }
@@ -328,6 +340,7 @@ var DB = (function () {
      la frappe terminée, pas à chaque touche. Rien n'attend le résultat. */
   function pousser() {
     if (!dispo || !profil || profil.role !== 'owner') return;
+    if (!premiereLectureFaite) return;   // on n'écrit jamais avant d'avoir lu
     clearTimeout(enAttente);
     enAttente = setTimeout(function () {
       enAttente = null;
@@ -410,6 +423,7 @@ var DB = (function () {
     if (profil.role !== 'owner') return Promise.reject(new Error('Seul le propriétaire peut faire le déménagement.'));
     return pousserMaintenant().then(function (bilan) {
       if (!bilan.ok) throw new Error(derniereErreur || 'Le déménagement a échoué.');
+      premiereLectureFaite = true;   // geste volontaire : l'écriture est acquise
       return bilan;
     });
   }
