@@ -48,32 +48,70 @@ var PLATS = {
   'Direct': { bg: '#E3F0E9', fg: '#227052', color: C.vert }
 };
 
+/* D'où vient une réservation. Toutes suivent le même format (voir normaliserResa) :
+   c'est ce qui permettra de brancher Beds24 sans réécrire les écrans. */
+var SOURCES = {
+  manuel: { label: 'Saisie manuelle', court: 'Manuel', color: '#8A6A4F', bg: '#EFE7DA', fg: '#6B5138' },
+  ical: { label: 'Lien iCal', court: 'iCal', color: C.vert, bg: '#E3F0E9', fg: '#227052' },
+  beds24: { label: 'Beds24', court: 'Beds24', color: '#7A6BA8', bg: '#EAE6F4', fg: '#5B4E85' }
+};
+
+/* Ce que chaque connecteur sait faire aujourd'hui. `direct` = appelable depuis
+   le navigateur ; les deux sont à false, d'où la phase serveur (voir D-42). */
+var CONNECTEURS = [
+  {
+    key: 'ical', label: 'Liens iCal (Airbnb, Booking.com)', direct: false,
+    besoin: 'Le navigateur refuse de lire un calendrier hébergé ailleurs (règle de sécurité CORS). ' +
+      'Il faut un serveur qui lise les liens à intervalle régulier.',
+    apporte: 'Les dates occupées. Le nom du voyageur et le montant n’y figurent pas toujours.'
+  },
+  {
+    key: 'beds24', label: 'Beds24 (toutes plateformes réunies)', direct: false,
+    besoin: 'Une clé secrète, qui ne doit jamais se trouver dans le code d’une page publique. ' +
+      'Elle vivra sur le serveur, jamais dans ce navigateur.',
+    apporte: 'Réservations complètes : voyageur, montant, plateforme, statut, annulations, et les messages.'
+  }
+];
+
 var RESAS = {
   p1: [
-    { plat: 'Airbnb', guest: 'Emma Dufour', guests: 4, start: '2026-07-26', end: '2026-07-30' },
-    { plat: 'Airbnb', guest: 'Marc Lenoir', guests: 2, start: '2026-07-30', end: '2026-08-03' },
-    { plat: 'Booking.com', guest: 'Sophie Aubert', guests: 3, start: '2026-08-06', end: '2026-08-10' }
+    { plat: 'Airbnb', guest: 'Emma Dufour', guests: 4, start: '2026-07-26', end: '2026-07-30', source: 'ical' },
+    { plat: 'Airbnb', guest: 'Marc Lenoir', guests: 2, start: '2026-07-30', end: '2026-08-03', source: 'ical' },
+    { plat: 'Booking.com', guest: 'Sophie Aubert', guests: 3, start: '2026-08-06', end: '2026-08-10', source: 'ical' }
   ],
   p2: [
-    { plat: 'Booking.com', guest: 'Liam Carter', guests: 2, start: '2026-07-27', end: '2026-07-30' },
-    { plat: 'Airbnb', guest: 'Chloé Mercier', guests: 2, start: '2026-07-31', end: '2026-08-04' },
-    { plat: 'Direct', guest: 'Paul Nguyen', guests: 1, start: '2026-08-08', end: '2026-08-12' }
+    { plat: 'Booking.com', guest: 'Liam Carter', guests: 2, start: '2026-07-27', end: '2026-07-30', source: 'ical' },
+    { plat: 'Airbnb', guest: 'Chloé Mercier', guests: 2, start: '2026-07-31', end: '2026-08-04', source: 'ical' },
+    { plat: 'Direct', guest: 'Paul Nguyen', guests: 1, start: '2026-08-08', end: '2026-08-12', source: 'ical' }
   ],
   p3: [
-    { plat: 'Airbnb', guest: 'Famille Rossi', guests: 6, start: '2026-07-25', end: '2026-07-31' },
-    { plat: 'Booking.com', guest: 'Jonas Weber', guests: 5, start: '2026-08-01', end: '2026-08-08' }
+    { plat: 'Airbnb', guest: 'Famille Rossi', guests: 6, start: '2026-07-25', end: '2026-07-31', source: 'ical' },
+    { plat: 'Booking.com', guest: 'Jonas Weber', guests: 5, start: '2026-08-01', end: '2026-08-08', source: 'ical' }
   ],
   p4: [
-    { plat: 'Airbnb', guest: 'Inès Baptiste', guests: 3, start: '2026-07-27', end: '2026-07-31' },
-    { plat: 'Airbnb', guest: 'Tom Kessler', guests: 2, start: '2026-08-02', end: '2026-08-06' }
+    { plat: 'Airbnb', guest: 'Inès Baptiste', guests: 3, start: '2026-07-27', end: '2026-07-31', source: 'ical' },
+    { plat: 'Airbnb', guest: 'Tom Kessler', guests: 2, start: '2026-08-02', end: '2026-08-06', source: 'ical' }
   ]
 };
 
 /* `props` = biens sur lesquels le prestataire a le droit de se positionner. */
+/* Deux métiers cohabitent (voir D-39) :
+     'menage' — prend les missions, exécute la checklist, relève les stocks ;
+     'cles'   — remet les clés au voyageur : il ne voit que le calendrier des
+                logements confiés, avec le nom du voyageur. Aucune mission,
+                aucune rémunération dans l'application. */
+var AGENT_KINDS = [
+  { key: 'menage', label: 'Ménage & prestations', short: 'Ménage',
+    hint: 'Prend les missions, fait la checklist, relève les stocks et suit ses gains.' },
+  { key: 'cles', label: 'Remise des clés', short: 'Clés',
+    hint: 'Voit seulement le calendrier des logements confiés : arrivées, départs, nom du voyageur.' }
+];
+
 var AGENTS = [
-  { id: 'Sofia', name: 'Sofia Lemaire', init: 'SL', role: 'Référente ménage', since: 'mars 2025', note: '4,9', email: 'sofia.lemaire@mail.fr', iban: 'IBAN ··· 4417', avatarBg: '#F7E7DF', avatarFg: '#B04A26', roleBg: '#F7E7DF', roleFg: '#B04A26', props: ['p1', 'p2', 'p3', 'p4'] },
-  { id: 'Amandine', name: 'Amandine Roux', init: 'AR', role: 'Ménage', since: 'janv. 2026', note: '4,8', email: 'amandine.roux@mail.fr', iban: 'IBAN ··· 8102', avatarBg: '#E4EDF4', avatarFg: '#2F6C93', roleBg: '#E4EDF4', roleFg: '#2F6C93', props: ['p3', 'p4'] },
-  { id: 'Karim', name: 'Karim Belaïd', init: 'KB', role: 'Maintenance & extérieur', since: 'sept. 2025', note: '5,0', email: 'karim.belaid@mail.fr', iban: 'IBAN ··· 2390', avatarBg: '#E3F0E9', avatarFg: '#227052', roleBg: '#E3F0E9', roleFg: '#227052', props: ['p1', 'p2', 'p3', 'p4'] }
+  { id: 'Sofia', name: 'Sofia Lemaire', init: 'SL', kind: 'menage', role: 'Référente ménage', since: 'mars 2025', note: '4,9', email: 'sofia.lemaire@mail.fr', iban: 'IBAN ··· 4417', avatarBg: '#F7E7DF', avatarFg: '#B04A26', roleBg: '#F7E7DF', roleFg: '#B04A26', props: ['p1', 'p2', 'p3', 'p4'] },
+  { id: 'Amandine', name: 'Amandine Roux', init: 'AR', kind: 'menage', role: 'Ménage', since: 'janv. 2026', note: '4,8', email: 'amandine.roux@mail.fr', iban: 'IBAN ··· 8102', avatarBg: '#E4EDF4', avatarFg: '#2F6C93', roleBg: '#E4EDF4', roleFg: '#2F6C93', props: ['p3', 'p4'] },
+  { id: 'Karim', name: 'Karim Belaïd', init: 'KB', kind: 'menage', role: 'Maintenance & extérieur', since: 'sept. 2025', note: '5,0', email: 'karim.belaid@mail.fr', iban: 'IBAN ··· 2390', avatarBg: '#E3F0E9', avatarFg: '#227052', roleBg: '#E3F0E9', roleFg: '#227052', props: ['p1', 'p2', 'p3', 'p4'] },
+  { id: 'Camille', name: 'Camille Roussel', init: 'CR', kind: 'cles', role: 'Remise des clés', since: 'juin 2026', note: '—', email: 'camille.roussel@mail.fr', iban: '—', avatarBg: '#EAE6F4', avatarFg: '#5B4E85', roleBg: '#EAE6F4', roleFg: '#5B4E85', props: ['p1', 'p2'] }
 ];
 
 /* Palette d'identité proposée à la création d'un bien ou d'un prestataire. */
@@ -183,10 +221,10 @@ var RAW_CHECK = {
 };
 
 var BIEN_INFO = {
-  p1: { capacity: '4 voyageurs', surface: '46 m²', code: 'Boîte à clés — 4821', wifi: 'NidVieuxPort / soleil2024', parking: 'Parking Estienne, place 34', linge: '2 parures, 6 serviettes', checkin: '16:00', checkout: '11:00' },
-  p2: { capacity: '2 voyageurs', surface: '28 m²', code: 'Digicode 12B45 · clé sous tapis', wifi: 'CanalStM / paris1900', parking: 'Aucun', linge: '1 parure, 4 serviettes', checkin: '15:00', checkout: '11:00' },
-  p3: { capacity: '6 voyageurs', surface: '140 m²', code: 'Portail 7788 · clé maison', wifi: 'Oliviers / cigales2025', parking: '2 places dans l’allée', linge: '3 parures, 12 serviettes', checkin: '16:00', checkout: '10:00' },
-  p4: { capacity: '3 voyageurs', surface: '62 m²', code: 'Boîte à clés — 9021', wifi: 'LoftBellecour / rhone77', parking: 'Parking Bellecour', linge: '2 parures, 6 serviettes', checkin: '17:00', checkout: '11:00' }
+  p1: { capacity: '4 voyageurs', surface: '46 m²', code: 'Boîte à clés — 4821', wifi: 'NidVieuxPort / soleil2024', parking: 'Parking Estienne, place 34', linge: '2 parures, 6 serviettes', checkin: '16:00', checkout: '11:00', prixNuit: 118 },
+  p2: { capacity: '2 voyageurs', surface: '28 m²', code: 'Digicode 12B45 · clé sous tapis', wifi: 'CanalStM / paris1900', parking: 'Aucun', linge: '1 parure, 4 serviettes', checkin: '15:00', checkout: '11:00', prixNuit: 96 },
+  p3: { capacity: '6 voyageurs', surface: '140 m²', code: 'Portail 7788 · clé maison', wifi: 'Oliviers / cigales2025', parking: '2 places dans l’allée', linge: '3 parures, 12 serviettes', checkin: '16:00', checkout: '10:00', prixNuit: 245 },
+  p4: { capacity: '3 voyageurs', surface: '62 m²', code: 'Boîte à clés — 9021', wifi: 'LoftBellecour / rhone77', parking: 'Parking Bellecour', linge: '2 parures, 6 serviettes', checkin: '17:00', checkout: '11:00', prixNuit: 134 }
 };
 
 /* Champs de la fiche bien : clé technique, libellé, et présence dans le livret. */
@@ -198,7 +236,10 @@ var INFO_FIELDS = [
   { k: 'parking', label: 'Stationnement' },
   { k: 'linge', label: 'Linge fourni' },
   { k: 'checkin', label: 'Heure d’arrivée' },
-  { k: 'checkout', label: 'Heure de départ' }
+  { k: 'checkout', label: 'Heure de départ' },
+  /* Sert de base au montant d'un séjour quand la plateforme ne le donne pas
+     (nuits × prix). Le montant reste modifiable réservation par réservation. */
+  { k: 'prixNuit', label: 'Prix par nuit (€)', num: true }
 ];
 
 /* Livret d'accueil : 5 rubriques, chacune une liste de blocs
@@ -328,6 +369,12 @@ function initialState() {
     ready: {},                        // { pid: { date, at, mid, agent } } — ménage terminé, logement prêt
     avis: [],                         // [{ id, pid, resa, kind, stars, texte, agent, mid, dateLabel }]
 
+    // Intégration des plateformes (session 10). Aucune clé secrète ici :
+    // elle vivra sur le serveur le jour de la connexion réelle (D-42).
+    beds24: { actif: false, compte: '', dernierSync: null },
+    messages: [],                     // [{ id, resa, pid, plat, sens, texte, at, lu }]
+    autoMsgs: [],                     // messages programmés (modèles + déclencheur)
+
     missions: clone(MISSIONS),
     photos: {},                       // { missionId: { stepId: true } }
     stock: baseStock(),
@@ -367,11 +414,19 @@ function initialState() {
     showNewBien: false,
     nb: { name: '', city: '', address: '', color: C.terracotta },
     showNewAgent: false,
-    na: { name: '', role: 'Ménage', email: '', color: C.terracotta },
+    na: { name: '', kind: 'menage', role: 'Ménage', email: '', color: C.terracotta },
     showNewArticle: false,
     nar: { label: '', unit: 'unités', par: 4, seuil: 2, group: 'Salle de bain' },
     showNewResa: false,
-    nr: { plat: 'Airbnb', guest: '', guests: 2, start: '', end: '' },
+    nr: { plat: 'Airbnb', guest: '', guests: 2, start: '', end: '', montant: '' },
+
+    // Écrans de la session 10
+    planStart: '2026-07-20',          // premier jour affiché dans le planning
+    planProps: null,                  // logements affichés (null = tous)
+    statMonth: '2026-07',             // mois des statistiques
+    msgFilter: 'encours',             // 'encours' | 'avenir' | 'tous'
+    showNewAuto: false,
+    am: null,                         // message programmé en cours d'écriture
     newService: '',
     coursesScope: 'bien',             // 'bien' | 'global'
     coursesProps: null,               // biens cochés dans la liste de courses (null = tous)
@@ -445,8 +500,20 @@ function upgrade() {
     INFO_FIELDS.forEach(function (f) {
       if (inf[f.k] === undefined) {
         inf[f.k] = (seedInfo[pid] && seedInfo[pid][f.k]) ||
-          (f.k === 'checkin' ? '16:00' : f.k === 'checkout' ? '11:00' : '');
+          (f.k === 'checkin' ? '16:00' : f.k === 'checkout' ? '11:00' : f.num ? 0 : '');
       }
+    });
+    // Identifiant du logement chez Beds24 : rempli le jour de la connexion.
+    if (inf.beds24 === undefined) inf.beds24 = '';
+
+    // Format commun des réservations (voir normaliserResa) : les anciennes
+    // saisies n'ont ni identifiant, ni source, ni statut.
+    resasOf(pid).forEach(function (r) {
+      if (!r.id) r.id = slugResa(pid, r);
+      if (!r.source) r.source = 'manuel';
+      if (r.uid === undefined) r.uid = '';
+      if (r.montant === undefined) r.montant = null;   // null = calculé au prix par nuit
+      if (!r.statut) r.statut = 'confirme';
     });
 
     if (state.notes[pid] === undefined) state.notes[pid] = '';
@@ -480,7 +547,23 @@ function upgrade() {
   // c'est le comportement qu'il avait avant l'arrivée de cette option.
   state.agents.forEach(function (a) {
     if (!Array.isArray(a.props)) a.props = state.props.map(function (p) { return p.id; });
+    // Métier du prestataire : les comptes créés avant cette option font du ménage.
+    if (a.kind !== 'cles') a.kind = 'menage';
   });
+  if (!state.na.kind) state.na.kind = 'menage';
+
+  // Nouveautés de la session 10 : intégration des plateformes et écrans associés.
+  if (!state.beds24) state.beds24 = { actif: false, compte: '', dernierSync: null };
+  if (!Array.isArray(state.messages)) state.messages = [];
+  if (!Array.isArray(state.autoMsgs)) state.autoMsgs = [];
+  if (!state.planStart) state.planStart = premierJourDuMois(TODAY);
+  if (state.planProps === undefined) state.planProps = null;
+  if (!state.statMonth) state.statMonth = CURRENT_MONTH;
+  if (!state.msgFilter) state.msgFilter = 'encours';
+  if (state.nr.montant === undefined) state.nr.montant = '';
+  if (Array.isArray(state.planProps)) {
+    state.planProps = state.planProps.filter(function (pid) { return !prop(pid).gone; });
+  }
 
   state.missions.forEach(function (m) { if (m.note === undefined) m.note = ''; });
   if (state.nm.note === undefined) state.nm.note = '';
@@ -537,6 +620,183 @@ function mission(id) { return state.missions.find(function (m) { return m.id ===
 function rooms(pid) { return state.checklists[pid] || []; }
 function resasOf(pid) { return state.resas[pid] || []; }
 
+/* --------------------------------------------------------------------------
+   Dates : petits calculs sur des chaînes « AAAA-MM-JJ »
+   -------------------------------------------------------------------------- */
+
+function jourPlus(iso, n) {
+  var d = new Date(Date.parse(iso + 'T00:00:00Z') + n * 86400000);
+  return d.toISOString().slice(0, 10);
+}
+function premierJourDuMois(iso) { return iso.slice(0, 7) + '-01'; }
+function moisDe(iso) { return iso.slice(0, 7); }
+function nbJoursMois(mois) {
+  var y = parseInt(mois.slice(0, 4), 10), m = parseInt(mois.slice(5, 7), 10);
+  return new Date(Date.UTC(y, m, 0)).getUTCDate();
+}
+function moisPlus(mois, n) {
+  var y = parseInt(mois.slice(0, 4), 10), m = parseInt(mois.slice(5, 7), 10) - 1 + n;
+  y += Math.floor(m / 12); m = ((m % 12) + 12) % 12;
+  return y + '-' + String(m + 1).padStart(2, '0');
+}
+var MOIS_LONG = ['janvier', 'février', 'mars', 'avril', 'mai', 'juin',
+  'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre'];
+function moisLabel(mois) {
+  return MOIS_LONG[parseInt(mois.slice(5, 7), 10) - 1] + ' ' + mois.slice(0, 4);
+}
+
+/* --------------------------------------------------------------------------
+   Réservations : un format commun, quelle que soit la source
+
+   Une réservation porte toujours : id (le nôtre), uid (celui de la plateforme,
+   pour ne pas la créer deux fois), source, plat, guest, guests, start, end,
+   montant (null = calculé au prix par nuit) et statut.
+   -------------------------------------------------------------------------- */
+
+function slugResa(pid, r) { return 'r_' + pid + '_' + r.start + '_' + Math.random().toString(36).slice(2, 6); }
+
+/** Toutes les réservations, à plat, avec leur logement, dans l'ordre du temps. */
+function allResas() {
+  var out = [];
+  state.props.forEach(function (p) {
+    resasOf(p.id).forEach(function (r) { out.push({ pid: p.id, r: r }); });
+  });
+  return out.sort(function (a, b) { return a.r.start < b.r.start ? -1 : a.r.start > b.r.start ? 1 : 0; });
+}
+
+function resaById(id) {
+  var f = allResas().find(function (x) { return x.r.id === id; });
+  return f || null;
+}
+
+/** Montant d'un séjour : celui saisi, sinon nuits × prix par nuit du logement. */
+function montantResa(pid, r) {
+  if (r.montant !== null && r.montant !== undefined && r.montant !== '') return Math.round(r.montant);
+  var prix = parseInt((state.info[pid] || {}).prixNuit, 10) || 0;
+  return prix * nights(r.start, r.end);
+}
+/** Le montant a-t-il été calculé, faute de chiffre venu de la plateforme ? */
+function montantEstime(r) { return r.montant === null || r.montant === undefined || r.montant === ''; }
+
+/** Met une réservation brute (formulaire, iCal, Beds24) au format commun. */
+function normaliserResa(brut, source, pid) {
+  var r = {
+    id: brut.id || '',
+    uid: brut.uid || '',
+    source: source || 'manuel',
+    plat: PLATS[brut.plat] ? brut.plat : 'Direct',
+    guest: String(brut.guest || '').trim() || 'Voyageur',
+    guests: Math.max(1, parseInt(brut.guests, 10) || 1),
+    start: brut.start,
+    end: brut.end,
+    montant: (brut.montant === '' || brut.montant === undefined || brut.montant === null)
+      ? null : Math.round(parseFloat(brut.montant) || 0),
+    statut: brut.statut === 'annule' ? 'annule' : 'confirme'
+  };
+  if (!r.id) r.id = slugResa(pid, r);
+  return r;
+}
+
+/** Mission de ménage créée au départ du voyageur (règle D-06). */
+function creerMissionDepart(pid, resa) {
+  var sv = state.services[0];
+  if (!sv) return null;
+  var suivante = resasOf(pid).find(function (x) { return x.start === resa.end && x !== resa; });
+  var inf = state.info[pid] || {};
+  var m = {
+    id: slug(resa.guest, 'm'), prop: pid, type: sv.key, date: resa.end,
+    dateLabel: resa.end === TODAY ? 'Aujourd’hui' : fmtDate(resa.end),
+    windowLabel: (inf.checkout || '11:00') + ' → ' + (inf.checkin || '16:00'),
+    price: (state.tariffs[pid] || {})[sv.key] || 0,
+    status: 'dispo',
+    urgent: suivante ? 'Turnover · arrivée ' + (inf.checkin || '16:00') : '',
+    turnover: !!suivante,
+    note: '',
+    fromResa: resaKey(pid, resa),
+    res: { plat: resa.plat, guest: resa.guest, guests: resa.guests, nights: nights(resa.start, resa.end) },
+    next: suivante ? { guest: suivante.guest, guests: suivante.guests, at: inf.checkin || '16:00' } : null
+  };
+  state.missions.push(m);
+  state.missions.sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : 0; });
+  return m;
+}
+
+/** Ajoute une réservation déjà normalisée et crée sa mission de départ. */
+function ajouterResa(pid, resa) {
+  state.resas[pid] = resasOf(pid).concat([resa]).sort(function (a, b) {
+    return a.start < b.start ? -1 : a.start > b.start ? 1 : 0;
+  });
+  creerMissionDepart(pid, resa);
+  return resa;
+}
+
+/** Retire une réservation et, si elle n'a pas été prise, sa mission de départ. */
+function retirerResa(pid, resa) {
+  state.resas[pid] = resasOf(pid).filter(function (x) { return x !== resa; });
+  var cle = resaKey(pid, resa);
+  state.missions = state.missions.filter(function (m) {
+    return !(m.fromResa === cle && m.status === 'dispo');
+  });
+}
+
+/* Fusion d'un lot de réservations venu d'une source extérieure (iCal, Beds24).
+   Rien ne l'appelle encore : le navigateur ne peut pas interroger ces services
+   (voir CONNECTEURS et D-42). C'est la porte d'entrée prête pour le serveur,
+   et elle est écrite ici pour que les écrans n'aient rien à changer ce jour-là.
+
+   Règle de rapprochement : l'identifiant d'origine (uid). À défaut, un séjour
+   qui a les mêmes dates dans le même logement est considéré comme le même.
+   Rend le détail de ce qui a été fait, pour l'afficher au propriétaire. */
+function fusionnerResas(pid, lot, source) {
+  var bilan = { ajoutees: 0, majs: 0, annulees: 0, inchangees: 0 };
+
+  lot.forEach(function (brut) {
+    var incoming = normaliserResa(brut, source, pid);
+    var connue = resasOf(pid).find(function (x) {
+      return (incoming.uid && x.uid === incoming.uid) ||
+        (!incoming.uid && x.start === incoming.start && x.end === incoming.end);
+    });
+
+    if (!connue) {
+      if (incoming.statut === 'annule') return;      // annulation d'un séjour inconnu : rien à faire
+      ajouterResa(pid, incoming);
+      bilan.ajoutees++;
+      return;
+    }
+
+    if (incoming.statut === 'annule') {
+      retirerResa(pid, connue);
+      bilan.annulees++;
+      return;
+    }
+
+    var change = ['plat', 'guest', 'guests', 'start', 'end', 'montant'].some(function (k) {
+      return incoming[k] !== null && connue[k] !== incoming[k];
+    });
+    if (!change) { bilan.inchangees++; return; }
+
+    // Les dates ont bougé : la mission de départ doit suivre.
+    var datesBougent = connue.end !== incoming.end;
+    if (datesBougent) retirerResa(pid, connue);
+    ['plat', 'guest', 'guests', 'start', 'end', 'uid', 'source'].forEach(function (k) { connue[k] = incoming[k]; });
+    if (incoming.montant !== null) connue.montant = incoming.montant;
+    if (datesBougent) { state.resas[pid] = resasOf(pid).concat([connue]); creerMissionDepart(pid, connue); }
+    bilan.majs++;
+  });
+
+  state.resas[pid] = resasOf(pid).sort(function (a, b) {
+    return a.start < b.start ? -1 : a.start > b.start ? 1 : 0;
+  });
+  return bilan;
+}
+
+/** Nuits d'un séjour qui tombent dans un mois donné (un séjour peut être à cheval). */
+function nuitsDansMois(r, mois) {
+  var n = 0;
+  for (var j = r.start; j < r.end; j = jourPlus(j, 1)) if (moisDe(j) === mois) n++;
+  return n;
+}
+
 /* Articles de stock : liste à plat, noms de catégories, et regroupement. */
 function arts() { return state.articles; }
 function groups() {
@@ -550,12 +810,29 @@ function grouped() {
   });
 }
 
-/* Biens sur lesquels un prestataire a le droit de se positionner. */
+/* Biens confiés à un prestataire : missions pour une femme de ménage,
+   calendrier pour une remise des clés. */
 function allowedProps(agentId) {
   var a = state.agents.find(function (x) { return x.id === agentId; });
   return a && a.props ? a.props : [];
 }
-function mayTake(agentId, pid) { return allowedProps(agentId).indexOf(pid) >= 0; }
+
+/** Ce prestataire remet-il les clés (au lieu de faire le ménage) ? */
+function isCles(agentId) { return agent(agentId).kind === 'cles'; }
+
+/** Voit-il ce logement (calendrier, adresse, voyageurs) ? */
+function maySee(agentId, pid) { return allowedProps(agentId).indexOf(pid) >= 0; }
+
+/** Peut-il prendre une mission sur ce logement ? Jamais pour une remise des
+    clés : ce métier ne passe pas par les missions. */
+function mayTake(agentId, pid) { return !isCles(agentId) && maySee(agentId, pid); }
+
+/** Écran d'accueil du compte connecté. */
+function homePath() {
+  if (state.auth === 'owner') return '#/admin';
+  if (state.auth === 'presta') return isCles(state.me) ? '#/app/calendrier' : '#/app/missions';
+  return '#/login';
+}
 
 /* Nom court pour les en-têtes de colonnes : on coupe entre deux mots,
    jamais au milieu d'un mot. */
@@ -673,6 +950,63 @@ function readyInfo(pid) {
 }
 
 /* --------------------------------------------------------------------------
+   Calendrier de la remise des clés
+   -------------------------------------------------------------------------- */
+
+var JOURS = ['dimanche', 'lundi', 'mardi', 'mercredi', 'jeudi', 'vendredi', 'samedi'];
+
+/** « Aujourd’hui », « Demain », sinon « vendredi 31 juil. ». */
+function jourLabel(iso) {
+  if (iso === TODAY) return 'Aujourd’hui';
+  var d = new Date(Date.parse(iso + 'T00:00:00Z'));
+  var demain = new Date(Date.parse(TODAY + 'T00:00:00Z') + 86400000);
+  if (d.getTime() === demain.getTime()) return 'Demain';
+  return JOURS[d.getUTCDay()] + ' ' + fmtDate(iso);
+}
+
+/** Arrivées et départs des logements confiés à un prestataire de remise des
+    clés, dans l'ordre du temps. Un séjour donne deux mouvements : le voyageur
+    qui arrive (on lui remet les clés) et celui qui part (on les récupère). */
+function keyEvents(agentId) {
+  var out = [];
+  allowedProps(agentId).forEach(function (pid) {
+    var inf = state.info[pid] || {};
+    resasOf(pid).forEach(function (r) {
+      // Le logement peut être prêt en avance : c'est l'heure réelle qui compte.
+      var rd = r.start === TODAY ? readyInfo(pid) : null;
+      out.push({
+        pid: pid, kind: 'arrivee', date: r.start,
+        hour: (rd && rd.at) || inf.checkin || '16:00', early: !!rd,
+        guest: r.guest, guests: r.guests, nights: nights(r.start, r.end), resa: r
+      });
+      out.push({
+        pid: pid, kind: 'depart', date: r.end,
+        hour: inf.checkout || '11:00', parti: departAt(pid, r),
+        guest: r.guest, guests: r.guests, nights: nights(r.start, r.end), resa: r
+      });
+    });
+  });
+
+  // Le même jour, on récupère les clés du partant avant d'accueillir l'arrivant.
+  out.sort(function (a, b) {
+    if (a.date !== b.date) return a.date < b.date ? -1 : 1;
+    if (a.kind !== b.kind) return a.kind === 'depart' ? -1 : 1;
+    return a.hour < b.hour ? -1 : a.hour > b.hour ? 1 : 0;
+  });
+  return out;
+}
+
+/** Les mouvements d'un jour précis. */
+function keyEventsOn(agentId, iso) {
+  return keyEvents(agentId).filter(function (e) { return e.date === iso; });
+}
+
+/** Les mouvements à venir, aujourd'hui exclu. */
+function keyEventsNext(agentId) {
+  return keyEvents(agentId).filter(function (e) { return e.date > TODAY; });
+}
+
+/* --------------------------------------------------------------------------
    Avis des voyageurs (propreté à l'arrivée, séjour au départ)
    -------------------------------------------------------------------------- */
 
@@ -732,8 +1066,12 @@ function planUrl(adresse) {
 function inviteTexte(a) {
   var prenom = String(a.name || '').split(/\s+/)[0] || '';
   return 'Bonjour ' + prenom + ',\n\n' +
-    'Tu peux désormais suivre tes missions depuis ton téléphone avec WARME House : ' +
-    'les ménages à prendre, la checklist de chaque logement, le relevé des stocks et tes gains du mois.\n\n' +
+    (a.kind === 'cles'
+      ? 'Tu peux désormais consulter depuis ton téléphone, avec WARME House, le calendrier ' +
+        'des logements dont tu remets les clés : qui arrive, qui repart, à quelle heure, ' +
+        'le nom du voyageur et le nombre de personnes.\n\n'
+      : 'Tu peux désormais suivre tes missions depuis ton téléphone avec WARME House : ' +
+        'les ménages à prendre, la checklist de chaque logement, le relevé des stocks et tes gains du mois.\n\n') +
     'Voici ton lien :\n' + appUrl() + '\n\n' +
     'Pour te connecter :\n' +
     '1. Ouvre le lien sur ton téléphone\n' +
@@ -812,13 +1150,23 @@ var PRESTA_TABS = [
   { key: 'profil', path: '#/app/profil', label: 'Profil' }
 ];
 
+/* Une remise des clés n'a ni mission, ni gain, ni note : deux onglets suffisent. */
+var CLES_TABS = [
+  { key: 'calendrier', path: '#/app/calendrier', label: 'Calendrier' },
+  { key: 'profil', path: '#/app/profil', label: 'Profil' }
+];
+
 var OWNER_NAV = [
   { key: 'dash', path: '#/admin', label: 'Tableau de bord', color: C.terracotta },
+  { key: 'calendrier', path: '#/admin/calendrier', label: 'Calendrier', color: C.bleu },
   { key: 'missions', path: '#/admin/missions', label: 'Missions', color: C.bleu },
+  { key: 'messages', path: '#/admin/messages', label: 'Messages', color: C.vert },
+  { key: 'auto', path: '#/admin/messages-programmes', label: 'Messages programmés', color: '#7A6BA8' },
+  { key: 'stats', path: '#/admin/statistiques', label: 'Statistiques', color: C.ambre },
   { key: 'agents', path: '#/admin/prestataires', label: 'Prestataires', color: '#8A6A4F' },
   { key: 'avis', path: '#/admin/commentaires', label: 'Commentaires', color: '#7A6BA8' },
   { key: 'stocks', path: '#/admin/stocks', label: 'Stocks', color: C.ambre },
-  { key: 'biens', path: '#/admin/biens', label: 'Biens & iCal', color: C.vert }
+  { key: 'biens', path: '#/admin/biens', label: 'Biens & connexions', color: C.vert }
 ];
 
 function parseRoute() {
@@ -840,6 +1188,7 @@ function parseRoute() {
       if (sub === 'incident') return { name: 'p-incident', id: seg[2] };
       return { name: 'p-detail', id: seg[2] };
     }
+    if (seg[1] === 'calendrier') return { name: 'p-cles', id: null };
     if (seg[1] === 'mes-missions') return { name: 'p-mes', id: null };
     if (seg[1] === 'notes') return { name: 'p-notes', id: null };
     if (seg[1] === 'gains') return { name: 'p-gains', id: null };
@@ -849,6 +1198,11 @@ function parseRoute() {
 
   if (seg[0] === 'admin') {
     if (seg[1] === 'missions') return { name: seg[2] ? 'o-mission' : 'o-missions', id: seg[2] || null };
+    if (seg[1] === 'calendrier') return { name: 'o-cal', id: null };
+    if (seg[1] === 'reservations') return { name: 'o-resa', id: seg[2] || null };
+    if (seg[1] === 'messages') return { name: seg[2] ? 'o-msg' : 'o-msgs', id: seg[2] || null };
+    if (seg[1] === 'messages-programmes') return { name: 'o-auto', id: null };
+    if (seg[1] === 'statistiques') return { name: 'o-stats', id: null };
     if (seg[1] === 'prestataires') return { name: 'o-agents', id: null };
     if (seg[1] === 'commentaires') return { name: 'o-avis', id: null };
     if (seg[1] === 'stocks') return { name: 'o-stocks', id: null };
@@ -882,14 +1236,26 @@ function guard() {
     if (r.name !== 'login') { location.replace('#/login'); return null; }
     return r;
   }
-  if (state.auth === 'presta' && (isOwner || r.name === 'login')) { location.replace('#/app/missions'); return null; }
+  if (state.auth === 'presta' && (isOwner || r.name === 'login')) { location.replace(homePath()); return null; }
   if (state.auth === 'owner' && (isPresta || r.name === 'login')) { location.replace('#/admin'); return null; }
+
+  // Chaque métier reste chez lui : la remise des clés n'a que son calendrier
+  // et son profil ; une femme de ménage n'a pas ce calendrier.
+  if (state.auth === 'presta') {
+    var cles = isCles(state.me);
+    if (cles && r.name !== 'p-cles' && r.name !== 'p-profil') { location.replace('#/app/calendrier'); return null; }
+    if (!cles && r.name === 'p-cles') { location.replace('#/app/missions'); return null; }
+  }
 
   // Une mission ouverte doit exister.
   if (r.id && isPresta && !mission(r.id)) { location.replace('#/app/missions'); return null; }
 
   // La fiche mission du propriétaire suppose que la mission existe.
   if (r.name === 'o-mission' && !mission(r.id)) { location.replace('#/admin/missions'); return null; }
+
+  // Réservation et conversation : seulement sur un séjour qui existe encore.
+  if (r.name === 'o-resa' && !resaById(r.id)) { location.replace('#/admin/calendrier'); return null; }
+  if (r.name === 'o-msg' && !resaById(r.id)) { location.replace('#/admin/messages'); return null; }
 
   // Un prestataire ne voit que les biens qui lui sont autorisés.
   if (r.id && isPresta) {
@@ -966,17 +1332,19 @@ function prestaShell(head, body, foot, opts) {
 }
 
 function tabBar() {
-  var dispoCount = dispoForMe().length;
-  return '<nav class="tabbar">' + PRESTA_TABS.map(function (t) {
+  var cles = isCles(state.me);
+  var dispoCount = cles ? keyEventsOn(state.me, TODAY).length : dispoForMe().length;
+  return '<nav class="tabbar">' + (cles ? CLES_TABS : PRESTA_TABS).map(function (t) {
     var on = routeTab() === t.key;
-    var badge = t.key === 'missions' && dispoCount > 0
-      ? '<div class="tab-badge num">' + dispoCount + ' new</div>' : '';
+    var badge = dispoCount > 0 && (cles ? t.key === 'calendrier' : t.key === 'missions')
+      ? '<div class="tab-badge num">' + dispoCount + (cles ? ' auj.' : ' new') + '</div>' : '';
     return '<button type="button"' + (on ? ' aria-current="page"' : '') + act('nav', { path: t.path }) + '>' +
       '<div class="tab-dot"></div><div class="tab-label">' + t.label + '</div>' + badge + '</button>';
   }).join('') + '</nav>';
 }
 
 function routeTab() {
+  if (route.name === 'p-cles') return 'calendrier';
   if (route.name === 'p-mes') return 'mes-missions';
   if (route.name === 'p-notes') return 'notes';
   if (route.name === 'p-gains') return 'gains';
@@ -1450,12 +1818,124 @@ function viewPrestaNotes() {
 
 /* --- Profil -------------------------------------------------------------- */
 
+/* --- Calendrier de la remise des clés ------------------------------------ */
+
+/** Une ligne d'arrivée ou de départ, avec le nom du voyageur. */
+function keyRow(e) {
+  var p = prop(e.pid), arr = e.kind === 'arrivee';
+  return '<article class="card kd-row" style="--accent:' + p.color + '">' +
+    '<div class="day-badge">' +
+      '<div class="d num">' + e.date.split('-')[2] + '</div>' +
+      '<div class="m">' + MOIS[parseInt(e.date.split('-')[1], 10) - 1] + '</div>' +
+    '</div>' +
+    '<span class="bar" style="background:' + p.color + '"></span>' +
+    '<div class="grow">' +
+      '<div class="kd-top">' +
+        '<span class="badge ' + (arr ? 'badge--green' : 'badge--amber') + '">' +
+          (arr ? '→ Remise des clés' : '← Retour des clés') + '</span>' +
+        '<span class="kd-hour num">' + esc(e.hour) + '</span>' +
+      '</div>' +
+      '<div class="kd-guest">' + esc(e.guest) + '</div>' +
+      '<div class="kd-meta num">' + e.guests + (e.guests > 1 ? ' voyageurs' : ' voyageur') +
+        ' · ' + e.nights + ' nuits · ' + esc(jourLabel(e.date)) + '</div>' +
+      '<div class="kd-place">' + esc(p.name) + '<span class="kd-addr">' + esc(p.address + ', ' + p.city) + '</span></div>' +
+      (e.early ? '<div class="kd-flag kd-flag--green">✨ Logement prêt en avance : clés remises dès ' + esc(e.hour) + '</div>' : '') +
+      (e.parti ? '<div class="kd-flag kd-flag--green">✓ Le voyageur a signalé son départ à ' + esc(e.parti) + '</div>' : '') +
+    '</div></article>';
+}
+
+/** Le mois d'un logement : grille, puis les séjours avec le nom du voyageur. */
+function clesCalendar(pid) {
+  var p = prop(pid), inf = state.info[pid] || {};
+  var cm = state.calMonth;
+  var cy = parseInt(cm.split('-')[0], 10), cmo = parseInt(cm.split('-')[1], 10);
+  var first = new Date(Date.UTC(cy, cmo - 1, 1));
+  var daysIn = new Date(Date.UTC(cy, cmo, 0)).getUTCDate();
+  var lead = (first.getUTCDay() + 6) % 7;
+  var resas = resasOf(pid);
+
+  var cells = '';
+  for (var i = 0; i < lead; i++) cells += '<div class="cal-cell empty"></div>';
+  for (var d = 1; d <= daysIn; d++) {
+    var iso = cy + '-' + String(cmo).padStart(2, '0') + '-' + String(d).padStart(2, '0');
+    var r = resas.find(function (x) { return iso >= x.start && iso <= x.end; });
+    var cls = 'cal-cell' + (iso === TODAY ? ' today' : r ? ' busy' : '');
+    var bar = r
+      ? '<span class="cal-bar" style="background:' + p.color +
+        ';margin-left:' + (r.start === iso ? '45%' : '0') + ';margin-right:' + (r.end === iso ? '45%' : '0') + '"></span>'
+      : '';
+    cells += '<div class="' + cls + '"><span class="d num">' + d + '</span>' + bar + '</div>';
+  }
+
+  // Les séjours qui touchent le mois affiché, dans l'ordre.
+  var debut = cy + '-' + String(cmo).padStart(2, '0') + '-01';
+  var fin = cy + '-' + String(cmo).padStart(2, '0') + '-' + String(daysIn).padStart(2, '0');
+  var dumois = resas.filter(function (x) { return x.end >= debut && x.start <= fin; })
+    .slice().sort(function (a, b) { return a.start < b.start ? -1 : 1; });
+
+  return '<article class="card" style="border-radius:22px">' +
+    '<div class="kd-head">' +
+      '<span class="dot" style="background:' + p.color + '"></span>' +
+      '<span class="kd-prop">' + esc(p.name) + '</span>' +
+    '</div>' +
+    '<div class="kd-addr" style="margin-top:2px">' + esc(p.address + ', ' + p.city) + '</div>' +
+    '<div class="cal cal--mini">' +
+      ['L', 'M', 'M', 'J', 'V', 'S', 'D'].map(function (x) { return '<div class="cal-dow">' + x + '</div>'; }).join('') +
+      cells +
+    '</div>' +
+    '<div class="kd-stays">' + (dumois.length ? dumois.map(function (r) {
+      return '<div class="kd-stay">' +
+        '<div class="kd-stay-name">' + esc(r.guest) + '</div>' +
+        '<div class="kd-meta num">' + fmtDate(r.start) + ' → ' + fmtDate(r.end) + ' · ' +
+          nights(r.start, r.end) + ' nuits · ' + r.guests + (r.guests > 1 ? ' voyageurs' : ' voyageur') + '</div>' +
+        '<div class="kd-meta num">Arrivée ' + esc(inf.checkin || '16:00') + ' · départ ' + esc(inf.checkout || '11:00') +
+          (departAt(pid, r) ? ' · parti à ' + esc(departAt(pid, r)) : '') + '</div>' +
+        '</div>';
+    }).join('') : '<p class="empty" style="padding:14px 0">Aucun séjour ce mois-ci.</p>') + '</div>' +
+    '</article>';
+}
+
+function viewPrestaCles() {
+  var pids = allowedProps(state.me).filter(function (pid) { return !prop(pid).gone; });
+  var auj = keyEventsOn(state.me, TODAY);
+  var next = keyEventsNext(state.me).slice(0, 10);
+
+  var body = '<div class="stack" style="gap:14px">' +
+    '<h2 class="kd-title">Aujourd’hui · ' + esc(TODAY_LABEL) + '</h2>' +
+    (auj.length ? auj.map(keyRow).join('')
+      : '<p class="empty">Aucune remise de clés aujourd’hui.</p>') +
+
+    '<h2 class="kd-title">À venir</h2>' +
+    (next.length ? next.map(keyRow).join('')
+      : '<p class="empty">Rien de prévu sur les logements qui te sont confiés.</p>') +
+
+    '<h2 class="kd-title">Calendrier des logements</h2>' +
+    '<div class="seg">' + [['2026-07', 'Juillet'], ['2026-08', 'Août']].map(function (m) {
+      return '<button type="button" aria-pressed="' + (state.calMonth === m[0]) + '"' +
+        act('cal-month', { m: m[0] }) + '>' + m[1] + '</button>';
+    }).join('') + '</div>' +
+    (pids.length ? pids.map(clesCalendar).join('')
+      : '<p class="empty">Aucun logement ne t’est confié pour le moment. ' +
+        'Le propriétaire peut te les attribuer depuis sa rubrique « Prestataires ».</p>') +
+
+    '<p class="sec-note center" style="padding-top:6px">Tu vois les arrivées et les départs des logements ' +
+      'qui te sont confiés. Le ménage, les stocks et les gains ne te concernent pas.</p>' +
+    '</div>';
+
+  return prestaShell(prestaHeader(auj.length + ' remise(s) de clés aujourd’hui', 'Calendrier'), body);
+}
+
 function viewPrestaProfil() {
   var me = agent(state.me);
   var r = agentRating(state.me);
   var autorises = (me.props || []).length;
 
-  var rows = [
+  var cles = isCles(state.me);
+  var rows = cles ? [
+    ['Métier', 'Remise des clés'],
+    ['Logements confiés', autorises + ' sur ' + state.props.length],
+    ['Notifications', 'Arrivées et départs']
+  ] : [
     ['Biens autorisés', autorises + ' sur ' + state.props.length],
     ['Note des voyageurs', r ? fmtNote(r.avg) + ' / 5' : 'Pas encore de note'],
     ['Coordonnées bancaires', me.iban],
@@ -1467,7 +1947,7 @@ function viewPrestaProfil() {
       '<div class="avatar" style="width:56px;height:56px;font-size:19px;background:' + me.avatarBg + ';color:' + me.avatarFg + '">' + me.init + '</div>' +
       '<div class="grow"><div style="font:700 20px Figtree,sans-serif">' + esc(me.name) + '</div>' +
       '<div style="font:500 13px Figtree,sans-serif;color:var(--muted)">' + esc(me.role) + ' · depuis ' + esc(me.since) + '</div></div>' +
-      (r ? '<button type="button" style="text-align:right;flex:none"' + act('nav', { path: '#/app/notes' }) + '>' +
+      (r && !cles ? '<button type="button" style="text-align:right;flex:none"' + act('nav', { path: '#/app/notes' }) + '>' +
         '<div class="serif num" style="font-size:22px;line-height:1">' + fmtNote(r.avg) + '</div>' +
         '<div style="font:600 10.5px Figtree,sans-serif;color:var(--muted);letter-spacing:.05em;text-transform:uppercase">sur 5</div>' +
         '</button>' : '') +
@@ -1852,6 +2332,702 @@ function viewOwnerMission() {
 
 /* --- Prestataires -------------------------------------------------------- */
 
+/* --------------------------------------------------------------------------
+   Calendrier : le planning de tous les logements
+   Logements en lignes, jours en colonnes, une barre par séjour aux couleurs
+   de la plateforme. La barre commence et finit au milieu du jour, pour que le
+   départ de l'un et l'arrivée de l'autre se voient le même jour (turnover).
+   -------------------------------------------------------------------------- */
+
+var PLAN_JOURS = 31;    // nombre de jours affichés
+var PLAN_CASE = 38;     // largeur d'un jour en pixels — doit suivre styles.css
+
+/** Logements affichés dans le planning (null = tous). */
+function planPropIds() {
+  var tous = state.props.map(function (p) { return p.id; });
+  if (!Array.isArray(state.planProps) || !state.planProps.length) return tous;
+  var l = state.planProps.filter(function (pid) { return tous.indexOf(pid) >= 0; });
+  return l.length ? l : tous;
+}
+
+function viewOwnerCal() {
+  var start = state.planStart, fin = jourPlus(start, PLAN_JOURS - 1);
+  var pids = planPropIds();
+
+  // En-tête des jours.
+  var entete = '';
+  for (var i = 0; i < PLAN_JOURS; i++) {
+    var iso = jourPlus(start, i);
+    var d = new Date(Date.parse(iso + 'T00:00:00Z'));
+    var wd = d.getUTCDay();
+    var cls = 'plan-day' + (wd === 0 || wd === 6 ? ' plan-day--we' : '') + (iso === TODAY ? ' plan-day--today' : '');
+    entete += '<div class="' + cls + '"><span class="w">' + ['D', 'L', 'M', 'M', 'J', 'V', 'S'][wd] + '</span>' +
+      '<span class="n num">' + parseInt(iso.slice(8), 10) + '</span></div>';
+  }
+
+  var lignes = pids.map(function (pid) {
+    var p = prop(pid);
+
+    var fond = '';
+    for (var j = 0; j < PLAN_JOURS; j++) {
+      var iso2 = jourPlus(start, j);
+      var wd2 = new Date(Date.parse(iso2 + 'T00:00:00Z')).getUTCDay();
+      fond += '<div class="plan-cell' + (wd2 === 0 || wd2 === 6 ? ' plan-cell--we' : '') +
+        (iso2 === TODAY ? ' plan-cell--today' : '') + '"></div>';
+    }
+
+    var nuitsOcc = 0;
+    var barres = resasOf(pid).map(function (r) {
+      if (r.end <= start || r.start > fin) return '';          // hors de la fenêtre
+      var i0 = nights(start, r.start), i1 = nights(start, r.end);
+      for (var n = Math.max(0, i0); n < Math.min(PLAN_JOURS, i1); n++) nuitsOcc++;
+
+      var coupeG = i0 < 0, coupeD = i1 > PLAN_JOURS;
+      var g = Math.max(0, i0), dte = Math.min(PLAN_JOURS, i1);
+      var left = coupeG ? 0 : (g + 0.5) * PLAN_CASE;
+      var right = coupeD ? PLAN_JOURS * PLAN_CASE : (dte + 0.5) * PLAN_CASE;
+      var pl = PLATS[r.plat] || PLATS['Direct'];
+
+      return '<button type="button" class="plan-bar' + (coupeG ? ' plan-bar--g' : '') + (coupeD ? ' plan-bar--d' : '') + '"' +
+        ' style="left:' + Math.round(left + 2) + 'px;width:' + Math.max(26, Math.round(right - left - 4)) + 'px;background:' + pl.color + '"' +
+        ' title="' + esc(r.guest + ' · ' + fmtDate(r.start) + ' → ' + fmtDate(r.end) + ' · ' + r.plat) + '"' +
+        act('open-resa', { rid: r.id }) + '>' +
+        '<span class="plan-guest">' + esc(r.guest) + '</span></button>';
+    }).join('');
+
+    var taux = Math.round(nuitsOcc / PLAN_JOURS * 100);
+
+    return '<div class="plan-row">' +
+      '<div class="plan-name">' +
+        '<button type="button" class="plan-prop"' + act('nav', { path: '#/admin/biens/' + pid }) + '>' +
+          '<span class="dot" style="background:' + p.color + '"></span>' +
+          '<span class="grow"><span class="plan-prop-n">' + esc(p.short) + '</span>' +
+          '<span class="plan-prop-s num">' + taux + ' % occupé</span></span></button>' +
+      '</div>' +
+      '<div class="plan-days" style="width:' + (PLAN_JOURS * PLAN_CASE) + 'px">' +
+        '<div class="plan-cells">' + fond + '</div>' + barres +
+      '</div></div>';
+  }).join('');
+
+  var totalResas = allResas().filter(function (x) {
+    return planPropIds().indexOf(x.pid) >= 0 && x.r.end > start && x.r.start <= fin;
+  }).length;
+
+  return ownerShell('calendrier',
+    '<div class="page-head">' +
+      '<div><h1 class="page-title">Calendrier</h1>' +
+      '<p class="page-sub">' + totalResas + ' séjour(s) du ' + fmtDate(start) + ' au ' + fmtDate(fin) +
+        ' · cliquez sur une barre pour ouvrir la réservation</p></div>' +
+      '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">' +
+        '<button type="button" class="btn btn--xs" style="background:var(--cream);color:var(--ink-soft)"' +
+          act('plan-move', { j: '-7' }) + '>← 7 jours</button>' +
+        '<button type="button" class="btn btn--xs" style="background:var(--ink);color:#fff"' +
+          act('plan-today') + '>Aujourd’hui</button>' +
+        '<button type="button" class="btn btn--xs" style="background:var(--cream);color:var(--ink-soft)"' +
+          act('plan-move', { j: '7' }) + '>7 jours →</button>' +
+      '</div>' +
+    '</div>' +
+
+    '<div class="chiprow" style="margin-top:18px">' +
+      '<span class="perm-label">Logements :</span>' +
+      state.props.map(function (p) {
+        var on = planPropIds().indexOf(p.id) >= 0;
+        return '<button type="button" class="perm-chip" aria-pressed="' + on + '" style="--accent:' + p.color + '"' +
+          act('plan-prop', { pid: p.id }) + '>' +
+          '<span class="dot" style="background:' + (on ? p.color : 'rgba(36,30,26,.2)') + '"></span>' + esc(p.short) + '</button>';
+      }).join('') +
+      '<span style="margin-left:auto;display:flex;gap:14px;flex-wrap:wrap">' + Object.keys(PLATS).map(function (k) {
+        return '<span style="display:flex;align-items:center;gap:7px;font:600 12px Figtree,sans-serif;color:var(--muted3)">' +
+          '<span style="width:16px;height:8px;border-radius:9px;background:' + PLATS[k].color + '"></span>' + k + '</span>';
+      }).join('') + '</span>' +
+    '</div>' +
+
+    '<div class="card" style="margin-top:16px;padding:0;overflow:hidden">' +
+      '<div class="plan-scroll">' +
+        '<div class="plan">' +
+          '<div class="plan-row plan-row--head">' +
+            '<div class="plan-name plan-name--head">Logement</div>' +
+            '<div class="plan-days" style="width:' + (PLAN_JOURS * PLAN_CASE) + 'px">' +
+              '<div class="plan-cells">' + entete + '</div></div>' +
+          '</div>' +
+          (lignes || '<p class="empty">Aucun logement.</p>') +
+        '</div>' +
+      '</div>' +
+    '</div>' +
+
+    '<p class="sec-note" style="margin-top:14px">Les séjours viennent des liens iCal et des saisies manuelles. ' +
+      'Avec Beds24, ils arriveront tout seuls, montant compris — voir « Biens & connexions ».</p>');
+}
+
+/* --- Fiche d'une réservation --------------------------------------------- */
+
+function viewOwnerResa() {
+  var f = resaById(route.id);
+  if (!f) return viewOwnerCal();
+  var pid = f.pid, r = f.r, p = prop(pid), inf = state.info[pid] || {};
+  var pl = PLATS[r.plat] || PLATS['Direct'];
+  var src = SOURCES[r.source] || SOURCES.manuel;
+  var nb = nights(r.start, r.end);
+  var mnt = montantResa(pid, r);
+  var lie = state.missions.find(function (m) { return m.fromResa === resaKey(pid, r); });
+  var msgs = messagesDe(r.id);
+  var parti = departAt(pid, r);
+  var avisSej = avisDone(pid, r, 'sejour');
+
+  var lignes = [
+    ['Plateforme', r.plat],
+    ['Origine', src.label + (r.uid ? ' · réf. ' + r.uid : '')],
+    ['Arrivée', fmtDate(r.start) + ' à partir de ' + (inf.checkin || '16:00')],
+    ['Départ', fmtDate(r.end) + ' avant ' + (inf.checkout || '11:00') + (parti ? ' · parti à ' + parti : '')],
+    ['Durée', nb + ' nuits'],
+    ['Voyageurs', r.guests],
+    ['Prix moyen par nuit', (nb ? Math.round(mnt / nb) : 0) + ' €']
+  ];
+
+  return ownerShell('calendrier',
+    '<button type="button" class="btn-back" style="min-height:38px;font-size:13px;color:var(--muted)"' +
+      act('nav', { path: '#/admin/calendrier' }) + '>← Retour au calendrier</button>' +
+
+    '<div class="page-head" style="margin-top:10px">' +
+      '<div>' +
+        '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">' +
+          '<span class="badge" style="background:' + pl.bg + ';color:' + pl.fg + '">' + esc(r.plat) + '</span>' +
+          '<span class="badge" style="background:' + src.bg + ';color:' + src.fg + '">' + esc(src.court) + '</span>' +
+          (r.statut === 'annule' ? '<span class="badge badge--terra">Annulée</span>' : '') +
+        '</div>' +
+        '<h1 class="page-title" style="margin-top:8px">' + esc(r.guest) + '</h1>' +
+        '<p class="page-sub"><span class="dot" style="background:' + p.color + '"></span> ' + esc(p.name) + ' · ' + esc(p.city) + '</p>' +
+      '</div>' +
+      '<div class="kpis">' +
+        '<div class="kpi"><div class="v num">' + mnt + ' €</div><div class="l">' +
+          (montantEstime(r) ? 'estimé au prix par nuit' : 'montant du séjour') + '</div></div>' +
+        '<div class="kpi"><div class="v num">' + nb + '</div><div class="l">nuits</div></div>' +
+      '</div>' +
+    '</div>' +
+
+    '<div class="cols" style="margin-top:22px">' +
+      '<div class="card" style="flex:1.2;min-width:min(100%,320px);padding:22px">' +
+        '<h2 style="font:700 16px Figtree,sans-serif;margin:0 0 6px">Le séjour</h2>' +
+        '<div class="list">' + lignes.map(function (l) {
+          return '<div class="kv" style="padding:12px 0"><span>' + esc(l[0]) + '</span>' +
+            '<span class="num" style="color:var(--ink-soft);font-weight:600">' + esc(l[1]) + '</span></div>';
+        }).join('') + '</div>' +
+
+        '<div style="margin-top:16px;padding-top:16px;border-top:1px solid rgba(36,30,26,.08)">' +
+          '<label class="lab" for="rm-' + esc(r.id) + '">Montant du séjour (€)</label>' +
+          '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:4px">' +
+            '<input class="inp num" id="rm-' + esc(r.id) + '" type="number" min="0" style="flex:1;min-width:140px"' +
+              ' placeholder="' + (parseInt(inf.prixNuit, 10) || 0) + ' € × ' + nb + ' nuits" value="' +
+              (montantEstime(r) ? '' : esc(r.montant)) + '" data-fid="rm-' + esc(r.id) + '" data-in="resa-montant" data-rid="' + esc(r.id) + '">' +
+            (montantEstime(r) ? '' : '<button type="button" class="btn btn--xs" style="background:var(--cream);color:var(--ink-soft)"' +
+              act('resa-montant-auto', { rid: r.id }) + '>Revenir au calcul</button>') +
+          '</div>' +
+          '<p class="sec-note" style="margin-top:6px">Laissé vide, le montant est calculé au prix par nuit du logement. ' +
+            'Avec Beds24, c’est le montant réel de la plateforme qui s’inscrira ici.</p>' +
+        '</div>' +
+      '</div>' +
+
+      '<div style="flex:1;min-width:min(100%,300px);display:flex;flex-direction:column;gap:14px">' +
+        '<div class="card" style="padding:22px">' +
+          '<h2 style="font:700 16px Figtree,sans-serif;margin:0 0 10px">Ménage du départ</h2>' +
+          (lie
+            ? '<button type="button" class="resa-lien"' + act('nav', { path: '#/admin/missions/' + lie.id }) + '>' +
+                '<span class="grow"><span class="resa-lien-t">' + esc(service(lie.type).label) + '</span>' +
+                '<span class="resa-lien-s num">' + esc(lie.dateLabel) + ' · ' + esc(lie.windowLabel) + ' · ' + lie.price + ' €</span></span>' +
+                '<span class="badge ' + STATUS[lie.status].cls + '">' + esc(lie.taker ? STATUS[lie.status].label + ' · ' + lie.taker : STATUS[lie.status].label) + '</span>' +
+                '</button>'
+            : '<p class="sec-note">Aucune mission rattachée à ce départ.</p>') +
+        '</div>' +
+
+        '<div class="card" style="padding:22px">' +
+          '<h2 style="font:700 16px Figtree,sans-serif;margin:0 0 10px">Messages</h2>' +
+          '<button type="button" class="resa-lien"' + act('nav', { path: '#/admin/messages/' + r.id }) + '>' +
+            '<span class="grow"><span class="resa-lien-t">' + (msgs.length ? msgs.length + ' message(s)' : 'Aucun message') + '</span>' +
+            '<span class="resa-lien-s">Conversation avec ' + esc(r.guest) + '</span></span>' +
+            '<span class="resa-go">→</span></button>' +
+        '</div>' +
+
+        (avisSej ? '<div class="card" style="padding:22px">' +
+          '<h2 style="font:700 16px Figtree,sans-serif;margin:0 0 10px">Avis sur le séjour</h2>' +
+          '<div class="avis"><div class="avis-top">' + starsRead(avisSej.stars) +
+            '<span class="avis-meta num">' + esc(avisSej.dateLabel) + '</span></div>' +
+            (avisSej.texte ? '<p class="avis-txt">« ' + esc(avisSej.texte) + ' »</p>' : '') + '</div></div>' : '') +
+
+        '<div class="card" style="padding:22px">' +
+          '<h2 style="font:700 16px Figtree,sans-serif;margin:0 0 10px">Livret d’accueil</h2>' +
+          '<p class="sec-note" style="margin-bottom:10px">La page que voit le voyageur pour ce logement.</p>' +
+          '<button type="button" class="btn btn--sm" style="background:var(--cream);color:var(--ink-soft);width:100%"' +
+            act('nav', { path: '#/livret/' + pid }) + '>Ouvrir le livret</button>' +
+        '</div>' +
+
+        '<button type="button" class="btn-danger-xs" style="align-self:flex-start"' +
+          act('resa-remove', { rid: r.id }) + '>Supprimer cette réservation</button>' +
+      '</div>' +
+    '</div>');
+}
+
+/* --------------------------------------------------------------------------
+   Messages des voyageurs
+   La structure est en place : une conversation par séjour, classée par
+   voyageur. Le contenu arrivera de Beds24 — iCal ne transporte aucun message.
+   -------------------------------------------------------------------------- */
+
+function messagesDe(rid) {
+  return state.messages.filter(function (m) { return m.resa === rid; })
+    .sort(function (a, b) { return a.at < b.at ? -1 : 1; });
+}
+
+/** Séjours retenus par le filtre de la boîte de réception. */
+function conversations() {
+  return allResas().filter(function (x) {
+    if (state.msgFilter === 'avenir') return x.r.start > TODAY;
+    if (state.msgFilter === 'encours') return x.r.end >= TODAY;
+    return true;
+  });
+}
+
+function viewOwnerMsgs() {
+  var list = conversations();
+  var filtres = [['encours', 'En cours et à venir'], ['avenir', 'Arrivées à venir'], ['tous', 'Tous les séjours']];
+
+  return ownerShell('messages',
+    '<div class="page-head">' +
+      '<div><h1 class="page-title">Messages</h1>' +
+      '<p class="page-sub">Une conversation par séjour, tous logements et toutes plateformes réunis.</p></div>' +
+      '<div class="seg">' + filtres.map(function (f) {
+        return '<button type="button" aria-pressed="' + (state.msgFilter === f[0]) + '"' +
+          act('msg-filter', { f: f[0] }) + '>' + f[1] + '</button>';
+      }).join('') + '</div>' +
+    '</div>' +
+
+    '<div class="alert alert--blue" style="margin-top:20px">' +
+      '<div style="display:flex;align-items:center;gap:8px"><span class="dot" style="background:' + C.bleu + '"></span>' +
+        '<span class="kind">En attente de Beds24</span></div>' +
+      '<div class="title" style="color:var(--ink)">Les messages arriveront ici une fois Beds24 connecté</div>' +
+      '<div class="det">Airbnb et Booking.com n’envoient rien dans un lien iCal : seules leurs interfaces, ou un service ' +
+        'comme Beds24, donnent accès aux conversations. Le classement par voyageur est prêt, il ne manque que la source.</div>' +
+    '</div>' +
+
+    '<div class="card" style="margin-top:18px;padding:0;overflow:hidden">' + (list.length
+      ? list.map(function (x) {
+        var p = prop(x.pid), r = x.r, pl = PLATS[r.plat] || PLATS['Direct'];
+        var n = messagesDe(r.id).length;
+        var quand = r.start > TODAY ? 'arrive le ' + fmtDate(r.start)
+          : r.end < TODAY ? 'parti le ' + fmtDate(r.end) : 'sur place jusqu’au ' + fmtDate(r.end);
+        return '<button type="button" class="conv"' + act('nav', { path: '#/admin/messages/' + r.id }) + '>' +
+          '<span class="conv-av" style="background:' + p.tint + ';color:' + p.color + '">' +
+            esc(String(r.guest).slice(0, 1).toUpperCase()) + '</span>' +
+          '<span class="grow">' +
+            '<span class="conv-top"><span class="conv-n">' + esc(r.guest) + '</span>' +
+              '<span class="badge" style="background:' + pl.bg + ';color:' + pl.fg + '">' + esc(r.plat) + '</span></span>' +
+            '<span class="conv-s num">' + esc(p.short) + ' · ' + esc(quand) + '</span>' +
+          '</span>' +
+          '<span class="conv-r">' + (n ? '<span class="badge badge--green num">' + n + '</span>' : '<span class="conv-vide">aucun message</span>') + '</span>' +
+          '</button>';
+      }).join('')
+      : '<p class="empty">Aucun séjour dans ce filtre.</p>') + '</div>');
+}
+
+function viewOwnerMsg() {
+  var f = resaById(route.id);
+  if (!f) return viewOwnerMsgs();
+  var pid = f.pid, r = f.r, p = prop(pid), pl = PLATS[r.plat] || PLATS['Direct'];
+  var fil = messagesDe(r.id);
+
+  return ownerShell('messages',
+    '<button type="button" class="btn-back" style="min-height:38px;font-size:13px;color:var(--muted)"' +
+      act('nav', { path: '#/admin/messages' }) + '>← Toutes les conversations</button>' +
+
+    '<div class="page-head" style="margin-top:10px">' +
+      '<div><h1 class="page-title">' + esc(r.guest) + '</h1>' +
+      '<p class="page-sub"><span class="dot" style="background:' + p.color + '"></span> ' + esc(p.name) +
+        ' · ' + fmtDate(r.start) + ' → ' + fmtDate(r.end) + ' · ' + r.guests + ' voyageurs</p></div>' +
+      '<div style="display:flex;gap:8px;flex-wrap:wrap">' +
+        '<span class="badge" style="background:' + pl.bg + ';color:' + pl.fg + '">' + esc(r.plat) + '</span>' +
+        '<button type="button" class="btn btn--xs" style="background:var(--cream);color:var(--ink-soft)"' +
+          act('nav', { path: '#/admin/reservations/' + r.id }) + '>Voir la réservation</button>' +
+      '</div>' +
+    '</div>' +
+
+    '<div class="card" style="margin-top:20px;padding:22px">' + (fil.length
+      ? '<div class="stack" style="gap:10px">' + fil.map(function (m) {
+        return '<div class="msg msg--' + (m.sens === 'recu' ? 'in' : 'out') + '">' +
+          '<div class="msg-t">' + esc(m.texte) + '</div>' +
+          '<div class="msg-m num">' + esc(m.at) + '</div></div>';
+      }).join('') + '</div>'
+      : '<p class="empty" style="padding:30px 20px">Aucun message pour ce séjour.<br>' +
+        'Les échanges Airbnb et Booking.com apparaîtront ici dès que Beds24 sera connecté.</p>') +
+    '</div>' +
+
+    '<p class="sec-note" style="margin-top:14px">En attendant, répondez depuis l’application de la plateforme. ' +
+      'Rien n’est perdu : la conversation sera reprise ici lors de la première synchronisation.</p>');
+}
+
+/* --------------------------------------------------------------------------
+   Messages programmés
+   Le propriétaire écrit ses messages types et dit quand ils partent. L'envoi
+   lui-même viendra de Beds24 : un site sans serveur ne peut rien envoyer.
+   -------------------------------------------------------------------------- */
+
+var DECLENCHEURS = [
+  { key: 'reservation', label: 'Dès la réservation', offset: false, aide: 'Part aussitôt qu’une réservation arrive.' },
+  { key: 'avant_arrivee', label: 'Avant l’arrivée', offset: true, defaut: 3, aide: 'Le nombre de jours choisi avant la date d’arrivée.' },
+  { key: 'jour_arrivee', label: 'Le jour de l’arrivée', offset: false, aide: 'Le matin du jour d’arrivée.' },
+  { key: 'jour_depart', label: 'Le jour du départ', offset: false, aide: 'Le matin du départ, pour rappeler les consignes.' },
+  { key: 'apres_depart', label: 'Après le départ', offset: true, defaut: 1, aide: 'Le nombre de jours choisi après le départ.' }
+];
+
+var VARIABLES = [
+  ['{voyageur}', 'nom du voyageur'], ['{logement}', 'nom du logement'],
+  ['{arrivee}', 'date d’arrivée'], ['{depart}', 'date de départ'],
+  ['{heure_arrivee}', 'heure d’arrivée'], ['{heure_depart}', 'heure de départ'],
+  ['{nuits}', 'nombre de nuits'], ['{voyageurs}', 'nombre de voyageurs'],
+  ['{code}', 'code d’accès'], ['{wifi}', 'Wi-Fi'], ['{livret}', 'lien du livret d’accueil']
+];
+
+/* Trois messages types, proposés en un clic. Ils remplissent le formulaire :
+   rien n'est créé sans que le propriétaire ait relu et enregistré. */
+var MODELES_AUTO = [
+  {
+    nom: 'Bienvenue et confirmation', quand: 'reservation', decalage: 0, heure: '10:00',
+    texte: 'Bonjour {voyageur},\n\nMerci pour votre réservation au {logement} du {arrivee} au {depart} ({nuits} nuits).\n\n' +
+      'L’arrivée se fait à partir de {heure_arrivee} et le départ avant {heure_depart}.\n\n' +
+      'Vous trouverez toutes les informations pratiques dans le livret d’accueil : {livret}\n\nÀ bientôt !'
+  },
+  {
+    nom: 'La veille de l’arrivée', quand: 'avant_arrivee', decalage: 1, heure: '17:00',
+    texte: 'Bonjour {voyageur},\n\nNous vous attendons demain au {logement} à partir de {heure_arrivee}.\n\n' +
+      'Accès : {code}\nWi-Fi : {wifi}\n\nTout est détaillé ici : {livret}\n\nBon voyage !'
+  },
+  {
+    nom: 'Merci après le départ', quand: 'apres_depart', decalage: 1, heure: '11:00',
+    texte: 'Bonjour {voyageur},\n\nMerci d’avoir séjourné au {logement}. Nous espérons que tout s’est bien passé.\n\n' +
+      'Si le cœur vous en dit, un petit commentaire aide beaucoup les prochains voyageurs.\n\nAu plaisir de vous accueillir à nouveau !'
+  }
+];
+
+function declencheur(key) {
+  return DECLENCHEURS.find(function (d) { return d.key === key; }) || DECLENCHEURS[0];
+}
+
+/** Remplace les variables par les vraies informations du séjour. */
+function remplirVars(txt, pid, r) {
+  var inf = state.info[pid] || {}, p = prop(pid);
+  var vals = {
+    '{voyageur}': r.guest, '{logement}': p.name,
+    '{arrivee}': fmtDate(r.start), '{depart}': fmtDate(r.end),
+    '{heure_arrivee}': inf.checkin || '16:00', '{heure_depart}': inf.checkout || '11:00',
+    '{nuits}': nights(r.start, r.end), '{voyageurs}': r.guests,
+    '{code}': inf.code || '—', '{wifi}': inf.wifi || '—',
+    '{livret}': appUrl() + '#/livret/' + pid
+  };
+  return Object.keys(vals).reduce(function (t, k) { return t.split(k).join(vals[k]); }, String(txt || ''));
+}
+
+/** Date d'envoi d'une règle pour un séjour. null = dépend de la date de
+    réservation, que nous n'avons pas tant que la plateforme ne la donne pas. */
+function dateEnvoi(regle, r) {
+  var d = parseInt(regle.decalage, 10) || 0;
+  if (regle.quand === 'avant_arrivee') return jourPlus(r.start, -d);
+  if (regle.quand === 'jour_arrivee') return r.start;
+  if (regle.quand === 'jour_depart') return r.end;
+  if (regle.quand === 'apres_depart') return jourPlus(r.end, d);
+  return null;
+}
+
+/** Les envois prévus dans les 60 jours, tous logements confondus. */
+function prochainsEnvois() {
+  var out = [];
+  state.autoMsgs.forEach(function (rg) {
+    if (!rg.actif) return;
+    allResas().forEach(function (x) {
+      if (rg.props && rg.props.length && rg.props.indexOf(x.pid) < 0) return;
+      var d = dateEnvoi(rg, x.r);
+      if (!d || d < TODAY || d > jourPlus(TODAY, 60)) return;
+      out.push({ date: d, regle: rg, pid: x.pid, r: x.r });
+    });
+  });
+  return out.sort(function (a, b) {
+    return a.date < b.date ? -1 : a.date > b.date ? 1 : (a.regle.heure < b.regle.heure ? -1 : 1);
+  });
+}
+
+function formAuto() {
+  var a = state.am, dc = declencheur(a.quand);
+  return '<div class="card pop" style="margin-top:18px;padding:22px">' +
+    '<h2 style="font:700 16px Figtree,sans-serif;margin:0 0 16px">' +
+      (a.id ? 'Modifier le message' : 'Nouveau message programmé') + '</h2>' +
+
+    '<div class="cols" style="gap:14px">' +
+      '<div style="flex:2;min-width:min(100%,220px)"><label class="lab" for="am-nom">Nom (pour vous)</label>' +
+        '<input class="inp" id="am-nom" type="text" placeholder="Ex. La veille de l’arrivée" value="' + esc(a.nom) + '" data-fid="am-nom" data-in="am-nom"></div>' +
+      '<div style="flex:1.6;min-width:min(100%,200px)"><label class="lab" for="am-quand">Quand l’envoyer</label>' +
+        '<select class="inp" id="am-quand" data-fid="am-quand" data-ch="am-quand">' + DECLENCHEURS.map(function (d) {
+          return '<option value="' + d.key + '"' + (a.quand === d.key ? ' selected' : '') + '>' + esc(d.label) + '</option>';
+        }).join('') + '</select></div>' +
+      (dc.offset ? '<div style="flex:1;min-width:min(100%,130px)"><label class="lab" for="am-dec">Nombre de jours</label>' +
+        '<input class="inp num" id="am-dec" type="number" min="0" max="30" value="' + esc(a.decalage) + '" data-fid="am-dec" data-in="am-dec"></div>' : '') +
+      '<div style="flex:1;min-width:min(100%,130px)"><label class="lab" for="am-heure">Heure</label>' +
+        '<input class="inp num" id="am-heure" type="time" value="' + esc(a.heure) + '" data-fid="am-heure" data-ch="am-heure"></div>' +
+    '</div>' +
+    '<p class="sec-note" style="margin-top:6px">' + esc(dc.aide) + '</p>' +
+
+    '<div style="margin-top:14px"><span class="lab">Logements concernés</span>' +
+      '<div class="chiprow" style="margin-top:6px">' +
+        '<button type="button" class="perm-chip" aria-pressed="' + (!a.props.length) + '"' +
+          act('auto-prop', { pid: 'tous' }) + '><span class="dot" style="background:' +
+          (!a.props.length ? C.ink : 'rgba(36,30,26,.2)') + '"></span>Tous</button>' +
+        state.props.map(function (p) {
+          var on = a.props.indexOf(p.id) >= 0;
+          return '<button type="button" class="perm-chip" aria-pressed="' + on + '" style="--accent:' + p.color + '"' +
+            act('auto-prop', { pid: p.id }) + '><span class="dot" style="background:' +
+            (on ? p.color : 'rgba(36,30,26,.2)') + '"></span>' + esc(p.short) + '</button>';
+        }).join('') +
+      '</div></div>' +
+
+    '<div style="margin-top:14px"><label class="lab" for="am-texte">Message</label>' +
+      '<textarea class="inp" id="am-texte" style="min-height:170px" data-fid="am-texte" data-in="am-texte">' + esc(a.texte) + '</textarea></div>' +
+    '<div class="chiprow" style="margin-top:8px">' +
+      '<span class="sec-note">À écrire tel quel, remplacé à l’envoi :</span>' +
+      VARIABLES.map(function (v) {
+        return '<span class="varchip" title="' + esc(v[1]) + '">' + esc(v[0]) + '</span>';
+      }).join('') + '</div>' +
+
+    '<div style="display:flex;gap:10px;align-items:center;margin-top:18px;flex-wrap:wrap">' +
+      '<button type="button" class="btn btn--primary btn--sm"' + act('auto-save') + '>' +
+        (a.id ? 'Enregistrer les modifications' : 'Créer le message') + '</button>' +
+      '<button type="button" class="btn btn--sm" style="background:transparent;color:var(--muted)"' + act('auto-cancel') + '>Annuler</button>' +
+      (a.id ? '' : '<span class="sec-note">Ou partez d’un modèle : ' + MODELES_AUTO.map(function (m, i) {
+        return '<button type="button" class="lienbtn"' + act('auto-modele', { mi: i }) + '>' + esc(m.nom) + '</button>';
+      }).join(' · ') + '</span>') +
+    '</div></div>';
+}
+
+function viewOwnerAuto() {
+  var envois = prochainsEnvois();
+
+  var regles = state.autoMsgs.map(function (rg) {
+    var dc = declencheur(rg.quand);
+    var quand = dc.offset ? rg.decalage + ' jour(s) ' + (rg.quand === 'apres_depart' ? 'après le départ' : 'avant l’arrivée') : dc.label;
+    var cibles = !rg.props.length ? 'Tous les logements'
+      : rg.props.map(function (pid) { return prop(pid).short; }).join(' · ');
+    return '<article class="card" style="padding:20px 22px">' +
+      '<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">' +
+        '<div class="grow" style="min-width:200px">' +
+          '<div style="display:flex;align-items:center;gap:9px;flex-wrap:wrap">' +
+            '<span style="font:700 17px Figtree,sans-serif">' + esc(rg.nom) + '</span>' +
+            '<span class="badge badge--soft">' + esc(quand) + ' · ' + esc(rg.heure) + '</span>' +
+            (rg.actif ? '' : '<span class="badge badge--amber">En pause</span>') +
+          '</div>' +
+          '<div class="sec-note" style="margin-top:4px">' + esc(cibles) + '</div>' +
+        '</div>' +
+        '<button type="button" class="switch-row" style="width:auto;flex:none" aria-pressed="' + !!rg.actif + '"' +
+          act('auto-toggle', { rid: rg.id }) + '><span class="switch"><span class="knob"></span></span>' +
+          '<span class="switch-t">' + (rg.actif ? 'Actif' : 'En pause') + '</span></button>' +
+        '<button type="button" class="btn btn--xs" style="background:var(--cream);color:var(--ink-soft)"' +
+          act('auto-edit', { rid: rg.id }) + '>Modifier</button>' +
+        '<button type="button" class="btn-danger-xs"' + act('auto-remove', { rid: rg.id }) + '>Supprimer</button>' +
+      '</div>' +
+      '<p class="auto-texte">' + esc(rg.texte) + '</p>' +
+      '</article>';
+  }).join('');
+
+  return ownerShell('auto',
+    '<div class="page-head">' +
+      '<div><h1 class="page-title">Messages programmés</h1>' +
+      '<p class="page-sub">' + state.autoMsgs.length + ' message(s) type · ' + envois.length +
+        ' envoi(s) prévus dans les 60 jours</p></div>' +
+      '<button type="button" class="btn btn--xs" style="' + (state.am ? 'background:var(--cream);color:var(--ink-soft)' : 'background:var(--terra);color:#fff') +
+        ';min-height:42px;font-size:13px"' + act(state.am ? 'auto-cancel' : 'auto-new') + '>' +
+        (state.am ? 'Fermer' : '+ Nouveau message') + '</button>' +
+    '</div>' +
+
+    (state.am ? formAuto() : '') +
+
+    '<div class="alert alert--blue" style="margin-top:20px">' +
+      '<div style="display:flex;align-items:center;gap:8px"><span class="dot" style="background:' + C.bleu + '"></span>' +
+        '<span class="kind">Envoi automatique</span></div>' +
+      '<div class="title" style="color:var(--ink)">Les messages partiront depuis Beds24</div>' +
+      '<div class="det">Ce que vous écrivez ici est prêt à être repris tel quel. Un site sans serveur ne peut envoyer ' +
+        'ni message ni e-mail : c’est la connexion Beds24 qui déclenchera les envois, aux dates listées ci-dessous.</div>' +
+    '</div>' +
+
+    '<h2 class="sec-title" style="margin-top:24px">Mes messages types</h2>' +
+    '<div class="stack" style="gap:14px">' + (regles ||
+      '<p class="empty">Aucun message programmé. Créez le premier avec « + Nouveau message », ' +
+      'ou partez d’un des trois modèles proposés.</p>') + '</div>' +
+
+    '<h2 class="sec-title" style="margin-top:26px">Prochains envois</h2>' +
+    '<div class="card" style="padding:0;overflow:hidden">' +
+      '<div class="table-scroll">' +
+        '<div class="thead" style="min-width:700px"><span style="width:120px">Date</span><span style="width:70px">Heure</span>' +
+          '<span style="flex:1.2">Voyageur</span><span style="flex:1">Logement</span><span style="flex:1.2">Message</span></div>' +
+        (envois.length ? envois.slice(0, 40).map(function (e) {
+          var p = prop(e.pid);
+          return '<div class="trow" style="min-width:700px">' +
+            '<span class="num" style="width:120px;font-weight:600">' + esc(jourLabel(e.date)) + '</span>' +
+            '<span class="num" style="width:70px">' + esc(e.regle.heure) + '</span>' +
+            '<span style="flex:1.2;min-width:0">' + esc(e.r.guest) + '</span>' +
+            '<span style="flex:1;display:flex;align-items:center;gap:8px;min-width:0">' +
+              '<span class="dot" style="background:' + p.color + '"></span>' + esc(p.short) + '</span>' +
+            '<span style="flex:1.2;color:var(--muted3);min-width:0">' + esc(e.regle.nom) + '</span>' +
+            '</div>';
+        }).join('') : '<p class="empty">Aucun envoi prévu. Les messages « dès la réservation » ne figurent pas ici : ' +
+          'ils partent au moment où la réservation arrive.</p>') +
+      '</div>' +
+    '</div>' +
+
+    (envois.length ? '<div class="card" style="margin-top:16px;padding:22px">' +
+      '<h2 style="font:700 16px Figtree,sans-serif;margin:0 0 10px">Aperçu du prochain envoi</h2>' +
+      '<p class="sec-note" style="margin-bottom:10px">' + esc(envois[0].regle.nom) + ' · ' + esc(jourLabel(envois[0].date)) +
+        ' à ' + esc(envois[0].regle.heure) + ' · ' + esc(envois[0].r.guest) + '</p>' +
+      '<pre class="apercu">' + esc(remplirVars(envois[0].regle.texte, envois[0].pid, envois[0].r)) + '</pre>' +
+      '</div>' : ''));
+}
+
+/* --------------------------------------------------------------------------
+   Statistiques : occupation, revenus, dépenses de ménage
+   -------------------------------------------------------------------------- */
+
+/** Mois qui ont quelque chose à montrer : des nuits ou des missions payées. */
+function moisDispo() {
+  var vus = {};
+  allResas().forEach(function (x) {
+    for (var j = x.r.start; j < x.r.end; j = jourPlus(j, 1)) vus[moisDe(j)] = true;
+  });
+  ledger().forEach(function (l) { vus[l.month] = true; });
+  vus[CURRENT_MONTH] = true;
+  return Object.keys(vus).sort().reverse();
+}
+
+/** Une ligne par logement pour le mois demandé. */
+function statsMois(mois) {
+  var jours = nbJoursMois(mois);
+  return state.props.map(function (p) {
+    var nuits = 0, sejours = 0, revenus = 0, estimes = 0;
+    resasOf(p.id).forEach(function (r) {
+      var n = nuitsDansMois(r, mois);
+      if (!n) return;
+      nuits += n; sejours++;
+      var total = nights(r.start, r.end) || 1;
+      revenus += Math.round(montantResa(p.id, r) * n / total);   // au prorata des nuits du mois
+      if (montantEstime(r)) estimes++;
+    });
+    var depenses = ledger().filter(function (l) { return l.month === mois && l.prop === p.id; })
+      .reduce(function (n, l) { return n + l.price; }, 0);
+    return {
+      p: p, nuits: nuits, jours: jours, taux: Math.round(nuits / jours * 100),
+      sejours: sejours, revenus: revenus, depenses: depenses, net: revenus - depenses,
+      estimes: estimes, adr: nuits ? Math.round(revenus / nuits) : 0
+    };
+  });
+}
+
+function viewOwnerStats() {
+  var mois = state.statMonth;
+  var lignes = statsMois(mois);
+  var tot = lignes.reduce(function (a, l) {
+    return { nuits: a.nuits + l.nuits, jours: a.jours + l.jours, revenus: a.revenus + l.revenus,
+      depenses: a.depenses + l.depenses, sejours: a.sejours + l.sejours, estimes: a.estimes + l.estimes };
+  }, { nuits: 0, jours: 0, revenus: 0, depenses: 0, sejours: 0, estimes: 0 });
+  var tauxMoyen = tot.jours ? Math.round(tot.nuits / tot.jours * 100) : 0;
+  var net = tot.revenus - tot.depenses;
+
+  // Six mois pour situer le mois affiché.
+  var suite = [];
+  for (var i = 5; i >= 0; i--) suite.push(moisPlus(mois, -i));
+  var series = suite.map(function (m) {
+    var l = statsMois(m);
+    return {
+      mois: m,
+      revenus: l.reduce(function (n, x) { return n + x.revenus; }, 0),
+      depenses: l.reduce(function (n, x) { return n + x.depenses; }, 0)
+    };
+  });
+  // L'échelle tient compte des deux barres : un mois sans revenu peut avoir
+  // des dépenses de ménage, et elles doivent rester visibles.
+  var maxi = Math.max.apply(null, series.map(function (s) { return s.revenus; })
+    .concat(series.map(function (s) { return s.depenses; })).concat([1]));
+
+  return ownerShell('stats',
+    '<div class="page-head">' +
+      '<div><h1 class="page-title">Statistiques</h1>' +
+      '<p class="page-sub">Occupation, revenus et coût du ménage, logement par logement.</p></div>' +
+      '<div style="min-width:200px">' +
+        '<label class="lab" for="st-mois">Mois</label>' +
+        '<select class="inp" id="st-mois" data-fid="st-mois" data-ch="stat-month">' + moisDispo().map(function (m) {
+          return '<option value="' + m + '"' + (m === mois ? ' selected' : '') + '>' + esc(moisLabel(m)) + '</option>';
+        }).join('') + '</select>' +
+      '</div>' +
+    '</div>' +
+
+    '<div class="cols" style="margin-top:22px;gap:12px">' +
+      '<div class="kpi" style="min-width:190px"><div class="v num">' + tauxMoyen + ' %</div>' +
+        '<div class="l">taux d’occupation · ' + tot.nuits + ' nuits sur ' + tot.jours + '</div></div>' +
+      '<div class="kpi" style="min-width:190px"><div class="v num" style="color:' + C.vert + '">' + tot.revenus + ' €</div>' +
+        '<div class="l">revenus des séjours</div></div>' +
+      '<div class="kpi" style="min-width:190px"><div class="v num" style="color:' + C.terracotta + '">' + tot.depenses + ' €</div>' +
+        '<div class="l">dépenses de ménage</div></div>' +
+      '<div class="kpi" style="min-width:190px"><div class="v num">' + net + ' €</div>' +
+        '<div class="l">net après ménage · ' + tot.sejours + ' séjours</div></div>' +
+    '</div>' +
+
+    (tot.estimes ? '<p class="sec-note" style="margin-top:12px">⚠︎ ' + tot.estimes + ' séjour(s) sans montant réel : ' +
+      'le revenu est calculé au prix par nuit du logement. Corrigez-le sur la fiche de la réservation, ' +
+      'ou attendez la connexion Beds24 qui apportera les montants exacts.</p>' : '') +
+
+    '<h2 class="sec-title" style="margin-top:26px">Par logement</h2>' +
+    '<div class="card" style="padding:0;overflow:hidden">' +
+      '<div class="table-scroll">' +
+        '<div class="thead" style="min-width:860px"><span style="flex:1.4">Logement</span>' +
+          '<span style="width:150px">Occupation</span><span style="width:90px;text-align:right">Nuits</span>' +
+          '<span style="width:90px;text-align:right">Séjours</span><span style="width:100px;text-align:right">Revenus</span>' +
+          '<span style="width:100px;text-align:right">Prix / nuit</span><span style="width:100px;text-align:right">Ménage</span>' +
+          '<span style="width:100px;text-align:right">Net</span></div>' +
+        lignes.map(function (l) {
+          return '<div class="trow" style="min-width:860px">' +
+            '<span style="flex:1.4;display:flex;align-items:center;gap:9px;min-width:0">' +
+              '<span class="dot" style="background:' + l.p.color + '"></span>' + esc(l.p.name) + '</span>' +
+            '<span style="width:150px;display:flex;align-items:center;gap:9px">' +
+              '<span class="jauge"><span style="width:' + l.taux + '%;background:' + l.p.color + '"></span></span>' +
+              '<span class="num" style="font-weight:700;width:44px;text-align:right">' + l.taux + ' %</span></span>' +
+            '<span class="num" style="width:90px;text-align:right">' + l.nuits + '</span>' +
+            '<span class="num" style="width:90px;text-align:right">' + l.sejours + '</span>' +
+            '<span class="num" style="width:100px;text-align:right;font-weight:600">' + l.revenus + ' €</span>' +
+            '<span class="num" style="width:100px;text-align:right;color:var(--muted3)">' + l.adr + ' €</span>' +
+            '<span class="num" style="width:100px;text-align:right;color:var(--terra-d)">' + (l.depenses ? '− ' + l.depenses + ' €' : '—') + '</span>' +
+            '<span class="num" style="width:100px;text-align:right;font-weight:700">' + l.net + ' €</span>' +
+            '</div>';
+        }).join('') +
+      '</div>' +
+    '</div>' +
+
+    '<h2 class="sec-title" style="margin-top:26px">Six derniers mois</h2>' +
+    '<div class="card" style="padding:22px">' +
+      '<div class="hist">' + series.map(function (s) {
+        var h = Math.round(s.revenus / maxi * 100);
+        var hd = Math.round(s.depenses / maxi * 100);
+        return '<div class="hist-col' + (s.mois === mois ? ' hist-col--on' : '') + '">' +
+          '<div class="hist-v num">' + s.revenus + ' €</div>' +
+          '<div class="hist-bars">' +
+            '<span class="hist-bar" style="height:' + h + '%"></span>' +
+            '<span class="hist-bar hist-bar--dep" style="height:' + hd + '%"></span>' +
+          '</div>' +
+          '<div class="hist-l num">' + esc(MOIS[parseInt(s.mois.slice(5, 7), 10) - 1]) + '</div>' +
+          '</div>';
+      }).join('') + '</div>' +
+      '<div class="chiprow" style="margin-top:14px;gap:16px">' +
+        '<span style="display:flex;align-items:center;gap:7px;font:600 12px Figtree,sans-serif;color:var(--muted3)">' +
+          '<span style="width:14px;height:8px;border-radius:9px;background:' + C.vert + '"></span>Revenus</span>' +
+        '<span style="display:flex;align-items:center;gap:7px;font:600 12px Figtree,sans-serif;color:var(--muted3)">' +
+          '<span style="width:14px;height:8px;border-radius:9px;background:' + C.terracotta + '"></span>Ménage</span>' +
+      '</div>' +
+    '</div>' +
+
+    '<p class="sec-note" style="margin-top:14px">Les revenus sont répartis nuit par nuit : un séjour à cheval sur deux mois ' +
+      'compte dans les deux. Les dépenses de ménage viennent des missions terminées du mois.</p>');
+}
+
 function viewOwnerAgents() {
   var monthDef = MONTHS.find(function (m) { return m.key === state.ownerMonth; });
 
@@ -1861,30 +3037,45 @@ function viewOwnerAgents() {
     var paye = isPaid(a.id, state.ownerMonth);
     var rt = agentRating(a.id);
     var noteLabel = rt ? fmtNote(rt.avg) + '/5 (' + rt.n + ' avis)' : 'pas encore noté';
+
+    // La remise des clés ne prend pas de mission : ni montant, ni paie, ni note.
+    // À sa place, on montre ce qui la concerne : ses prochaines remises de clés.
+    var cles = a.kind === 'cles';
+    var venir = cles ? keyEvents(a.id).filter(function (e) { return e.date >= TODAY; }).length : 0;
+
     return '<article class="card" style="padding:0;overflow:hidden">' +
       '<div style="display:flex;align-items:center;gap:16px;padding:20px 22px;flex-wrap:wrap">' +
         '<div class="avatar" style="width:52px;height:52px;font-size:17px;background:' + a.avatarBg + ';color:' + a.avatarFg + '">' + a.init + '</div>' +
         '<div style="flex:1;min-width:180px">' +
           '<div style="display:flex;align-items:center;gap:9px;flex-wrap:wrap">' +
             '<span style="font:700 18px Figtree,sans-serif">' + esc(a.name) + '</span>' +
-            '<span class="badge" style="background:' + a.roleBg + ';color:' + a.roleFg + ';font-weight:600">' + esc(a.role) + '</span>' +
+            '<span class="badge" style="background:' + a.roleBg + ';color:' + a.roleFg + ';font-weight:600">' +
+              (cles ? '🔑 ' : '') + esc(a.role) + '</span>' +
           '</div>' +
-          '<div class="num" style="font:500 12.5px Figtree,sans-serif;color:var(--muted);margin-top:3px">Depuis ' + esc(a.since) + ' · ' + esc(noteLabel) + ' · ' + rows.length + ' mission(s) ce mois</div>' +
+          '<div class="num" style="font:500 12.5px Figtree,sans-serif;color:var(--muted);margin-top:3px">Depuis ' + esc(a.since) +
+            (cles
+              ? ' · ' + (a.props || []).length + ' logement(s) confié(s)'
+              : ' · ' + esc(noteLabel) + ' · ' + rows.length + ' mission(s) ce mois') + '</div>' +
         '</div>' +
-        '<div style="text-align:right;flex:none">' +
-          '<div class="serif num" style="font-size:28px;line-height:1">' + rows.reduce(function (n, r) { return n + r.price; }, 0) + ' €</div>' +
-          '<div style="font:600 11.5px Figtree,sans-serif;color:' + (paye ? 'var(--green-t)' : 'var(--muted)') + ';margin-top:3px">' +
-            (paye ? 'payé' : 'à verser') + '</div>' +
-        '</div>' +
-        '<button type="button" class="btn btn--xs" style="' + (paye ? 'background:var(--green-bg);color:var(--green-t)' : 'background:var(--amber-bg);color:var(--amber-t)') + '"' +
-          act('toggle-payout', { ag: a.id }) + '>' + (paye ? '✓ Payé' : 'Marquer payé') + '</button>' +
-        '<button type="button" class="btn btn--xs" style="background:var(--cream);color:var(--ink-soft)"' +
-          act('toggle-agent', { ag: a.id }) + '>' + (open ? 'Masquer' : 'Historique') + '</button>' +
+        (cles
+          ? '<div style="text-align:right;flex:none">' +
+              '<div class="serif num" style="font-size:28px;line-height:1">' + venir + '</div>' +
+              '<div style="font:600 11.5px Figtree,sans-serif;color:var(--muted);margin-top:3px">arrivées et départs à venir</div>' +
+            '</div>'
+          : '<div style="text-align:right;flex:none">' +
+              '<div class="serif num" style="font-size:28px;line-height:1">' + rows.reduce(function (n, r) { return n + r.price; }, 0) + ' €</div>' +
+              '<div style="font:600 11.5px Figtree,sans-serif;color:' + (paye ? 'var(--green-t)' : 'var(--muted)') + ';margin-top:3px">' +
+                (paye ? 'payé' : 'à verser') + '</div>' +
+            '</div>' +
+            '<button type="button" class="btn btn--xs" style="' + (paye ? 'background:var(--green-bg);color:var(--green-t)' : 'background:var(--amber-bg);color:var(--amber-t)') + '"' +
+              act('toggle-payout', { ag: a.id }) + '>' + (paye ? '✓ Payé' : 'Marquer payé') + '</button>' +
+            '<button type="button" class="btn btn--xs" style="background:var(--cream);color:var(--ink-soft)"' +
+              act('toggle-agent', { ag: a.id }) + '>' + (open ? 'Masquer' : 'Historique') + '</button>') +
       '</div>' +
 
-      /* Biens sur lesquels ce prestataire a le droit de se positionner. */
+      /* Biens confiés : missions à prendre, ou calendrier à consulter. */
       '<div class="perm-row">' +
-        '<span class="perm-label">Peut prendre les missions de :</span>' +
+        '<span class="perm-label">' + (cles ? 'Voit le calendrier de :' : 'Peut prendre les missions de :') + '</span>' +
         (state.props.length ? state.props.map(function (p) {
           var on = (a.props || []).indexOf(p.id) >= 0;
           return '<button type="button" class="perm-chip" aria-pressed="' + on + '" style="--accent:' + p.color + '"' +
@@ -1919,7 +3110,7 @@ function viewOwnerAgents() {
         }).join('') +
         (rt.n > 4 ? '<span class="sec-note">+ ' + (rt.n - 4) + ' autres</span>' : '') +
         '</div>' : '') +
-      (open ? '<div class="table-scroll" style="padding:0 22px 8px">' +
+      (open && !cles ? '<div class="table-scroll" style="padding:0 22px 8px">' +
         '<div class="thead" style="background:transparent;padding:10px 0;border-top:1px solid rgba(36,30,26,.07);min-width:640px">' +
           '<span style="width:90px">Date</span><span style="flex:1.4">Bien</span><span style="flex:1">Type</span>' +
           '<span style="width:110px">Statut</span><span style="width:70px;text-align:right">Montant</span></div>' +
@@ -1954,6 +3145,16 @@ function viewOwnerAgents() {
   var form = !state.showNewAgent ? '' :
     '<div class="card pop" style="margin-top:18px;padding:22px">' +
       '<h2 style="font:700 16px Figtree,sans-serif;margin:0 0 16px">Nouveau prestataire</h2>' +
+      /* Le métier décide de ce que la personne verra sur son téléphone. */
+      '<div style="margin-bottom:16px">' +
+        '<span class="lab">Type de prestataire</span>' +
+        '<div class="seg" style="margin-top:6px;max-width:420px">' + AGENT_KINDS.map(function (k) {
+          return '<button type="button" aria-pressed="' + (state.na.kind === k.key) + '"' +
+            act('na-kind', { k: k.key }) + '>' + esc(k.label) + '</button>';
+        }).join('') + '</div>' +
+        '<p class="sec-note" style="margin-top:6px">' +
+          esc((AGENT_KINDS.find(function (k) { return k.key === state.na.kind; }) || AGENT_KINDS[0]).hint) + '</p>' +
+      '</div>' +
       '<div class="cols" style="gap:14px">' +
         '<div style="flex:2;min-width:200px"><label class="lab" for="na-name">Nom et prénom</label>' +
           '<input class="inp" id="na-name" type="text" placeholder="Ex. Claire Dubois" value="' + esc(state.na.name) + '" data-fid="na-name" data-in="na-name"></div>' +
@@ -1970,8 +3171,10 @@ function viewOwnerAgents() {
       '<div style="display:flex;gap:10px;align-items:center;margin-top:18px;flex-wrap:wrap">' +
         '<button type="button" class="btn btn--primary btn--sm"' + act('create-agent') + '>Ajouter le prestataire</button>' +
         '<button type="button" class="btn btn--sm" style="background:transparent;color:var(--muted)"' + act('toggle-new-agent') + '>Annuler</button>' +
-        '<span class="sec-note">Cochez ensuite ses biens autorisés, puis envoyez-lui son invitation ' +
-          'avec le bouton « ✉ Inviter par mail » de sa fiche.</span>' +
+        '<span class="sec-note">' + (state.na.kind === 'cles'
+          ? 'Cochez ensuite les logements dont il remet les clés : il en verra le calendrier, '
+          : 'Cochez ensuite ses biens autorisés, ') +
+          'puis envoyez-lui son invitation avec le bouton « ✉ Inviter par mail » de sa fiche.</span>' +
       '</div>' +
     '</div>';
 
@@ -2353,13 +3556,64 @@ function viewOwnerBiens() {
   return ownerShell('biens',
     '<div class="page-head">' +
       '<div><h1 class="page-title">Biens</h1>' +
-      '<p class="page-sub">Checklist, tarifs, réservations, livret d\'accueil et liens iCal — pour chaque logement.</p></div>' +
+      '<p class="page-sub">Checklist, tarifs, réservations, livret d\'accueil et connexions — pour chaque logement.</p></div>' +
       '<button type="button" class="btn btn--xs" style="' + (state.showNewBien ? 'background:var(--cream);color:var(--ink-soft)' : 'background:var(--terra);color:#fff') +
         ';min-height:42px;font-size:13px"' + act('toggle-new-bien') + '>' +
         (state.showNewBien ? 'Fermer' : '+ Ajouter un bien') + '</button>' +
     '</div>' + form +
     '<div class="grid-cards" style="margin-top:22px">' +
-      (cards || '<p class="empty">Aucun bien. Ajoutez le premier ci-dessus.</p>') + '</div>');
+      (cards || '<p class="empty">Aucun bien. Ajoutez le premier ci-dessus.</p>') + '</div>' +
+    carteConnexions());
+}
+
+/* --- Connexions aux plateformes ------------------------------------------
+   Panneau d'état, honnête sur ce qui marche et ce qui attend le serveur.
+   Aucune clé secrète n'est demandée ici : elle n'a rien à faire dans une page
+   publique, ni même dans ce navigateur (voir D-42). */
+
+function carteConnexions() {
+  var parSource = { manuel: 0, ical: 0, beds24: 0 };
+  allResas().forEach(function (x) { parSource[x.r.source] = (parSource[x.r.source] || 0) + 1; });
+
+  return '<h2 class="sec-title" style="margin-top:30px">Connexions aux plateformes</h2>' +
+    '<div class="cols" style="gap:14px">' +
+
+      '<div class="card" style="flex:1.3;min-width:min(100%,340px);padding:22px">' +
+        '<h3 style="font:700 16px Figtree,sans-serif;margin:0 0 4px">D’où viennent vos réservations</h3>' +
+        '<p class="sec-note" style="margin-bottom:14px">Toutes les réservations suivent le même format, quelle que soit ' +
+          'leur origine : c’est ce qui permettra de brancher Beds24 sans rien changer aux écrans.</p>' +
+        '<div class="list">' + Object.keys(SOURCES).map(function (k) {
+          var s = SOURCES[k];
+          return '<div class="kv" style="padding:12px 0">' +
+            '<span style="display:flex;align-items:center;gap:9px"><span class="dot" style="background:' + s.color + '"></span>' +
+              esc(s.label) + '</span>' +
+            '<span class="num" style="font-weight:700">' + (parSource[k] || 0) + ' séjour(s)</span></div>';
+        }).join('') + '</div>' +
+        '<div style="margin-top:16px;padding-top:14px;border-top:1px solid rgba(36,30,26,.08)">' +
+          '<label class="lab" for="b24-compte">Identifiant de compte Beds24 (facultatif)</label>' +
+          '<input class="inp" id="b24-compte" type="text" placeholder="Ex. warmehouse" value="' + esc(state.beds24.compte) +
+            '" data-fid="b24-compte" data-in="beds24-compte">' +
+          '<p class="sec-note" style="margin-top:6px">Le numéro de compte, pas la clé secrète. ' +
+            '<strong>Ne collez jamais votre clé d’API ici</strong> : cette page est publique, elle serait lisible par tous. ' +
+            'La clé vivra sur le serveur, à la phase suivante.</p>' +
+        '</div>' +
+      '</div>' +
+
+      '<div class="card" style="flex:1;min-width:min(100%,320px);padding:22px">' +
+        '<h3 style="font:700 16px Figtree,sans-serif;margin:0 0 12px">Ce qu’il manque pour synchroniser</h3>' +
+        '<div class="stack" style="gap:12px">' + CONNECTEURS.map(function (c) {
+          return '<div class="conn">' +
+            '<div class="conn-top">' +
+              '<span class="conn-n">' + esc(c.label) + '</span>' +
+              '<span class="badge badge--amber">Serveur requis</span></div>' +
+            '<div class="conn-x">' + esc(c.besoin) + '</div>' +
+            '<div class="conn-x conn-x--ok">✓ Apportera : ' + esc(c.apporte) + '</div>' +
+            '</div>';
+        }).join('') + '</div>' +
+        '<p class="sec-note" style="margin-top:14px">En attendant, saisissez les séjours à la main dans l’onglet ' +
+          '« Réservations » d’un logement : ils alimentent déjà le calendrier, les missions et les statistiques.</p>' +
+      '</div>' +
+    '</div>';
 }
 
 /* --- Fiche bien ---------------------------------------------------------- */
@@ -2369,7 +3623,7 @@ function viewOwnerBien() {
   if (b.gone) { location.replace('#/admin/biens'); return ''; }
   var pid = b.id;
   var tabs = [['infos', 'Infos & tarifs'], ['checklist', 'Checklist ménage'],
-    ['calendrier', 'Réservations'], ['livret', 'Livret d’accueil'], ['ical', 'Liens iCal']];
+    ['calendrier', 'Réservations'], ['livret', 'Livret d’accueil'], ['ical', 'Synchronisation']];
   var panel = '';
 
   if (state.bienTab === 'infos') panel = bienInfos(pid, b);
@@ -2613,6 +3867,10 @@ function formNewResa(pid) {
         '<input class="inp num" id="nr-start" type="date" value="' + esc(r.start) + '" data-fid="nr-start" data-ch="nr-start"></div>' +
       '<div style="flex:1;min-width:min(100%,150px)"><label class="lab" for="nr-end">Départ</label>' +
         '<input class="inp num" id="nr-end" type="date" value="' + esc(r.end) + '" data-fid="nr-end" data-ch="nr-end"></div>' +
+      '<div style="flex:1;min-width:min(100%,150px)"><label class="lab" for="nr-montant">Montant (€)</label>' +
+        '<input class="inp num" id="nr-montant" type="number" min="0" placeholder="' +
+          (parseInt((state.info[pid] || {}).prixNuit, 10) || 0) + ' € / nuit" value="' + esc(r.montant) +
+          '" data-fid="nr-montant" data-in="nr-montant"></div>' +
     '</div>' +
     '<div style="display:flex;gap:10px;align-items:center;margin-top:14px;flex-wrap:wrap">' +
       '<button type="button" class="btn btn--primary btn--sm"' + act('create-resa', { pid: pid }) + '>Enregistrer la réservation</button>' +
@@ -2984,7 +4242,31 @@ function bienIcal(pid) {
     '<div style="margin-top:18px;display:flex;gap:12px;flex-wrap:wrap">' +
       '<input class="inp" style="flex:1;min-width:260px" type="text" placeholder="Coller un nouveau lien iCal…" value="' + esc(state.newFeed) + '" data-fid="new-feed" data-in="new-feed">' +
       '<button type="button" class="btn btn--dark btn--sm"' + act('add-feed', { pid: pid }) + '>Connecter</button>' +
-    '</div></div>';
+    '</div></div>' +
+
+    /* Préparation de Beds24 : seulement l'identifiant du logement chez eux.
+       La clé secrète n'entre jamais dans cette page (voir D-42). */
+    '<div class="card" style="margin-top:16px;padding:22px">' +
+      '<h2 style="font:700 16px Figtree,sans-serif;margin:0">Beds24</h2>' +
+      '<p class="sec-note" style="margin-top:4px">Beds24 se connecte lui-même à Airbnb, Booking.com et aux autres, ' +
+        'et rend une réservation complète : voyageur, montant, statut, messages. ' +
+        'Il reste à brancher côté serveur — en attendant, notez ici l’identifiant de ce logement chez eux.</p>' +
+      '<div class="cols" style="gap:14px;margin-top:14px">' +
+        '<div style="flex:1;min-width:min(100%,220px)">' +
+          '<label class="lab" for="b24-' + pid + '">Identifiant du logement (roomId)</label>' +
+          '<input class="inp num" id="b24-' + pid + '" type="text" placeholder="Ex. 123456" value="' +
+            esc((state.info[pid] || {}).beds24 || '') + '" data-fid="b24-' + pid + '" data-in="bien-field" data-pid="' + pid + '" data-k="beds24">' +
+        '</div>' +
+        '<div style="flex:1;min-width:min(100%,220px)">' +
+          '<span class="lab">État</span>' +
+          '<div class="conn" style="margin-top:6px"><div class="conn-top">' +
+            '<span class="conn-n">' + ((state.info[pid] || {}).beds24 ? 'Identifiant noté' : 'À renseigner') + '</span>' +
+            '<span class="badge badge--amber">Serveur requis</span></div>' +
+            '<div class="conn-x">La synchronisation réelle démarrera à la phase serveur, sans ressaisie.</div>' +
+          '</div>' +
+        '</div>' +
+      '</div>' +
+    '</div>';
 }
 
 /* ==========================================================================
@@ -3132,7 +4414,7 @@ var actions = {
       state.openAgent = state.loginPresta;
     }
     save();
-    location.replace(state.auth === 'owner' ? '#/admin' : '#/app/missions');
+    location.replace(homePath());
     render();
   },
   logout: function () {
@@ -3145,7 +4427,7 @@ var actions = {
   reset: function () {
     if (!confirm('Remettre la démonstration à zéro ? Les missions prises, les photos, les stocks et les checklists modifiées reviendront à leur état d\'origine.')) return;
     resetDemo();
-    location.replace(state.auth === 'owner' ? '#/admin' : '#/app/missions');
+    location.replace(homePath());
     render();
   },
 
@@ -3370,18 +4652,97 @@ var actions = {
 
   /* Réservations manuelles ------------------------------------------------ */
   'toggle-new-resa': function () { state.showNewResa = !state.showNewResa; save(); render(); },
+  /* Calendrier, réservations, messages, statistiques ---------------------- */
+  'plan-move': function (el) {
+    state.planStart = jourPlus(state.planStart, parseInt(el.dataset.j, 10) || 0);
+    save(); render();
+  },
+  'plan-today': function () { state.planStart = jourPlus(TODAY, -3); save(); render(); },
+  'plan-prop': function (el) {
+    var pid = el.dataset.pid;
+    var l = Array.isArray(state.planProps) ? state.planProps.slice() : state.props.map(function (p) { return p.id; });
+    l = l.indexOf(pid) >= 0 ? l.filter(function (x) { return x !== pid; }) : l.concat([pid]);
+    // Tout décocher revient à tout afficher : un planning vide n'apprend rien.
+    state.planProps = l.length ? l : null;
+    save(); render();
+  },
+  'open-resa': function (el) { go('#/admin/reservations/' + el.dataset.rid); },
+  'resa-montant-auto': function (el) {
+    var f = resaById(el.dataset.rid);
+    if (f) { f.r.montant = null; save(); render(); }
+  },
+  'resa-remove': function (el) {
+    var f = resaById(el.dataset.rid);
+    if (!f) return;
+    if (!confirm('Supprimer la réservation de ' + f.r.guest + ' ?\n\nLa mission créée à son départ, ' +
+      'si elle n\'a pas encore été prise, sera retirée elle aussi.')) return;
+    retirerResa(f.pid, f.r);
+    save();
+    go('#/admin/calendrier');
+  },
+  'msg-filter': function (el) { state.msgFilter = el.dataset.f; save(); render(); },
+
+  /* Messages programmés --------------------------------------------------- */
+  'auto-new': function () {
+    state.am = { id: '', nom: '', quand: 'avant_arrivee', decalage: 3, heure: '10:00', props: [], texte: '', actif: true };
+    save(); render();
+  },
+  'auto-cancel': function () { state.am = null; save(); render(); },
+  'auto-modele': function (el) {
+    var m = MODELES_AUTO[parseInt(el.dataset.mi, 10)];
+    if (!m) return;
+    state.am = { id: '', nom: m.nom, quand: m.quand, decalage: m.decalage, heure: m.heure, props: [], texte: m.texte, actif: true };
+    save(); render();
+  },
+  'auto-prop': function (el) {
+    if (!state.am) return;
+    var pid = el.dataset.pid;
+    if (pid === 'tous') { state.am.props = []; save(); render(); return; }
+    var l = state.am.props;
+    state.am.props = l.indexOf(pid) >= 0 ? l.filter(function (x) { return x !== pid; }) : l.concat([pid]);
+    save(); render();
+  },
+  'auto-save': function () {
+    var a = state.am;
+    if (!a) return;
+    if (!(a.nom || '').trim()) { alert('Donnez un nom à ce message, pour le retrouver.'); return; }
+    if (!(a.texte || '').trim()) { alert('Écrivez le message à envoyer.'); return; }
+    var regle = {
+      id: a.id || slug(a.nom, 'am'), nom: a.nom.trim(), quand: a.quand,
+      decalage: Math.max(0, parseInt(a.decalage, 10) || 0), heure: a.heure || '10:00',
+      props: a.props.slice(), texte: a.texte, actif: a.actif !== false
+    };
+    var i = state.autoMsgs.findIndex(function (x) { return x.id === regle.id; });
+    if (i >= 0) state.autoMsgs[i] = regle; else state.autoMsgs.push(regle);
+    state.am = null;
+    save(); render();
+  },
+  'auto-edit': function (el) {
+    var rg = state.autoMsgs.find(function (x) { return x.id === el.dataset.rid; });
+    if (!rg) return;
+    state.am = clone(rg);
+    save(); render();
+  },
+  'auto-toggle': function (el) {
+    var rg = state.autoMsgs.find(function (x) { return x.id === el.dataset.rid; });
+    if (rg) { rg.actif = !rg.actif; save(); render(); }
+  },
+  'auto-remove': function (el) {
+    var rg = state.autoMsgs.find(function (x) { return x.id === el.dataset.rid; });
+    if (!rg || !confirm('Supprimer le message « ' + rg.nom + ' » ?')) return;
+    state.autoMsgs = state.autoMsgs.filter(function (x) { return x.id !== rg.id; });
+    if (state.am && state.am.id === rg.id) state.am = null;
+    save(); render();
+  },
+
   'create-resa': function (el) { createResa(el.dataset.pid); },
   'remove-resa': function (el) {
     var pid = el.dataset.pid, ri = parseInt(el.dataset.ri, 10);
-    var list = resasOf(pid);
-    var r = list[ri];
+    var r = resasOf(pid)[ri];
     if (!r) return;
     if (!confirm('Supprimer la réservation de ' + r.guest + ' ?\n\nLa mission créée à son départ, ' +
       'si elle n\'a pas encore été prise, sera retirée elle aussi.')) return;
-    state.resas[pid] = list.filter(function (x, i) { return i !== ri; });
-    state.missions = state.missions.filter(function (m) {
-      return !(m.fromResa === pid + ':' + r.start + ':' + r.end && m.status === 'dispo');
-    });
+    retirerResa(pid, r);
     save(); render();
   },
 
@@ -3542,6 +4903,12 @@ var actions = {
   /* Prestataires ---------------------------------------------------------- */
   'toggle-new-agent': function () { state.showNewAgent = !state.showNewAgent; save(); render(); },
   'na-color': function (el) { state.na.color = el.dataset.c; save(); render(); },
+  /* Le rôle affiché suit le métier choisi ; il reste modifiable à la main juste après. */
+  'na-kind': function (el) {
+    state.na.kind = el.dataset.k;
+    state.na.role = state.na.kind === 'cles' ? 'Remise des clés' : 'Ménage';
+    save(); render();
+  },
   'create-agent': function () {
     var na = state.na, nom = (na.name || '').trim();
     if (!nom) { alert('Donnez un nom au prestataire.'); return; }
@@ -3552,14 +4919,16 @@ var actions = {
     var mots = nom.split(/\s+/);
     var init = (mots[0][0] + (mots[1] ? mots[1][0] : '')).toUpperCase();
 
+    var kind = na.kind === 'cles' ? 'cles' : 'menage';
     state.agents.push({
-      id: slug(nom, 'a'), name: nom, init: init, role: (na.role || 'Ménage').trim(),
+      id: slug(nom, 'a'), name: nom, init: init, kind: kind,
+      role: (na.role || (kind === 'cles' ? 'Remise des clés' : 'Ménage')).trim(),
       since: MONTHS[0].label.toLowerCase(), note: '—', email: (na.email || '').trim(),
-      iban: 'IBAN à renseigner',
+      iban: kind === 'cles' ? '—' : 'IBAN à renseigner',
       avatarBg: pal.tint, avatarFg: pal.fg, roleBg: pal.tint, roleFg: pal.fg,
       props: state.props.map(function (p) { return p.id; })
     });
-    state.na = { name: '', role: 'Ménage', email: '', color: C.terracotta };
+    state.na = { name: '', kind: 'menage', role: 'Ménage', email: '', color: C.terracotta };
     state.showNewAgent = false;
     save(); render();
   },
@@ -3706,34 +5075,10 @@ function createResa(pid) {
   if (!r.start || !r.end) { alert('Indiquez les dates d\'arrivée et de départ.'); return; }
   if (r.end <= r.start) { alert('Le départ doit être après l\'arrivée.'); return; }
 
-  var guests = Math.max(1, parseInt(r.guests, 10) || 1);
-  var resa = { plat: r.plat, guest: nom, guests: guests, start: r.start, end: r.end };
-  state.resas[pid] = resasOf(pid).concat([resa]).sort(function (a, b) {
-    return a.start < b.start ? -1 : a.start > b.start ? 1 : 0;
-  });
+  // Même chemin que les futures synchronisations : on normalise, puis on ajoute.
+  ajouterResa(pid, normaliserResa(r, 'manuel', pid));
 
-  var sv = state.services[0];
-  if (sv) {
-    // Séjour qui commence le jour du départ : c'est un turnover.
-    var suivante = resasOf(pid).find(function (x) { return x.start === r.end && x !== resa; });
-    var inf = state.info[pid] || {};
-    state.missions.push({
-      id: slug(nom, 'm'), prop: pid, type: sv.key, date: r.end,
-      dateLabel: r.end === TODAY ? 'Aujourd’hui' : fmtDate(r.end),
-      windowLabel: (inf.checkout || '11:00') + ' → ' + (inf.checkin || '16:00'),
-      price: (state.tariffs[pid] || {})[sv.key] || 0,
-      status: 'dispo',
-      urgent: suivante ? 'Turnover · arrivée ' + (inf.checkin || '16:00') : '',
-      turnover: !!suivante,
-      note: '',
-      fromResa: pid + ':' + r.start + ':' + r.end,
-      res: { plat: r.plat, guest: nom, guests: guests, nights: nights(r.start, r.end) },
-      next: suivante ? { guest: suivante.guest, guests: suivante.guests, at: inf.checkin || '16:00' } : null
-    });
-    state.missions.sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : 0; });
-  }
-
-  state.nr = { plat: r.plat, guest: '', guests: 2, start: '', end: '' };
+  state.nr = { plat: r.plat, guest: '', guests: 2, start: '', end: '', montant: '' };
   state.showNewResa = false;
   save(); render();
 }
@@ -3751,6 +5096,21 @@ var inputs = {
   'step-draft': function (el) { state.stepDrafts[el.dataset.key] = el.value; },
   'new-room': function (el) { state.newRoom = el.value; },
   'new-feed': function (el) { state.newFeed = el.value; },
+  'nr-montant': function (el) { state.nr.montant = el.value; },
+
+  /* Montant réel d'un séjour : vide = calculé au prix par nuit du logement. */
+  'resa-montant': function (el) {
+    var f = resaById(el.dataset.rid);
+    if (!f) return;
+    f.r.montant = el.value === '' ? null : Math.max(0, parseInt(el.value, 10) || 0);
+    save();
+  },
+
+  /* Message programmé en cours d'écriture. */
+  'am-nom': function (el) { if (state.am) { state.am.nom = el.value; save(); } },
+  'am-texte': function (el) { if (state.am) { state.am.texte = el.value; save(); } },
+  'am-dec': function (el) { if (state.am) { state.am.decalage = el.value; save(); } },
+  'beds24-compte': function (el) { state.beds24.compte = el.value; save(); },
 
   /* Note libre du propriétaire sur une mission, vue par le prestataire. */
   'mission-note': function (el) {
@@ -3836,7 +5196,16 @@ var changes = {
   'nr-start': function (el) { state.nr.start = el.value; save(); },
   'nr-end': function (el) { state.nr.end = el.value; save(); },
   'owner-month': function (el) { state.ownerMonth = el.value; save(); render(); },
-  'avis-filter': function (el) { state.avisFilter[el.dataset.f] = el.value; save(); render(); }
+  'avis-filter': function (el) { state.avisFilter[el.dataset.f] = el.value; save(); render(); },
+  'stat-month': function (el) { state.statMonth = el.value; save(); render(); },
+  'am-quand': function (el) {
+    if (!state.am) return;
+    state.am.quand = el.value;
+    var dc = declencheur(el.value);
+    if (dc.offset && !parseInt(state.am.decalage, 10)) state.am.decalage = dc.defaut;
+    save(); render();
+  },
+  'am-heure': function (el) { if (state.am) { state.am.heure = el.value; save(); render(); } }
 };
 
 /* ==========================================================================
@@ -3848,6 +5217,7 @@ var VIEWS = {
   'livret': viewLivret,
   'livret-sec': viewLivretSection,
   'p-missions': viewPrestaMissions,
+  'p-cles': viewPrestaCles,
   'p-mes': viewPrestaMes,
   'p-notes': viewPrestaNotes,
   'p-gains': viewPrestaGains,
@@ -3858,6 +5228,12 @@ var VIEWS = {
   'p-fin': viewPrestaFin,
   'p-incident': viewPrestaIncident,
   'o-dash': viewOwnerDash,
+  'o-cal': viewOwnerCal,
+  'o-resa': viewOwnerResa,
+  'o-msgs': viewOwnerMsgs,
+  'o-msg': viewOwnerMsg,
+  'o-auto': viewOwnerAuto,
+  'o-stats': viewOwnerStats,
   'o-missions': viewOwnerMissions,
   'o-mission': viewOwnerMission,
   'o-agents': viewOwnerAgents,
@@ -3951,5 +5327,5 @@ window.addEventListener('hashchange', render);
 window.addEventListener('beforeunload', save);
 
 load();
-if (!location.hash) location.replace(state.auth === 'owner' ? '#/admin' : state.auth ? '#/app/missions' : '#/login');
+if (!location.hash) location.replace(homePath());
 render();
