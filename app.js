@@ -533,6 +533,8 @@ function initialState() {
     loginEnCours: false,
     migMsg: '',
     migEnCours: false,
+    mMsg: '',              // message affiché sur l'écran prestataire
+    priseEnCours: null,    // mission dont la prise est en cours d'arbitrage
     comptes: [],           // les comptes existants dans le cahier partagé
     lienCompte: {},        // { idFiche: uidCompte } — choix en cours de rapprochement
     loginPresta: 'Sofia',
@@ -1869,8 +1871,14 @@ function decorate(m) {
 
 function prestaShell(head, body, foot, opts) {
   opts = opts || {};
+  // Message venu du cahier partagé — « mission déjà prise », perte de réseau…
+  // Il apparaît en tête du corps et disparaît au clic.
+  var msg = state.mMsg
+    ? '<div class="presta-msg" role="alert"' + act('fermer-msg') + '>' + esc(state.mMsg) +
+      '<span class="presta-msg-x">✕</span></div>'
+    : '';
   return '<div class="presta">' + head +
-    '<div class="presta-body' + (opts.flush ? ' presta-body--flush' : '') + '">' + body + '</div>' +
+    '<div class="presta-body' + (opts.flush ? ' presta-body--flush' : '') + '">' + msg + body + '</div>' +
     (foot || '') +
     (opts.noTabs ? '' : tabBar()) +
     '</div>';
@@ -2016,7 +2024,9 @@ function viewPrestaDetail() {
 
   var btn;
   if (m.status === 'dispo') {
-    btn = { label: 'Prendre cette mission', cls: 'btn--primary', action: 'take',
+    var enCours = state.priseEnCours === m.id;
+    btn = { label: enCours ? 'Un instant…' : 'Prendre cette mission',
+      cls: enCours ? 'btn--muted' : 'btn--primary', action: enCours ? '' : 'take',
       note: 'Premier arrivé, premier servi · ' + d.total + ' étapes' };
   } else if (m.status === 'termine') {
     btn = { label: 'Mission terminée', cls: 'btn--muted', action: '', note: 'Merci ! Paiement le 5 du mois.' };
@@ -5595,6 +5605,30 @@ function viewLogin() {
 function take(id) {
   var m = mission(id);
   if (!m || m.status !== 'dispo') return;
+
+  // Avec un vrai compte, c'est la BASE qui attribue la mission : si deux
+  // personnes appuient à la même seconde, une seule l'obtient (D-60).
+  // On n'écrit donc rien localement avant d'avoir sa réponse.
+  if (typeof DB !== 'undefined' && DB.estPrestataireRelie()) {
+    state.priseEnCours = id;
+    state.mMsg = '';
+    render();
+    DB.prendreMission(id)
+      .then(function () {
+        state.priseEnCours = null;
+        m.status = 'prise';
+        m.taker = state.me;
+        save();
+        go('#/app/missions/' + id);
+      })
+      .catch(function (e) {
+        state.priseEnCours = null;
+        state.mMsg = DB.messageClair(e);
+        DB.charger().then(render, render);
+      });
+    return;
+  }
+
   m.status = 'prise';
   m.taker = state.me;
   save();
@@ -5610,6 +5644,7 @@ function start(id) {
     state.draft = { id: id, prop: m.prop, qty: Object.assign({}, state.stock[m.prop]) };
   }
   save();
+  if (typeof DB !== 'undefined' && DB.estDispo()) DB.majMission(m);
   go('#/app/missions/' + id + '/checklist');
 }
 
@@ -5668,6 +5703,7 @@ function finish(id) {
   state.lastDone = { price: m.price, photos: photos, low: lowKeys.length };
   state.draft = null;
   save();
+  if (typeof DB !== 'undefined' && DB.estDispo()) DB.majMission(m);
   go('#/app/missions/' + id + '/fin');
 }
 
@@ -5822,6 +5858,7 @@ var actions = {
   },
 
   /* Prestataire ---------------------------------------------------------- */
+  'fermer-msg': function () { state.mMsg = ''; render(); },
   take: function (el) { take(el.dataset.id); },
   start: function (el) { start(el.dataset.id); },
   resume: function (el) { start(el.dataset.id); },

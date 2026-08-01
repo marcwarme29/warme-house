@@ -1793,3 +1793,11 @@ textarea.inp { min-height: 90px; resize: vertical; line-height: 1.5; }
   .rail-actions { flex-direction: column; margin-top: 8px; }
   .owner-main { max-width: 1340px; }
 }
+
+/* Message venu du cahier partagé, côté prestataire (session 13). */
+.presta-msg {
+  display: flex; align-items: center; gap: 10px; margin: 0 0 14px;
+  padding: 12px 14px; border-radius: 12px; background: #F7E7DF; color: #B04A26;
+  font: 600 13.5px/1.45 Figtree, sans-serif; cursor: pointer; min-height: 44px;
+}
+.presta-msg-x { margin-left: auto; font-size: 15px; opacity: .6; }

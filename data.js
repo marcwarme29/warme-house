@@ -294,7 +294,16 @@ var DB = (function () {
     lignes.forEach(function (l) {
       if (l.role !== 'provider' || !l.legacy_id) return;
       var a = (state.agents || []).filter(function (x) { return x.id === l.legacy_id; })[0];
-      if (!a) return;                       // compte lié à une fiche supprimée
+
+      // Sur l'appareil du prestataire, sa propre fiche n'existe pas : les
+      // fiches vivent encore dans le navigateur du propriétaire (lot 4).
+      // Sans elle, `allowedProps()` rend une liste vide et AUCUNE mission
+      // n'est sélectionnable. On la fabrique donc à partir du compte.
+      if (!a) {
+        a = ficheDepuisCompte(l);
+        if (!Array.isArray(state.agents)) state.agents = [];
+        state.agents.push(a);
+      }
       a.uid = l.id;
       a.email = l.email || a.email;
       a.kind = l.kind || a.kind;
@@ -308,6 +317,88 @@ var DB = (function () {
     (state.agents || []).forEach(function (a) {
       if (a.uid && !vivants[a.uid]) delete a.uid;
     });
+  }
+
+  /* Fabrique une fiche de prestataire à partir d'un compte. Sert sur
+     l'appareil du prestataire, qui n'a pas la liste du propriétaire.
+     Les couleurs d'avatar reprennent la palette du §4. */
+  var TEINTES = [
+    { bg: '#F7E7DF', fg: '#B04A26' }, { bg: '#E4EDF4', fg: '#2F6C93' },
+    { bg: '#E3F0E9', fg: '#227052' }, { bg: '#F7EEDC', fg: '#9A6B15' },
+    { bg: '#EAE6F4', fg: '#5B4E85' }
+  ];
+
+  function ficheDepuisCompte(l) {
+    var nom = l.full_name || l.email || 'Prestataire';
+    var t = TEINTES[Math.abs(hachage(l.id)) % TEINTES.length];
+    return {
+      id: l.legacy_id,
+      uid: l.id,
+      name: nom,
+      init: initiales(nom),
+      kind: l.kind || 'menage',
+      role: l.job_label || (l.kind === 'cles' ? 'Remise des clés' : 'Prestataire'),
+      since: l.since || '',
+      note: '—',
+      email: l.email || '',
+      iban: l.iban || '',
+      avatarBg: t.bg, avatarFg: t.fg, roleBg: t.bg, roleFg: t.fg,
+      props: l.props || [],
+      services: l.services || undefined
+    };
+  }
+
+  function initiales(nom) {
+    return nom.split(/[\s@.]+/).filter(Boolean).slice(0, 2)
+      .map(function (x) { return x.charAt(0).toUpperCase(); }).join('') || '?';
+  }
+
+  function hachage(s) {
+    var n = 0;
+    for (var i = 0; i < s.length; i++) n = (n * 31 + s.charCodeAt(i)) | 0;
+    return n;
+  }
+
+  /* --- ce qu'un PRESTATAIRE écrit dans le cahier ---------------------------
+     Il ne pousse jamais tout l'état (il n'en a pas le droit, et il n'a pas
+     les données du propriétaire) : il ne touche qu'à SA mission.
+     ---------------------------------------------------------------------- */
+
+  /* Prendre une mission passe par une fonction de la base : c'est elle qui
+     tranche si deux personnes appuient en même temps (D-60). Une simple
+     modification serait d'ailleurs refusée — les règles de lecture
+     n'autorisent le prestataire à modifier que les missions qu'il détient
+     DÉJÀ, et une mission libre n'appartient à personne. */
+  function prendreMission(id) {
+    if (!dispo || !profil) return Promise.reject(new Error('Connexion indisponible.'));
+    return client.rpc('prendre_mission', { mission_id: id }).then(function (r) {
+      if (r.error) {
+        if (/déjà prise|non autoris/i.test(r.error.message || '')) {
+          throw new Error('Trop tard : cette mission vient d\'être prise par quelqu\'un d\'autre.');
+        }
+        throw new Error(messageClair(r.error));
+      }
+      return r.data;
+    });
+  }
+
+  /* Avancement d'une mission déjà prise : démarrage, fin, compte rendu. */
+  function majMission(m) {
+    if (!dispo || !profil || !m) return Promise.resolve();
+    return client.from('missions').update({
+      status: ETATS_MISSION.indexOf(m.status) >= 0 ? m.status : 'dispo',
+      report: (state.reports && state.reports[m.id]) || null,
+      done_at: m.status === 'termine' ? new Date().toISOString() : null,
+      updated_at: new Date().toISOString()
+    }).eq('id', m.id).then(function (r) {
+      if (r.error) derniereErreur = messageClair(r.error);
+      return !r.error;
+    });
+  }
+
+  /* Le compte connecté est-il un prestataire relié ? */
+  function estPrestataireRelie() {
+    return !!(dispo && profil && profil.role === 'provider');
   }
 
   /* --- rapprochement fiche ↔ compte, depuis l'écran Prestataires --- */
@@ -540,6 +631,13 @@ var DB = (function () {
     charger: charger,
     lierCompte: lierCompte,
     delierCompte: delierCompte,
+    // Exposée : c'est elle qui reconstitue les fiches à partir des comptes,
+    // et c'est le point le plus délicat de la couche (une erreur ici fait
+    // disparaître des prestataires ou leur retire tous leurs droits).
+    appliquerComptes: comptesDepuisBase,
+    prendreMission: prendreMission,
+    majMission: majMission,
+    estPrestataireRelie: estPrestataireRelie,
     pousser: pousser,
     pousserMaintenant: pousserMaintenant,
     ecouter: ecouter,
