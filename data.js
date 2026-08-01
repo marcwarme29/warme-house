@@ -190,16 +190,33 @@ var DB = (function () {
 
   /* --- les missions --- */
 
+  /* Un bien supprimé, ou une réservation retirée alors que sa mission avait
+     déjà été prise, laisseraient une mission qui pointe dans le vide — et la
+     base refuserait la ligne entière. On coupe le lien plutôt que de perdre
+     la mission. */
+  function bienExiste(pid) {
+    return (state.props || []).some(function (p) { return p.id === pid; });
+  }
+
+  function resaExiste(rid) {
+    if (!rid) return false;
+    return Object.keys(state.resas || {}).some(function (pid) {
+      return (state.resas[pid] || []).some(function (r) { return r.id === rid; });
+    });
+  }
+
+  var ETATS_MISSION = ['dispo', 'prise', 'encours', 'termine', 'annulee'];
+
   function missionVersBase(m) {
     return {
       id: m.id,
       property_id: m.prop,
-      reservation_id: m.fromResa || null,
+      reservation_id: resaExiste(m.fromResa) ? m.fromResa : null,
       type: m.type || 'menage',
       date: m.date,
       window_label: m.windowLabel || '',
       price: m.price || 0,
-      status: m.status || 'dispo',
+      status: ETATS_MISSION.indexOf(m.status) >= 0 ? m.status : 'dispo',
       provider_id: uuidDuPrestataire(m.taker),
       taker_legacy: m.taker || null,
       guest: (m.res && m.res.guest) || '',
@@ -327,20 +344,40 @@ var DB = (function () {
     Object.keys(state.resas || {}).forEach(function (pid) {
       (state.resas[pid] || []).forEach(function (r) { resas.push(resaVersBase(r, pid)); });
     });
-    var missions = (state.missions || []).map(missionVersBase);
+    var missions = (state.missions || [])
+      .filter(function (m) { return m.id && m.date && bienExiste(m.prop); })
+      .map(missionVersBase);
 
-    return client.from('properties').upsert(biens)
-      .then(function () { return client.from('property_secrets').upsert(secrets); })
-      .then(function () { return resas.length ? client.from('reservations').upsert(resas) : null; })
-      .then(function () { return missions.length ? client.from('missions').upsert(missions) : null; })
-      .then(function (r) {
-        if (r && r.error) throw r.error;
-        return true;
-      })
-      .catch(function (e) {
-        derniereErreur = messageClair(e);
-        return false;
+    // Chaque étape est vérifiée : Supabase ne « rejette » pas une écriture
+    // refusée, il rend un objet { error }. Sans ce contrôle, une erreur sur
+    // les biens passerait inaperçue et on croirait le déménagement réussi.
+    // L'ordre compte : les réservations et les missions renvoient aux biens.
+    var etapes = [
+      { nom: 'les logements', table: 'properties', lignes: biens },
+      { nom: 'les codes d\'accès', table: 'property_secrets', lignes: secrets },
+      { nom: 'les réservations', table: 'reservations', lignes: resas },
+      { nom: 'les missions', table: 'missions', lignes: missions }
+    ];
+
+    return etapes.reduce(function (chaine, e) {
+      return chaine.then(function () {
+        if (!e.lignes.length) return null;
+        return client.from(e.table).upsert(e.lignes).then(function (r) {
+          if (r && r.error) {
+            var err = new Error(messageClair(r.error) + ' (en écrivant ' + e.nom + ')');
+            err.detail = r.error;
+            throw err;
+          }
+          return r;
+        });
       });
+    }, Promise.resolve()).then(function () {
+      derniereErreur = null;
+      return { ok: true, biens: biens.length, resas: resas.length, missions: missions.length };
+    }).catch(function (e) {
+      derniereErreur = e.message || messageClair(e);
+      return { ok: false };
+    });
   }
 
   /* ----------------------------------------------------------------------
@@ -371,9 +408,9 @@ var DB = (function () {
     if (!dispo) return Promise.reject(new Error(derniereErreur || 'Connexion indisponible.'));
     if (!profil) return Promise.reject(new Error('Il faut être connecté.'));
     if (profil.role !== 'owner') return Promise.reject(new Error('Seul le propriétaire peut faire le déménagement.'));
-    return pousserMaintenant().then(function (ok) {
-      if (!ok) throw new Error(derniereErreur || 'Le déménagement a échoué.');
-      return true;
+    return pousserMaintenant().then(function (bilan) {
+      if (!bilan.ok) throw new Error(derniereErreur || 'Le déménagement a échoué.');
+      return bilan;
     });
   }
 

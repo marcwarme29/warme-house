@@ -5671,9 +5671,10 @@ var actions = {
     state.migMsg = '';
     render();
     DB.demenager()
-      .then(function () {
+      .then(function (b) {
         state.migEnCours = false;
-        state.migMsg = '✅ Déménagement terminé : tes données sont dans le grand cahier partagé.';
+        state.migMsg = '✅ Déménagement terminé : ' + b.biens + ' logement(s), ' +
+          b.resas + ' réservation(s) et ' + b.missions + ' mission(s) sont dans le cahier partagé.';
         render();
       })
       .catch(function (e) {
