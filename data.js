@@ -266,24 +266,94 @@ var DB = (function () {
 
   /* --- les comptes --- */
 
+  /* Deux notions distinctes, et il ne faut surtout pas les confondre :
+       - une FICHE de prestataire (`state.agents`) : ce que le propriétaire a
+         créé dans l'application. Elle existe même sans compte.
+       - un COMPTE (`profiles` dans la base) : de quoi se connecter.
+     Le rapprochement se fait par `legacy_id`. Une fiche sans compte reste
+     parfaitement utilisable — c'est l'état de tout le monde aujourd'hui. */
   function comptesDepuisBase(lignes) {
-    var prestataires = lignes.filter(function (l) { return l.role === 'provider'; });
-    if (!prestataires.length) return;        // aucun compte créé : on garde la démonstration
-    state.agents = prestataires.map(function (l) {
-      var ancien = (state.agents || []).filter(function (a) { return a.id === l.legacy_id; })[0] || {};
-      return Object.assign({}, ancien, {
-        id: l.legacy_id || l.id,
-        uid: l.id,
-        name: l.full_name || l.email,
-        kind: l.kind || 'menage',
-        role: l.job_label || ancien.role || '',
-        email: l.email || '',
-        iban: l.iban || '',
-        since: l.since || '',
-        props: l.props || [],
-        services: l.services || undefined
-      });
+    state.comptes = lignes.map(function (l) {
+      return {
+        uid: l.id, email: l.email || '', nom: l.full_name || '',
+        role: l.role, kind: l.kind, legacy_id: l.legacy_id || ''
+      };
     });
+
+    var vivants = {};
+    lignes.forEach(function (l) { vivants[l.id] = true; });
+
+    // Un compte lié impose ses droits à la fiche : c'est lui qui fait foi,
+    // puisque c'est lui que la base regarde pour décider ce qui est visible.
+    lignes.forEach(function (l) {
+      if (l.role !== 'provider' || !l.legacy_id) return;
+      var a = (state.agents || []).filter(function (x) { return x.id === l.legacy_id; })[0];
+      if (!a) return;                       // compte lié à une fiche supprimée
+      a.uid = l.id;
+      a.email = l.email || a.email;
+      a.kind = l.kind || a.kind;
+      a.props = l.props || a.props || [];
+      if (l.services) a.services = l.services;
+      if (l.full_name) a.name = l.full_name;
+    });
+
+    // Un compte supprimé dans Supabase ne doit pas laisser une fiche
+    // qui se croit encore reliée à quelque chose.
+    (state.agents || []).forEach(function (a) {
+      if (a.uid && !vivants[a.uid]) delete a.uid;
+    });
+  }
+
+  /* --- rapprochement fiche ↔ compte, depuis l'écran Prestataires --- */
+
+  function lierCompte(uid, fiche) {
+    if (!dispo || !profil || profil.role !== 'owner') {
+      return Promise.reject(new Error('Réservé au propriétaire.'));
+    }
+    return client.from('profiles').update({
+      legacy_id: fiche.id,
+      full_name: fiche.name || '',
+      job_label: fiche.role || '',
+      kind: fiche.kind || 'menage',
+      iban: fiche.iban || '',
+      since: fiche.since || '',
+      props: fiche.props || [],
+      services: fiche.services || null
+    }).eq('id', uid).then(function (r) {
+      if (r.error) throw new Error(messageClair(r.error));
+      return true;
+    });
+  }
+
+  function delierCompte(uid) {
+    if (!dispo || !profil || profil.role !== 'owner') {
+      return Promise.reject(new Error('Réservé au propriétaire.'));
+    }
+    return client.from('profiles')
+      .update({ legacy_id: null, props: [], services: null })
+      .eq('id', uid).then(function (r) {
+        if (r.error) throw new Error(messageClair(r.error));
+        return true;
+      });
+  }
+
+  /* Les droits d'un prestataire lié doivent suivre les cases cochées par le
+     propriétaire : sans cette recopie, décocher un logement ne changerait
+     rien à ce que la base laisse voir. */
+  function majComptesLies() {
+    if (!dispo || !profil || profil.role !== 'owner') return Promise.resolve();
+    var lies = (state.agents || []).filter(function (a) { return a.uid; });
+    return lies.reduce(function (chaine, a) {
+      return chaine.then(function () {
+        return client.from('profiles').update({
+          kind: a.kind || 'menage',
+          props: a.props || [],
+          services: a.services || null,
+          full_name: a.name || '',
+          job_label: a.role || ''
+        }).eq('id', a.uid);
+      });
+    }, Promise.resolve());
   }
 
   /* ----------------------------------------------------------------------
@@ -385,6 +455,8 @@ var DB = (function () {
         });
       });
     }, Promise.resolve()).then(function () {
+      return majComptesLies();          // les droits suivent les cases cochées
+    }).then(function () {
       derniereErreur = null;
       return { ok: true, biens: biens.length, resas: resas.length, missions: missions.length };
     }).catch(function (e) {
@@ -440,6 +512,8 @@ var DB = (function () {
     connexion: connexion,
     deconnexion: deconnexion,
     charger: charger,
+    lierCompte: lierCompte,
+    delierCompte: delierCompte,
     pousser: pousser,
     pousserMaintenant: pousserMaintenant,
     ecouter: ecouter,

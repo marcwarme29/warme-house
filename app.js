@@ -533,6 +533,8 @@ function initialState() {
     loginEnCours: false,
     migMsg: '',
     migEnCours: false,
+    comptes: [],           // les comptes existants dans le cahier partagé
+    lienCompte: {},        // { idFiche: uidCompte } — choix en cours de rapprochement
     loginPresta: 'Sofia',
 
     // Données de référence, désormais modifiables depuis l'interface
@@ -674,6 +676,11 @@ function load() {
    manque sans jamais écraser ce que le propriétaire a saisi. */
 function upgrade() {
   var seedInfo = BIEN_INFO, seedLivret = baseLivret();
+
+  // Session 13 — le cahier partagé. `comptes` est rempli à chaque lecture ;
+  // `lienCompte` ne retient qu'un choix en cours, jamais une donnée utile.
+  if (!Array.isArray(state.comptes)) state.comptes = [];
+  if (!state.lienCompte) state.lienCompte = {};
 
   // Nouveautés de la session 8 : durées par bien, départs signalés, avis.
   // Posées d'abord : les boucles ci-dessous s'appuient dessus.
@@ -3938,6 +3945,63 @@ function viewOwnerStats() {
       'compte dans les deux. Les dépenses de ménage viennent des missions terminées du mois.</p>');
 }
 
+/* Le rapprochement « fiche ↔ compte » (§19.8).
+   Une fiche est ce que le propriétaire a créé dans l'application ; un compte
+   est de quoi se connecter. Les deux existent séparément, et cette ligne fait
+   le lien. Elle n'apparaît que si le cahier partagé répond. */
+function comptesLibres() {
+  var pris = {};
+  (state.agents || []).forEach(function (a) { if (a.uid) pris[a.uid] = true; });
+  return (state.comptes || []).filter(function (c) {
+    return c.role === 'provider' && !pris[c.uid];
+  });
+}
+
+function ligneCompte(a) {
+  if (typeof DB === 'undefined' || !DB.estDispo()) return '';
+  var p = DB.profil();
+  if (!p || p.role !== 'owner') return '';
+
+  if (a.uid) {
+    var c = (state.comptes || []).filter(function (x) { return x.uid === a.uid; })[0] || {};
+    return '<div class="invite-row">' +
+      '<span class="invite-state">' +
+        '<span class="invite-ok">✓ Compte relié</span>' +
+        '<span class="invite-mail num">' + esc(c.email || '—') + '</span>' +
+      '</span>' +
+      '<span class="sec-note" style="flex:1;min-width:200px">' +
+        'Cette personne peut se connecter, et ne voit que ce qui est coché ci-dessus.</span>' +
+      '<button type="button" class="btn-danger-xs"' +
+        act('delier-compte', { ag: a.id }) + '>Détacher le compte</button>' +
+      '</div>';
+  }
+
+  var libres = comptesLibres();
+  if (!libres.length) {
+    return '<div class="invite-row">' +
+      '<span class="invite-state"><span class="invite-todo">Aucun compte</span></span>' +
+      '<span class="sec-note" style="flex:1;min-width:220px">' +
+        'Crée d\'abord son compte dans Supabase (Authentication → Users → Add user, ' +
+        'en cochant « Auto Confirm User »). Il apparaîtra ici.</span>' +
+      '</div>';
+  }
+
+  var choix = state.lienCompte && state.lienCompte[a.id];
+  return '<div class="invite-row">' +
+    '<span class="invite-state"><span class="invite-todo">Pas encore de compte</span></span>' +
+    '<select class="inp" style="flex:1;min-width:200px;max-width:340px"' +
+      ' data-fid="lien-' + a.id + '" data-ch="choix-compte" data-ag="' + a.id + '">' +
+      '<option value="">Relier un compte…</option>' +
+      libres.map(function (c) {
+        return '<option value="' + esc(c.uid) + '"' + (choix === c.uid ? ' selected' : '') + '>' +
+          esc(c.email || c.nom || c.uid) + '</option>';
+      }).join('') +
+    '</select>' +
+    '<button type="button" class="btn btn--xs" style="background:var(--ink);color:#fff"' +
+      (choix ? '' : ' disabled') + act('lier-compte', { ag: a.id }) + '>Relier</button>' +
+    '</div>';
+}
+
 function viewOwnerAgents() {
   var monthDef = MONTHS.find(function (m) { return m.key === state.ownerMonth; });
 
@@ -4026,6 +4090,8 @@ function viewOwnerAgents() {
         '<button type="button" class="btn btn--xs" style="background:var(--cream);color:var(--ink-soft)"' +
           act('invite-copy', { ag: a.id }) + '>Copier le message</button>' +
       '</div>' +
+
+      ligneCompte(a) +
       /* Ce que les voyageurs ont pensé de ses ménages. */
       (rt ? '<div class="avis-row">' +
         '<span class="perm-label">Avis des voyageurs :</span>' +
@@ -5660,6 +5726,43 @@ var actions = {
     render();
   },
 
+  /* Relier une fiche de prestataire à un compte Supabase (§19.8).
+     C'est ce geste qui ouvre réellement ses logements : la base ne regarde
+     que le compte, jamais la fiche. */
+  'lier-compte': function (el) {
+    var id = el.dataset.ag;
+    var uid = state.lienCompte && state.lienCompte[id];
+    var a = agent(id);
+    if (!uid || !a) return;
+    state.migMsg = '';
+    DB.lierCompte(uid, a)
+      .then(function () { return DB.charger(); })
+      .then(function () {
+        if (state.lienCompte) delete state.lienCompte[id];
+        save(); render();
+      })
+      .catch(function (e) {
+        state.migMsg = '⚠️ ' + DB.messageClair(e);
+        render();
+      });
+  },
+
+  'delier-compte': function (el) {
+    var a = agent(el.dataset.ag);
+    if (!a || !a.uid) return;
+    if (!confirm('Détacher le compte de ' + a.name + ' ?\n\n' +
+      'Cette personne ne pourra plus se connecter à MAISON WARME. ' +
+      'Sa fiche, ses missions et son historique de paie sont conservés. ' +
+      'Le compte lui-même n\'est pas supprimé : tu pourras le relier à nouveau.')) return;
+    DB.delierCompte(a.uid)
+      .then(function () { return DB.charger(); })
+      .then(function () { save(); render(); })
+      .catch(function (e) {
+        state.migMsg = '⚠️ ' + DB.messageClair(e);
+        render();
+      });
+  },
+
   /* Le déménagement : envoie une première fois dans le grand cahier tout ce
      que contient ce navigateur. Réservé au propriétaire (§19.6). */
   demenager: function () {
@@ -6615,6 +6718,13 @@ function setBienField(el) {
 
 /* Changements qui demandent un redessin (listes déroulantes, dates). */
 var changes = {
+  /* Choix du compte à relier à une fiche de prestataire (§19.8). */
+  'choix-compte': function (el) {
+    if (!state.lienCompte) state.lienCompte = {};
+    state.lienCompte[el.dataset.ag] = el.value;
+    render();
+  },
+
   /* Porte d'entrée du livret : la date sert aux deux écrans (D-46). */
   'bv-date': function (el) { state.bienvenue.date = el.value; state.bienvenue.erreur = ''; save(); },
   'bv-pid': function (el) { state.bienvenue.pid = el.value; state.bienvenue.erreur = ''; save(); },
