@@ -528,7 +528,11 @@ function initialState() {
     me: 'Sofia',                      // prestataire connecté
     loginRole: 'owner',
     loginEmail: 'julien@maisonwarme.fr',
-    loginPwd: 'demo1234',
+    loginPwd: '',          // vide = connexion de démonstration ; rempli = vrai compte
+    loginErreur: '',
+    loginEnCours: false,
+    migMsg: '',
+    migEnCours: false,
     loginPresta: 'Sofia',
 
     // Données de référence, désormais modifiables depuis l'interface
@@ -639,6 +643,10 @@ function save() {
   } catch (e) {
     /* Navigation privée ou quota plein : l'application reste utilisable sans sauvegarde. */
   }
+  // Le navigateur reste la mémoire de secours ; le grand cahier partagé reçoit
+  // la même chose, sans qu'on l'attende — l'interface ne doit jamais figer
+  // parce que le réseau est lent. Ne fait rien tant que personne n'est connecté.
+  if (typeof DB !== 'undefined' && DB.estDispo()) DB.pousser();
 }
 
 function load() {
@@ -1086,6 +1094,48 @@ function homePath() {
   if (state.auth === 'owner') return '#/admin';
   if (state.auth === 'presta') return isCles(state.me) ? '#/app/calendrier' : '#/app/missions';
   return '#/login';
+}
+
+/* Connexion de démonstration : aucun mot de passe, on choisit son rôle.
+   Conservée telle quelle — elle sert hors ligne et pour la recette. */
+function loginDemo() {
+  state.auth = state.loginRole;
+  if (state.loginRole === 'presta') {
+    state.me = state.loginPresta;
+    state.openAgent = state.loginPresta;
+  }
+  save();
+  location.replace(homePath());
+  render();
+}
+
+/* Entrée dans l'application avec un vrai compte : c'est la fiche du compte
+   (table `profiles`) qui décide du rôle, plus le bouton choisi à l'écran. */
+function entrerAvecProfil(p) {
+  state.auth = p.role === 'owner' ? 'owner' : 'presta';
+  if (state.auth === 'presta') {
+    var moi = p.legacy_id || p.full_name || p.email;
+    state.me = moi;
+    state.openAgent = moi;
+  }
+  state.loginPwd = '';
+  state.loginErreur = '';
+  if (typeof DB !== 'undefined') DB.ecouter(surChangementDistant);
+  save();
+  location.replace(homePath());
+  render();
+}
+
+/* Quelqu'un d'autre a écrit dans le grand cahier : on relit et on redessine.
+   Le champ en cours de frappe est préservé par `render()` (§3.1 bis). */
+var relectureEnCours = false;
+function surChangementDistant() {
+  if (relectureEnCours) return;
+  relectureEnCours = true;
+  DB.charger()
+    .then(function () { render(); })
+    .catch(function () { })
+    .then(function () { relectureEnCours = false; });
 }
 
 /* Nom court pour les en-têtes de colonnes : on coupe entre deux mots,
@@ -2575,6 +2625,8 @@ function viewOwnerDash() {
         '<div class="det">' + esc(a.det) + '</div></div>';
     }).join('') + '</div>' +
 
+    blocDemenagement() +
+
     blocAcces(attente) +
 
     '<div class="cols" style="margin-top:26px;gap:20px">' +
@@ -2908,6 +2960,33 @@ function etatResa(x) {
     avisMenage: avisDone(pid, r, 'menage'),
     avisSejour: avisDone(pid, r, 'sejour')
   };
+}
+
+/* Le déménagement des données vers le grand cahier partagé (§19.6).
+   N'apparaît que pour un propriétaire connecté avec un vrai compte, et
+   disparaît de lui-même une fois que la base contient les biens. */
+function blocDemenagement() {
+  if (typeof DB === 'undefined' || !DB.estDispo()) return '';
+  var p = DB.profil();
+  if (!p || p.role !== 'owner') return '';
+
+  var fini = /^✅/.test(state.migMsg || '');
+
+  return '<div class="card" style="margin-top:20px;border-left:4px solid var(--terra)">' +
+    '<h2 class="sec-title" style="margin:0 0 6px">Mise en service — déménager mes données</h2>' +
+    '<p class="page-sub" style="margin:0 0 14px">' +
+      'Tes logements, réservations et missions vivent encore dans ce navigateur. ' +
+      'Ce bouton les recopie dans le cahier partagé, pour que tes prestataires et tes ' +
+      'voyageurs les voient enfin. Rien n\'est effacé ici, et tu peux le relancer sans risque.' +
+    '</p>' +
+    '<button type="button" class="btn btn--primary"' +
+      (state.migEnCours ? ' disabled' : '') + act('demenager') + '>' +
+      (state.migEnCours ? 'Déménagement en cours…' : 'Déménager mes données') + '</button>' +
+    (state.migMsg
+      ? '<p class="page-sub" style="margin:12px 0 0;color:' + (fini ? 'var(--vert)' : 'var(--terra)') + '">' +
+        esc(state.migMsg) + '</p>'
+      : '') +
+    '</div>';
 }
 
 function blocResasEnCours() {
@@ -5421,11 +5500,18 @@ function viewLogin() {
       '<input class="inp" id="lg-mail" type="email" autocomplete="username" value="' + esc(state.loginEmail) + '" data-fid="lg-mail" data-in="login-email"></div>' +
     '<div class="login-field"><label class="lab" for="lg-pwd">Mot de passe</label>' +
       '<input class="inp" id="lg-pwd" type="password" autocomplete="current-password" value="' + esc(state.loginPwd) + '" data-fid="lg-pwd" data-in="login-pwd"></div>' +
-    '<button type="button" class="btn btn--primary" style="margin-top:22px"' + act('login') + '>Se connecter</button>' +
+    (state.loginErreur
+      ? '<p class="login-err" role="alert">' + esc(state.loginErreur) + '</p>'
+      : '') +
+    '<button type="button" class="btn btn--primary" style="margin-top:22px"' +
+      (state.loginEnCours ? ' disabled' : '') + act('login') + '>' +
+      (state.loginEnCours ? 'Connexion…' : 'Se connecter') + '</button>' +
     '<p class="login-hint">' + (isOwner
       ? 'Accès propriétaire : biens, missions, stocks, prestataires.'
       : 'Accès prestataire : missions, checklists, gains.') +
-      '<br>Démonstration : n\'importe quel mot de passe fonctionne.</p>' +
+      '<br>' + (typeof DB !== 'undefined' && DB.estDispo()
+        ? 'Connecté au cahier partagé. Sans compte, laisse le mot de passe vide pour la démonstration.'
+        : 'Mode démonstration : n\'importe quel mot de passe fonctionne.') + '</p>' +
     '</div></div>';
 }
 
@@ -5538,21 +5624,63 @@ var actions = {
     render();
   },
   login: function () {
-    state.auth = state.loginRole;
-    if (state.loginRole === 'presta') {
-      state.me = state.loginPresta;
-      state.openAgent = state.loginPresta;
+    // Connexion réelle dès que le grand cahier répond ; sinon on retombe sur
+    // la connexion de démonstration, pour que l'application reste essayable
+    // hors ligne et que la recette ne dépende pas du réseau.
+    if (typeof DB !== 'undefined' && DB.estDispo() && state.loginEmail && state.loginPwd) {
+      state.loginErreur = '';
+      state.loginEnCours = true;
+      render();
+      DB.connexion(state.loginEmail.trim(), state.loginPwd)
+        .then(function (p) {
+          state.loginEnCours = false;
+          if (!p) throw new Error('Compte introuvable.');
+          return DB.charger().then(function () { return p; });
+        })
+        .then(function (p) {
+          entrerAvecProfil(p);
+        })
+        .catch(function (e) {
+          state.loginEnCours = false;
+          state.loginErreur = DB.messageClair(e);
+          render();
+        });
+      return;
     }
-    save();
-    location.replace(homePath());
-    render();
+    loginDemo();
   },
   logout: function () {
     state.auth = null;
     state.draft = null;
+    state.loginPwd = '';
+    state.loginErreur = '';
+    if (typeof DB !== 'undefined' && DB.estDispo()) { DB.taire(); DB.deconnexion(); }
     save();
     location.replace('#/login');
     render();
+  },
+
+  /* Le déménagement : envoie une première fois dans le grand cahier tout ce
+     que contient ce navigateur. Réservé au propriétaire (§19.6). */
+  demenager: function () {
+    if (typeof DB === 'undefined' || !DB.estDispo()) {
+      state.migMsg = 'Le grand cahier ne répond pas : vérifie la connexion internet.';
+      render(); return;
+    }
+    state.migEnCours = true;
+    state.migMsg = '';
+    render();
+    DB.demenager()
+      .then(function () {
+        state.migEnCours = false;
+        state.migMsg = '✅ Déménagement terminé : tes données sont dans le grand cahier partagé.';
+        render();
+      })
+      .catch(function (e) {
+        state.migEnCours = false;
+        state.migMsg = '⚠️ ' + DB.messageClair(e);
+        render();
+      });
   },
   reset: function () {
     if (!confirm('Remettre la démonstration à zéro ? Les missions prises, les photos, les stocks et les checklists modifiées reviendront à leur état d\'origine.')) return;
@@ -6649,3 +6777,27 @@ window.addEventListener('beforeunload', save);
 load();
 if (!location.hash) location.replace(homePath());
 render();
+
+/* Le grand cahier partagé. On ouvre la connexion, puis on regarde si une
+   session est déjà ouverte sur cet appareil : le prestataire qui rouvre
+   l'application le matin ne doit pas retaper son mot de passe.
+   Tout échoue en silence : sans réseau, l'application reste celle d'avant. */
+if (typeof DB !== 'undefined' && DB.demarrer()) {
+  DB.relireProfil()
+    .then(function (p) {
+      if (!p) return null;
+      return DB.charger().then(function () {
+        state.auth = p.role === 'owner' ? 'owner' : 'presta';
+        if (state.auth === 'presta') {
+          state.me = p.legacy_id || p.full_name || p.email;
+          state.openAgent = state.me;
+        }
+        DB.ecouter(surChangementDistant);
+        // On ne renvoie pas l'utilisateur à l'accueil : il peut avoir ouvert
+        // un lien précis (un livret, une mission).
+        if (location.hash === '#/login' || !location.hash) location.replace(homePath());
+        render();
+      });
+    })
+    .catch(function () { /* hors ligne : on garde ce qui est dans le navigateur */ });
+}

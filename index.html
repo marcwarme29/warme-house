@@ -22,6 +22,11 @@
 <noscript>
   <div style="padding:40px;font-family:sans-serif">MAISON WARME a besoin de JavaScript pour fonctionner. Merci de l'activer dans votre navigateur.</div>
 </noscript>
+<!-- Le grand cahier partagé (Supabase). Chargé avant l'application :
+     config.js porte l'adresse du projet, data.js la couche de données. -->
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.58.0/dist/umd/supabase.min.js"></script>
+<script src="./config.js"></script>
+<script src="./data.js"></script>
 <script src="./app.js"></script>
 </body>
 </html>
