@@ -164,6 +164,12 @@ var DB = (function () {
     };
   }
 
+  function compterResas() {
+    return Object.keys(state.resas || {}).reduce(function (n, pid) {
+      return n + (state.resas[pid] || []).length;
+    }, 0);
+  }
+
   /* `state.departs` est indexé « pid:début:fin » : on le porte sur la ligne. */
   function departSignale(pid, r) {
     var cle = pid + ':' + r.start + ':' + r.end;
@@ -389,10 +395,30 @@ var DB = (function () {
 
       comptesDepuisBase(r[4].data || []);
       biensDepuisBase(r[0].data, r[1].data || []);
-      resasDepuisBase(r[2].data || []);
-      missionsDepuisBase(r[3].data || []);
+
+      // RÈGLE DE SÛRETÉ : le cahier ne vide jamais le navigateur.
+      // Une collection vide côté base signifie presque toujours qu'elle n'y a
+      // pas encore été écrite — un déménagement interrompu, par exemple.
+      // L'écraser ferait disparaître le travail local, et la sauvegarde
+      // figerait aussitôt ce vide. On garde donc ce qu'on a, et la prochaine
+      // écriture renverra le contenu vers le cahier.
+      // Limite assumée : supprimer la dernière réservation depuis un autre
+      // appareil ne se propage pas ici. À revoir quand les suppressions
+      // seront elles aussi enregistrées (lot 4).
+      var resas = r[2].data || [];
+      var missions = r[3].data || [];
+      var localResas = compterResas();
+
+      if (resas.length || !localResas) resasDepuisBase(resas);
+      if (missions.length || !(state.missions || []).length) missionsDepuisBase(missions);
+
       if (typeof upgrade === 'function') upgrade();
       premiereLectureFaite = true;
+
+      // Ce que le cahier n'avait pas, on le lui rend.
+      if ((!resas.length && localResas) || (!missions.length && (state.missions || []).length)) {
+        setTimeout(pousserMaintenant, 0);
+      }
       return true;
     });
   }

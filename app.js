@@ -2986,9 +2986,16 @@ function blocDemenagement() {
       'Ce bouton les recopie dans le cahier partagé, pour que tes prestataires et tes ' +
       'voyageurs les voient enfin. Rien n\'est effacé ici, et tu peux le relancer sans risque.' +
     '</p>' +
-    '<button type="button" class="btn btn--primary"' +
-      (state.migEnCours ? ' disabled' : '') + act('demenager') + '>' +
-      (state.migEnCours ? 'Déménagement en cours…' : 'Déménager mes données') + '</button>' +
+    '<div style="display:flex;gap:10px;flex-wrap:wrap">' +
+      '<button type="button" class="btn btn--primary"' +
+        (state.migEnCours ? ' disabled' : '') + act('demenager') + '>' +
+        (state.migEnCours ? 'Déménagement en cours…' : 'Déménager mes données') + '</button>' +
+      '<button type="button" class="btn" style="background:var(--cream);color:var(--ink-soft)"' +
+        act('refaire-missions') + '>Recréer les missions manquantes</button>' +
+    '</div>' +
+    '<p class="sec-note" style="margin:10px 0 0">' +
+      'Le second bouton reconstruit une mission de ménage pour chaque départ à venir qui n\'en a ' +
+      'plus. Il ne touche ni aux missions existantes, ni à l\'historique de paie.</p>' +
     (state.migMsg
       ? '<p class="page-sub" style="margin:12px 0 0;color:' + (fini ? 'var(--vert)' : 'var(--terra)') + '">' +
         esc(state.migMsg) + '</p>'
@@ -5761,6 +5768,27 @@ var actions = {
         state.migMsg = '⚠️ ' + DB.messageClair(e);
         render();
       });
+  },
+
+  /* Reconstruit les missions de ménage manquantes à partir des réservations.
+     Une mission de départ se déduit entièrement du séjour : logement, date,
+     créneau, tarif, turnover. On ne recrée que les départs à venir — faire
+     réapparaître en « disponible » des ménages déjà faits n'aurait aucun sens
+     (l'historique de paie, lui, n'est pas touché). */
+  'refaire-missions': function () {
+    var cree = 0;
+    state.props.forEach(function (p) {
+      resasOf(p.id).forEach(function (r) {
+        if (r.statut === 'annule' || r.end < TODAY) return;
+        if (missionDuDepart(p.id, r)) return;
+        if (creerMissionDepart(p.id, r)) cree++;
+      });
+    });
+    state.migMsg = cree
+      ? '✅ ' + cree + ' mission(s) de ménage recréée(s) à partir de tes réservations.'
+      : 'Rien à recréer : chaque départ à venir a déjà sa mission.';
+    save();
+    render();
   },
 
   /* Le déménagement : envoie une première fois dans le grand cahier tout ce
