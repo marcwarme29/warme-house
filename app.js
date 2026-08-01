@@ -1,5 +1,5 @@
 /* ==========================================================================
-   WARME House — application de gestion locative
+   MAISON WARME — application de gestion locative
    Port du prototype « WARME House.dc.html » en page web autonome.
    Aucune dépendance, aucune étape de construction : 3 fichiers statiques.
 
@@ -294,7 +294,7 @@ var T = {
   code:         ['Code d’accès', 'Access code'],
   wifi:         ['Wi-Fi', 'Wi-Fi'],
   // Pied de page et messages généraux
-  bonSejour:    ['Bon séjour ! — WARME House', 'Enjoy your stay! — WARME House'],
+  bonSejour:    ['Bon séjour ! — MAISON WARME', 'Enjoy your stay! — MAISON WARME'],
   livretVide:   ['Le livret de ce logement n’est pas encore rempli.',
                  'This guidebook has not been filled in yet.'],
   rubriqueVide: ['Cette rubrique est vide.', 'This section is empty.'],
@@ -347,7 +347,7 @@ var T = {
   noteMerci:    ['Merci, c’est bien enregistré.', 'Thank you, it has been saved.'],
   noteEtoiles:  ['Choisissez d’abord un nombre d’étoiles.', 'Please choose a number of stars first.'],
   // Porte d'entrée
-  bvSous:       ['Vous arrivez dans un logement WARME House', 'You are arriving at a WARME House property'],
+  bvSous:       ['Vous arrivez dans un logement MAISON WARME', 'You are arriving at a MAISON WARME property'],
   bvTitre:      ['Retrouvez votre séjour', 'Find your booking'],
   bvP:          ['Deux informations suffisent. Les 4 chiffres sont ceux du numéro de téléphone que vous avez donné à la plateforme au moment de réserver.',
                  'Two details are enough. The 4 digits are from the phone number you gave the booking platform.'],
@@ -392,8 +392,8 @@ var T = {
   bvHeureNote:  ['Arrivée prévue à partir de ', 'Check-in is from '],
   bvHeureNote2: ['. Si vous arrivez plus tard, dites-le nous : la personne qui vous remet les clés s’organisera.',
                  '. If you are arriving later, let us know: whoever hands over the keys will plan accordingly.'],
-  bvOptin:      ['Je souhaite recevoir les offres et nouveautés de WARME House',
-                 'I would like to receive offers and news from WARME House'],
+  bvOptin:      ['Je souhaite recevoir les offres et nouveautés de MAISON WARME',
+                 'I would like to receive offers and news from MAISON WARME'],
   bvOptinS:     ['Facultatif. Vous pourrez vous désinscrire à tout moment.',
                  'Optional. You can unsubscribe at any time.'],
   bvEnregistrer:['Enregistrer et voir le livret', 'Save and open the guidebook'],
@@ -527,7 +527,7 @@ function initialState() {
     auth: null,                       // null | 'owner' | 'presta'
     me: 'Sofia',                      // prestataire connecté
     loginRole: 'owner',
-    loginEmail: 'julien@warmehouse.fr',
+    loginEmail: 'julien@maisonwarme.fr',
     loginPwd: 'demo1234',
     loginPresta: 'Sofia',
 
@@ -1542,10 +1542,10 @@ function inviteTexte(a) {
   var prenom = String(a.name || '').split(/\s+/)[0] || '';
   return 'Bonjour ' + prenom + ',\n\n' +
     (a.kind === 'cles'
-      ? 'Tu peux désormais consulter depuis ton téléphone, avec WARME House, le calendrier ' +
+      ? 'Tu peux désormais consulter depuis ton téléphone, avec MAISON WARME, le calendrier ' +
         'des logements dont tu remets les clés : qui arrive, qui repart, à quelle heure, ' +
         'le nom du voyageur et le nombre de personnes.\n\n'
-      : 'Tu peux désormais suivre tes missions depuis ton téléphone avec WARME House : ' +
+      : 'Tu peux désormais suivre tes missions depuis ton téléphone avec MAISON WARME : ' +
         'les ménages à prendre, la checklist de chaque logement, le relevé des stocks et tes gains du mois.\n\n') +
     'Voici ton lien :\n' + appUrl() + '\n\n' +
     'Pour te connecter :\n' +
@@ -1556,13 +1556,13 @@ function inviteTexte(a) {
     'Aucun mot de passe ne t\'est demandé pour le moment.\n\n' +
     'Astuce : depuis ton navigateur, choisis « Ajouter à l\'écran d\'accueil ». ' +
     'L\'application s\'ouvrira ensuite comme une vraie application.\n\n' +
-    'À bientôt,\nWARME House';
+    'À bientôt,\nMAISON WARME';
 }
 
 /** Le lien mailto complet, prêt à ouvrir. */
 function inviteMailto(a) {
   return 'mailto:' + encodeURIComponent(a.email || '') +
-    '?subject=' + encodeURIComponent('Ton accès à WARME House') +
+    '?subject=' + encodeURIComponent('Ton accès à MAISON WARME') +
     '&body=' + encodeURIComponent(inviteTexte(a));
 }
 
@@ -2482,7 +2482,7 @@ function ownerShell(page, content) {
 
   return '<div class="owner">' +
     '<aside class="rail">' +
-      '<div><div class="rail-logo">WARME House</div>' +
+      '<div><div class="rail-logo">MAISON WARME</div>' +
       '<div class="rail-sub num">' + state.props.length + ' bien' + (state.props.length > 1 ? 's' : '') +
         ' · ' + state.agents.length + ' prestataire' + (state.agents.length > 1 ? 's' : '') +
         ' · ' + TODAY_LABEL + '</div></div>' +
@@ -2759,12 +2759,12 @@ function viewOwnerRepertoire() {
     l'invitation d'un prestataire, D-37). */
 function mailtoVoyageur(f) {
   var d = f.dernier;
-  var sujet = 'WARME House — ' + prop(d.pid).name;
+  var sujet = 'MAISON WARME — ' + prop(d.pid).name;
   var corps = 'Bonjour ' + f.nom + ',\n\n' +
     'Nous espérons que votre séjour au ' + prop(d.pid).name + ' s\'est bien passé.\n\n' +
     'Voici le lien de votre livret d\'accueil, si vous en avez besoin :\n' +
     appUrl() + '#/bienvenue\n\n' +
-    'À bientôt,\nWARME House';
+    'À bientôt,\nMAISON WARME';
   return 'mailto:' + encodeURIComponent(f.mail) +
     '?subject=' + encodeURIComponent(sujet) + '&body=' + encodeURIComponent(corps);
 }
@@ -4437,7 +4437,7 @@ function carteConnexions() {
         }).join('') + '</div>' +
         '<div style="margin-top:16px;padding-top:14px;border-top:1px solid rgba(36,30,26,.08)">' +
           '<label class="lab" for="b24-compte">Identifiant de compte Beds24 (facultatif)</label>' +
-          '<input class="inp" id="b24-compte" type="text" placeholder="Ex. warmehouse" value="' + esc(state.beds24.compte) +
+          '<input class="inp" id="b24-compte" type="text" placeholder="Ex. maisonwarme" value="' + esc(state.beds24.compte) +
             '" data-fid="b24-compte" data-in="beds24-compte">' +
           '<p class="sec-note" style="margin-top:6px">Le numéro de compte, pas la clé secrète. ' +
             '<strong>Ne collez jamais votre clé d’API ici</strong> : cette page est publique, elle serait lisible par tous. ' +
@@ -4914,7 +4914,7 @@ function bvCoque(contenu, sousTitre) {
   return '<div class="livret bienvenue">' +
     '<header class="lv-head bv-head">' +
       langSwitch() +
-      '<div class="lv-logo">WARME House</div>' +
+      '<div class="lv-logo">MAISON WARME</div>' +
       '<h1 class="lv-title">' + esc(t('bvBienvenue')) + '</h1>' +
       '<p class="lv-city">' + esc(sousTitre) + '</p>' +
     '</header>' + contenu +
@@ -5140,7 +5140,7 @@ function viewLivret() {
   return '<div class="livret">' + lvBack('#/admin/biens/' + pid, 'Revenir à la fiche du bien') +
     '<header class="lv-head" style="background:' + b.tint + '">' +
       langSwitch() +
-      '<div class="lv-logo">WARME House</div>' +
+      '<div class="lv-logo">MAISON WARME</div>' +
       '<h1 class="lv-title">' + esc(b.name) + '</h1>' +
       '<p class="lv-city">' + esc([b.address, b.city].filter(Boolean).join(', ')) + '</p>' +
       (mot ? '<p class="lv-mot">' + esc(mot) + '</p>' : '') +
@@ -5406,7 +5406,7 @@ function bienIcal(pid) {
 function viewLogin() {
   var isOwner = state.loginRole === 'owner';
   return '<div class="login"><div class="login-card">' +
-    '<div class="login-logo">WARME House</div>' +
+    '<div class="login-logo">MAISON WARME</div>' +
     '<p class="login-sub">Gestion du ménage et des stocks de vos locations courte durée.</p>' +
     '<div class="login-seg">' +
       '<button type="button" aria-pressed="' + isOwner + '"' + act('login-role', { r: 'owner' }) + '>Propriétaire</button>' +
@@ -5534,7 +5534,7 @@ var actions = {
   /* Connexion ------------------------------------------------------------ */
   'login-role': function (el) {
     state.loginRole = el.dataset.r;
-    state.loginEmail = el.dataset.r === 'owner' ? 'julien@warmehouse.fr' : agent(state.loginPresta).email;
+    state.loginEmail = el.dataset.r === 'owner' ? 'julien@maisonwarme.fr' : agent(state.loginPresta).email;
     render();
   },
   login: function () {
@@ -6606,9 +6606,9 @@ function render() {
     }
   }
 
-  document.title = state.auth === 'presta' ? 'WARME House — prestataire'
-    : state.auth === 'owner' ? 'WARME House — propriétaire'
-      : 'WARME House';
+  document.title = state.auth === 'presta' ? 'MAISON WARME — prestataire'
+    : state.auth === 'owner' ? 'MAISON WARME — propriétaire'
+      : 'MAISON WARME';
 }
 
 document.addEventListener('click', function (e) {

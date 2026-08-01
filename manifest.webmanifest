@@ -1,6 +1,6 @@
 {
-  "name": "WARME House",
-  "short_name": "WARME House",
+  "name": "MAISON WARME",
+  "short_name": "MAISON WARME",
   "description": "Gestion du ménage, des stocks et des prestataires pour locations courte durée.",
   "start_url": "./",
   "scope": "./",
