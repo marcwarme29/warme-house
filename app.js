@@ -619,6 +619,22 @@ function load() {
   } catch (e) {
     state = initialState();
   }
+  /* Les « en cours » ne sont pas des données : ce sont des attentes de réponse,
+     et une attente ne survit pas à la fermeture de la page. À faire ici, dans
+     `load()`, et surtout **pas** dans `upgrade()` — qui tourne aussi à chaque
+     lecture du cahier, et effacerait des messages qu'on vient d'afficher.
+
+     `priseEnCours` était le plus dommageable : enregistré tel quel, il faisait
+     revenir au rechargement le bouton « Prendre cette mission » sous la forme
+     « Un instant… » — un libellé **sans action attachée**. La mission devenait
+     alors définitivement impossible à prendre. Constaté en session 14. */
+  state.priseEnCours = null;
+  state.loginEnCours = false;
+  state.migEnCours = false;
+  state.mMsg = '';
+  state.migMsg = '';
+  if (state.inv) state.inv.enCours = false;
+
   // Appelé aussi sur un navigateur neuf : c'est upgrade() qui pose les valeurs
   // dérivées (durées par bien, arrivée anticipée…) absentes des constantes.
   upgrade();
@@ -647,9 +663,6 @@ function upgrade() {
   delete state.loginPresta;
   if (state.me && !agentExiste(state.me)) state.me = null;
   if (state.openAgent && !agentExiste(state.openAgent)) state.openAgent = null;
-  // Ni mot de passe ni message d'erreur ne survivent à la fermeture de l'onglet.
-  state.loginPwd = '';
-  state.loginErreur = '';
 
   // Nouveautés de la session 8 : durées par bien, départs signalés, avis.
   // Posées d'abord : les boucles ci-dessous s'appuient dessus.
@@ -822,6 +835,12 @@ function nights(a, b) { return Math.round((Date.parse(b) - Date.parse(a)) / 8640
 /* Recherches tolérantes : un bien, un prestataire ou une prestation supprimé
    reste cité dans l'historique. On rend alors un objet de remplacement plutôt
    que `undefined`, pour que rien ne casse à l'affichage. */
+/** Les couleurs d'une plateforme, avec un repli sûr. Aucun écran ne doit
+    tomber parce qu'une réservation vient d'ailleurs, ou de nulle part. */
+function platCouleurs(nom) {
+  return PLATS[nom] || PLATS['Direct'];
+}
+
 function prop(id) {
   return state.props.find(function (p) { return p.id === id; }) ||
     { id: id, name: 'Bien supprimé', short: 'Supprimé', city: '', address: '', color: '#A4978C', tint: '#EFEAE2', gone: true };
@@ -2053,7 +2072,12 @@ function viewPrestaMes() {
 function viewPrestaDetail() {
   var m = mission(route.id), d = decorate(m);
   var inf = state.info[m.prop];
-  var pl = m.res ? PLATS[m.res.plat] : PLATS['Airbnb'];
+  /* Une plateforme inconnue — et surtout une plateforme **vide**, ce que rend
+     le cahier partagé pour toute mission relue — donnait ici `undefined`, puis
+     une erreur à la première couleur lue. Le rendu s'arrêtait net : le
+     prestataire cliquait sur sa mission, et **rien ne se passait**. Constaté
+     en session 14. Un repli, toujours. */
+  var pl = platCouleurs(m.res && m.res.plat);
 
   var btn;
   if (m.status === 'dispo') {
@@ -5013,7 +5037,7 @@ function bienCalendar(pid) {
     var isToday = iso === TODAY;
     var cls = 'cal-cell' + (isToday ? ' today' : r ? ' busy' : '');
     var bar = r
-      ? '<span class="cal-bar" style="background:' + PLATS[r.plat].color +
+      ? '<span class="cal-bar" style="background:' + platCouleurs(r.plat).color +
         ';margin-left:' + (r.start === iso ? '45%' : '0') + ';margin-right:' + (r.end === iso ? '45%' : '0') + '"></span>'
       : '';
     cells += '<div class="' + cls + '"><span class="d num">' + d + '</span>' + bar + '</div>';
@@ -5964,8 +5988,23 @@ function take(id) {
     state.priseEnCours = id;
     state.mMsg = '';
     render();
+
+    /* Filet de sécurité (session 14, après incident) : le bouton passe à
+       « Un instant… » et **perd son action** le temps de la réponse. Si celle-ci
+       n'arrive jamais — réseau coupé, cahier muet —, le bouton reste mort et
+       la mission devient impossible à prendre. On rend donc la main au bout de
+       douze secondes, avec une explication. */
+    var minuteur = setTimeout(function () {
+      if (state.priseEnCours !== id) return;
+      state.priseEnCours = null;
+      state.mMsg = 'Le cahier partagé n\'a pas répondu. Vérifie ta connexion, puis réessaie.';
+      save();
+      render();
+    }, 12000);
+
     DB.prendreMission(id)
       .then(function () {
+        clearTimeout(minuteur);
         state.priseEnCours = null;
         m.status = 'prise';
         m.taker = state.me;
@@ -5973,8 +6012,10 @@ function take(id) {
         go('#/app/missions/' + id);
       })
       .catch(function (e) {
+        clearTimeout(minuteur);
         state.priseEnCours = null;
         state.mMsg = DB.messageClair(e);
+        save();                       // sinon « Un instant… » revient au rechargement
         DB.charger().then(render, render);
       });
     return;

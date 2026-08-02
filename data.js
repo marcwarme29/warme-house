@@ -386,11 +386,34 @@ var DB = (function () {
       };
       var taker = l.taker_legacy || prenomDuCompte(l.provider_id);
       if (taker) m.taker = taker;
-      if (l.guest) m.res = { guest: l.guest, guests: l.guests || 1, plat: '', nights: 0 };
+      /* La table des missions ne retient pas la plateforme : on la reprend au
+         séjour lié quand il est lisible, et on retombe sur « Direct » sinon.
+         Elle valait auparavant la chaîne vide, ce qui faisait planter l'écran
+         de la mission côté prestataire (session 14). */
+      if (l.guest) {
+        m.res = {
+          guest: l.guest, guests: l.guests || 1, nights: 0,
+          plat: platDuSejour(l.reservation_id)
+        };
+      }
       if (l.next_guest) m.next = l.next_guest;
       if (l.report) state.reports[l.id] = l.report;
       return m;
     });
+  }
+
+  /* La plateforme d'une réservation déjà chargée. Un prestataire ne voit le
+     séjour qu'une fois la mission prise (règles de lecture du script 01) :
+     avant cela, « Direct » est la seule réponse honnête. */
+  function platDuSejour(rid) {
+    if (!rid) return 'Direct';
+    var trouve = null;
+    Object.keys(state.resas || {}).forEach(function (pid) {
+      (state.resas[pid] || []).forEach(function (r) {
+        if (r.id === rid && r.plat) trouve = r.plat;
+      });
+    });
+    return trouve || 'Direct';
   }
 
   function prenomDuCompte(uid) {
