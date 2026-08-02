@@ -594,15 +594,20 @@ var state = initialState();
 var flash = null;   // identifiant d'étape qui vient d'être photographiée (non sauvegardé)
 
 function save() {
+  var ecrit = true;
   try {
     localStorage.setItem(STORE_KEY, JSON.stringify(state));
   } catch (e) {
-    /* Navigation privée ou quota plein : l'application reste utilisable sans sauvegarde. */
+    /* Navigation privée ou mémoire pleine : l'application reste utilisable,
+       mais il faut le DIRE — depuis que les photos sont de vraies photos,
+       c'est la mémoire de l'appareil qui se remplit (session 15). */
+    ecrit = false;
   }
   // Le navigateur reste la mémoire de secours ; le grand cahier partagé reçoit
   // la même chose, sans qu'on l'attende — l'interface ne doit jamais figer
   // parce que le réseau est lent. Ne fait rien tant que personne n'est connecté.
   if (typeof DB !== 'undefined' && DB.estDispo()) DB.pousser();
+  return ecrit;
 }
 
 function load() {
@@ -973,12 +978,33 @@ function creerMissionDepart(pid, resa) {
   return m;
 }
 
+/* QUI ARRIVE DERRIÈRE ? (corrigé en session 15)
+   Une réservation qui commence le jour où une autre se termine fait de la
+   mission de ce jour-là un « turnover » : le prestataire doit savoir qui
+   arrive, combien ils sont, et à quelle heure.
+   Cette information n'était posée qu'au moment de créer la mission —
+   c'est-à-dire seulement si le séjour suivant était DÉJÀ saisi. Or on saisit
+   les séjours dans l'ordre du calendrier : le suivant n'existe jamais encore.
+   Résultat, aucune mission n'apprenait jamais qui arrivait. On la pose donc
+   aussi dans l'autre sens, quand le séjour suivant est enregistré. */
+function rattacherArrivee(pid, resa) {
+  var inf = state.info[pid] || {};
+  var heure = resa.arriveePrevue || inf.checkin || '16:00';
+  state.missions.forEach(function (m) {
+    if (m.prop !== pid || m.date !== resa.start || m.status === 'termine') return;
+    m.next = { guest: resa.guest, guests: resa.guests, at: heure };
+    m.turnover = true;
+    if (!m.urgent) m.urgent = 'Turnover · arrivée ' + heure;
+  });
+}
+
 /** Ajoute une réservation déjà normalisée et crée sa mission de départ. */
 function ajouterResa(pid, resa) {
   state.resas[pid] = resasOf(pid).concat([resa]).sort(function (a, b) {
     return a.start < b.start ? -1 : a.start > b.start ? 1 : 0;
   });
   creerMissionDepart(pid, resa);
+  rattacherArrivee(pid, resa);
   return resa;
 }
 
@@ -988,6 +1014,17 @@ function retirerResa(pid, resa) {
   var cle = resaKey(pid, resa);
   state.missions = state.missions.filter(function (m) {
     return !(m.fromResa === cle && m.status === 'dispo');
+  });
+
+  // Plus personne n'arrive ce jour-là : la mission de la veille n'est plus
+  // un turnover, et ne doit plus annoncer un voyageur qui ne viendra pas.
+  var encore = resasOf(pid).some(function (x) { return x.start === resa.start; });
+  if (encore) return;
+  state.missions.forEach(function (m) {
+    if (m.prop !== pid || m.date !== resa.start || m.status === 'termine') return;
+    m.next = null;
+    m.turnover = false;
+    if (/^Turnover/.test(m.urgent || '')) m.urgent = '';
   });
 }
 
@@ -1071,9 +1108,29 @@ function grouped() {
 
 /* Biens confiés à un prestataire : missions pour une femme de ménage,
    calendrier pour une remise des clés. */
+/* Les logements ouverts au COMPTE connecté, tels que le cahier partagé les
+   voit — c'est-à-dire tels qu'ils décident réellement de ce qui s'affiche.
+   Sur le téléphone du prestataire, c'est cette liste qui fait foi (D-69) : sa
+   fiche locale peut être en retard, ou porter un ancien nom. Sans ce repli,
+   il voyait « aucun logement confié » alors que le propriétaire lui avait
+   tout coché — et que la base, elle, lui envoyait bien ses missions. */
+function propsDuCompte() {
+  if (typeof DB === 'undefined' || !DB.estDispo()) return null;
+  var p = DB.profil();
+  return p && p.role !== 'owner' && Array.isArray(p.props) ? p.props : null;
+}
+
 function allowedProps(agentId) {
   var a = state.agents.find(function (x) { return x.id === agentId; });
-  return a && a.props ? a.props : [];
+  var fiche = a && Array.isArray(a.props) ? a.props : null;
+  if (fiche && fiche.length) return fiche;
+
+  // C'est moi, et ma fiche ne dit rien : je crois le compte plutôt que le vide.
+  if (state.auth === 'presta' && agentId === state.me) {
+    var compte = propsDuCompte();
+    if (compte && compte.length) return compte;
+  }
+  return fiche || [];
 }
 
 /** Ce prestataire remet-il les clés (au lieu de faire le ménage) ? */
@@ -1116,8 +1173,7 @@ function homePath() {
    logement : il n'y a littéralement rien à afficher, et la base ne lui
    laisserait rien lire non plus. Mieux vaut le dire que montrer du vide. */
 function accesOuvert() {
-  var a = (state.agents || []).find(function (x) { return x.id === state.me; });
-  return !!(a && (a.props || []).length);
+  return allowedProps(state.me).length > 0;
 }
 
 /* Entrée dans l'application avec un vrai compte : c'est la fiche du compte
@@ -1900,7 +1956,11 @@ function decorate(m) {
     redoLabel: m.redo || '',
     note: m.note || '',
     reviewed: m.review === 'valide',
-    hasRes: !!m.res, guestsLabel: m.res ? m.res.guests + ' voyageurs' : '',
+    // « si connu » : un logement en iCal seul ne transmet pas le nombre de
+    // personnes, et « 1 voyageurs » serait un mensonge (session 15).
+    hasRes: !!(m.res && parseInt(m.res.guests, 10) > 0),
+    guestsLabel: m.res && parseInt(m.res.guests, 10) > 0
+      ? m.res.guests + (m.res.guests > 1 ? ' voyageurs' : ' voyageur') : '',
     statusLabel: m.status === 'prise' && m.taker ? 'Acceptée · ' + m.taker
       : m.status === 'termine' && m.taker ? 'Faite · ' + m.taker
         : st.label,
@@ -1981,7 +2041,7 @@ function viewPrestaMissions() {
   // Cas le plus fréquent quand « rien ne s'affiche » : aucun logement n'a été
   // coché sur la fiche. On le dit franchement, plutôt que de laisser un écran
   // vide qui ressemble à une panne.
-  var sansLogement = !(agent(state.me).props || []).length;
+  var sansLogement = !allowedProps(state.me).length;
 
   var body = '<div class="stack">' + (list.length
     ? list.map(missionCard).join('')
@@ -2097,19 +2157,38 @@ function viewPrestaDetail() {
       note: 'La checklist s’ouvrira le jour de la mission' };
   }
 
-  var guest = m.res ? '<div class="card">' +
-    '<h2 style="font:700 14px Figtree,sans-serif;margin:0 0 10px">Séjour qui se termine</h2>' +
-    '<div style="display:flex;align-items:center;gap:11px">' +
+  /* Le nombre de voyageurs n'est pas toujours connu — un logement en iCal seul
+     ne le transmet pas (§0.4). On l'écrit alors « nombre inconnu » plutôt que
+     d'afficher « 1 voyageurs » ou « null voyageurs ». */
+  function combien(n) {
+    var v = parseInt(n, 10);
+    return v > 0 ? v + (v > 1 ? ' voyageurs' : ' voyageur') : 'nombre de voyageurs inconnu';
+  }
+
+  /* La prochaine arrivée était enfermée dans la carte du séjour qui se
+     termine : sans nom pour le voyageur sortant, le prestataire ne voyait
+     donc NI qui part, NI qui arrive. Les deux blocs sont désormais
+     indépendants (session 15). */
+  var blocSortant = m.res ? '<div style="display:flex;align-items:center;gap:11px">' +
       '<div class="avatar" style="width:38px;height:38px;font-size:13px;background:' + pl.bg + ';color:' + pl.fg + '">' +
-        esc(m.res.guest.split(' ').map(function (w) { return w[0]; }).join('').slice(0, 2)) + '</div>' +
+        esc(String(m.res.guest || '?').split(' ').map(function (w) { return w.charAt(0); }).join('').slice(0, 2)) + '</div>' +
       '<div class="grow"><div style="font:600 15px Figtree,sans-serif">' + esc(m.res.guest) + '</div>' +
-      '<div class="num" style="font:500 12.5px Figtree,sans-serif;color:var(--muted);margin-top:1px">' + m.res.guests + ' voyageurs · ' + m.res.nights + ' nuits</div></div>' +
+      '<div class="num" style="font:500 12.5px Figtree,sans-serif;color:var(--muted);margin-top:1px">' +
+        esc(combien(m.res.guests) + (m.res.nights ? ' · ' + m.res.nights + ' nuits' : '')) + '</div></div>' +
       '<span class="badge" style="background:' + pl.bg + ';color:' + pl.fg + '">' + esc(m.res.plat) + '</span>' +
-    '</div>' +
-    (m.next ? '<div style="margin-top:14px;padding-top:14px;border-top:1px solid rgba(36,30,26,.08)">' +
+    '</div>' : '';
+
+  var blocSuivant = m.next ? '<div style="' + (blocSortant ? 'margin-top:14px;padding-top:14px;border-top:1px solid rgba(36,30,26,.08)' : '') + '">' +
       '<div style="font:600 11.5px Figtree,sans-serif;color:var(--muted);letter-spacing:.05em;text-transform:uppercase">Prochaine arrivée</div>' +
-      '<div class="num" style="font:600 14px Figtree,sans-serif;margin-top:5px">' + esc(m.next.guest + ' · ' + m.next.guests + ' voyageurs · arrivée ' + m.next.at) + '</div>' +
-      '</div>' : '') +
+      '<div style="font:600 15px Figtree,sans-serif;margin-top:5px">' + esc(m.next.guest || 'Voyageur') + '</div>' +
+      '<div class="num" style="font:500 12.5px Figtree,sans-serif;color:var(--muted);margin-top:1px">' +
+        esc(combien(m.next.guests) + (m.next.at ? ' · arrivée ' + m.next.at : '')) + '</div>' +
+    '</div>' : '';
+
+  var guest = (blocSortant || blocSuivant) ? '<div class="card">' +
+    '<h2 style="font:700 14px Figtree,sans-serif;margin:0 0 10px">' +
+      (blocSortant ? 'Séjour qui se termine' : 'Ce logement') + '</h2>' +
+    blocSortant + blocSuivant +
     '</div>' : '';
 
   var urgentNote = m.turnover
@@ -2199,15 +2278,30 @@ function viewPrestaChecklist() {
       '<div class="room-head"><span class="n">' + esc(r.name) + '</span>' +
       '<span class="badge num ' + (all ? 'badge--green' : '') + '" style="' + (all ? '' : 'background:var(--fill);color:var(--muted)') + ';font-size:11px;padding:3px 8px">' + dn + '/' + r.steps.length + '</span></div>' +
       '<div class="stack" style="gap:10px">' + r.steps.map(function (s) {
-        var ok = !!ph[s.id];
-        var hint = ok ? (s.photo ? 'Photo enregistrée · toucher pour refaire' : 'Validé')
-          : (s.photo ? 'Photo obligatoire' : 'À cocher');
-        var right = ok && s.photo
-          ? '<button type="button" class="step-thumb stripe"' + act('shoot', { mid: m.id, sid: s.id }) + '>PHOTO</button>'
+        var val = ph[s.id];
+        var ok = !!val;
+        // Une vraie photo est une image enregistrée ; l'ancienne maquette ne
+        // gardait qu'un « oui ». Les deux cohabitent le temps que les missions
+        // en cours se terminent.
+        var image = typeof val === 'string' && val.indexOf('data:') === 0 ? val : '';
+        var hint = ok
+          ? (s.photo ? (image ? 'Photo prise · toucher pour la refaire' : 'Validé sans photo · toucher pour photographier') : 'Validé')
+          : (s.photo ? 'Photo obligatoire · ouvre l’appareil photo' : 'À cocher');
+        var right = image
+          ? '<span style="display:flex;align-items:center;gap:8px;flex:none">' +
+              '<button type="button" class="step-thumb" style="padding:0;overflow:hidden;background:var(--fill)"' +
+                act('shoot', { mid: m.id, sid: s.id }) + '>' +
+                '<img src="' + esc(image) + '" alt="Photo de l’étape ' + esc(s.label) + '" ' +
+                'style="width:100%;height:100%;object-fit:cover;display:block">' +
+              '</button>' +
+              '<button type="button" class="step-act" aria-label="Supprimer la photo" ' +
+                'style="background:var(--fill);color:var(--muted);padding:0 12px"' +
+                act('unshoot', { mid: m.id, sid: s.id }) + '>✕</button>' +
+            '</span>'
           : '<button type="button" class="step-act" style="' +
               (ok ? 'background:var(--fill);color:var(--muted)' : s.photo ? 'background:var(--ink);color:#fff' : 'background:var(--green);color:#fff') +
               '"' + act('shoot', { mid: m.id, sid: s.id }) + '>' +
-              (s.photo ? 'Photo' : ok ? 'Annuler' : 'Fait') + '</button>';
+              (s.photo ? '📷 Photo' : ok ? 'Annuler' : 'Fait') + '</button>';
         return '<div class="step' + (flash === m.id + s.id ? ' flashing' : '') + '" data-done="' + (ok ? 1 : 0) + '">' +
           '<div class="step-ring">' + (ok ? '✓' : '') + '</div>' +
           '<div class="grow"><div class="step-label">' + esc(s.label) + '</div><div class="step-hint">' + hint + '</div></div>' +
@@ -2561,19 +2655,22 @@ function blocDiagnostic() {
   }
 
   var fiche = (state.agents || []).filter(function (a) { return a.id === state.me; })[0];
+  var ouverts = allowedProps(state.me);
   var lignes = [
     ['Compte', p.email || '—'],
     ['Rôle', p.role === 'owner' ? 'propriétaire' : 'prestataire'],
     ['Fiche reconnue', fiche ? '✅ ' + fiche.name : '⚠️ aucune fiche pour « ' + state.me + ' »'],
     ['Métier', isCles(state.me) ? 'remise des clés' : 'ménage / entretien'],
-    ['Logements attribués', ((fiche && fiche.props) || []).length + ' sur ' + state.props.length],
+    ['Logements ouverts par le cahier', (p.props || []).length + ' logement(s)'],
+    ['Logements que je vois', ouverts.length + ' sur ' + state.props.length],
     ['Prestations autorisées', allowedServices(state.me).length + ' sur ' + state.services.length],
     ['Missions visibles', dispoForMe().length + ' à prendre · ' +
       state.missions.filter(function (m) { return m.taker === state.me; }).length + ' à moi']
   ];
 
-  var souci = !fiche ? 'Ta fiche n\'a pas été retrouvée : préviens le propriétaire.'
-    : !((fiche.props || []).length) ? 'Aucun logement ne t\'a été attribué : c\'est pour ça que la liste est vide. Le propriétaire doit cocher tes logements dans sa rubrique Prestataires.'
+  var souci = !ouverts.length
+    ? 'Aucun logement ne t\'a été attribué : c\'est pour ça que la liste est vide. Le propriétaire doit cocher tes logements dans sa rubrique Prestataires, puis recharger sa page.'
+    : !fiche ? 'Ta fiche n\'a pas été retrouvée, mais tes logements sont bien ouverts : préviens quand même le propriétaire.'
       : '';
 
   return '<article class="card card--flush" style="border-radius:22px' +
@@ -2592,7 +2689,7 @@ function blocDiagnostic() {
 function viewPrestaProfil() {
   var me = agent(state.me);
   var r = agentRating(state.me);
-  var autorises = (me.props || []).length;
+  var autorises = allowedProps(state.me).length;
 
   var cles = isCles(state.me);
   var rows = cles ? [
@@ -4803,7 +4900,7 @@ function viewOwnerBiens() {
       '<button type="button" class="btn btn--xs" style="' + (state.showNewBien ? 'background:var(--cream);color:var(--ink-soft)' : 'background:var(--terra);color:#fff') +
         ';min-height:42px;font-size:13px"' + act('toggle-new-bien') + '>' +
         (state.showNewBien ? 'Fermer' : '+ Ajouter un bien') + '</button>' +
-    '</div>' + form +
+    '</div>' + messageCahier() + form +
     '<div class="grid-cards" style="margin-top:22px">' +
       (cards || '<p class="empty">Aucun bien. Ajoutez le premier ci-dessus.</p>') + '</div>' +
     carteConnexions());
@@ -4884,7 +4981,7 @@ function viewOwnerBien() {
       '<div class="seg">' + tabs.map(function (t) {
         return '<button type="button" aria-pressed="' + (state.bienTab === t[0]) + '"' + act('bien-tab', { t: t[0] }) + '>' + t[1] + '</button>';
       }).join('') + '</div>' +
-    '</div>' + panel);
+    '</div>' + messageCahier() + panel);
 }
 
 function bienInfos(pid, b) {
@@ -5773,20 +5870,38 @@ function bienIcal(pid) {
 
   return '<div class="card" style="margin-top:22px;padding:22px">' +
     '<h2 style="font:700 16px Figtree,sans-serif;margin:0">Liens iCal de ce bien</h2>' +
-    '<p class="sec-note" style="margin-top:4px">Le jour où le relevé automatique sera branché, chaque ' +
-      'départ détecté créera une mission de ménage. En attendant, les liens collés ici sont ' +
-      'seulement mis de côté : rien n’est encore relevé.</p>' +
-    '<div class="stack" style="margin-top:16px">' + (feeds.length ? feeds.map(function (f) {
+
+    /* Honnêteté sur ce que ce panneau fait, et surtout sur ce qu'il ne fait
+       pas. Le bouton s'appelait « Connecter » : il ne connectait rien, il
+       rangeait une adresse dans un coin. D'où « les liens iCal ne marchent
+       pas » — c'était exact, et ce n'était pas une panne (session 15). */
+    '<div style="margin-top:12px;background:var(--terra-bg2);border-radius:16px;padding:14px 16px">' +
+      '<div style="font:700 13px Figtree,sans-serif;color:var(--terra-dd)">⚠️ Ces liens ne sont pas encore relevés</div>' +
+      '<p class="sec-note" style="margin:6px 0 0;color:var(--terra-dd)">Une page web n’a pas le droit ' +
+        'd’aller lire un calendrier hébergé chez Airbnb ou Booking.com : c’est une règle de sécurité ' +
+        'des navigateurs, et elle ne se contourne pas. Il faut pour cela un ordinateur qui travaille ' +
+        'de son côté — le serveur. Tant qu’il n’existe pas, un lien collé ici est <strong>mis de côté ' +
+        'et rien de plus</strong> : aucune réservation ne rentrera toute seule, aucune mission de ' +
+        'ménage ne se créera. En attendant, les séjours se saisissent dans l’onglet ' +
+        '« Réservations ».</p>' +
+    '</div>' +
+
+    '<div class="stack" style="margin-top:16px">' + (feeds.length ? feeds.map(function (f, i) {
       return '<div class="feed ' + f.cls + '">' +
         '<span class="dot" style="background:' + f.dot + '"></span>' +
         '<div style="flex:1;min-width:200px"><div style="font:600 13.5px Figtree,sans-serif">' + esc(f.source) + '</div>' +
         '<div class="url">' + esc(f.url) + '</div></div>' +
-        '<span style="font:600 12px Figtree,sans-serif;color:' + f.fg + ';flex:none">' + f.status + '</span></div>';
+        '<span style="font:600 12px Figtree,sans-serif;color:' + f.fg + ';flex:none">' + f.status + '</span>' +
+        '<button type="button" class="btn btn--xs" style="background:transparent;color:var(--muted);flex:none"' +
+          act('del-feed', { pid: pid, i: i }) + '>Retirer</button></div>';
     }).join('') : '<p class="empty">Aucun lien iCal enregistré pour ce logement.</p>') + '</div>' +
     '<div style="margin-top:18px;display:flex;gap:12px;flex-wrap:wrap">' +
-      '<input class="inp" style="flex:1;min-width:260px" type="text" placeholder="Coller un nouveau lien iCal…" value="' + esc(state.newFeed) + '" data-fid="new-feed" data-in="new-feed">' +
-      '<button type="button" class="btn btn--dark btn--sm"' + act('add-feed', { pid: pid }) + '>Connecter</button>' +
-    '</div></div>' +
+      '<input class="inp" style="flex:1;min-width:260px" type="text" placeholder="Coller un lien iCal, pour plus tard…" value="' + esc(state.newFeed) + '" data-fid="new-feed" data-in="new-feed">' +
+      '<button type="button" class="btn btn--dark btn--sm"' + act('add-feed', { pid: pid }) + '>Mettre ce lien de côté</button>' +
+    '</div>' +
+    '<p class="sec-note" style="margin-top:10px">Ces liens restent dans ce navigateur : ils ne partent ' +
+      'pas encore dans le cahier partagé.</p>' +
+    '</div>' +
 
     /* Préparation de Beds24 : seulement l'identifiant du logement chez eux.
        La clé secrète n'entre jamais dans cette page (voir D-42). */
@@ -6040,14 +6155,119 @@ function start(id) {
   go('#/app/missions/' + id + '/checklist');
 }
 
+/* --------------------------------------------------------------------------
+   Les photos de la checklist — de VRAIES photos depuis la session 15.
+
+   Jusqu'ici, appuyer sur « Photo » ne faisait que cocher l'étape : rien
+   n'était pris, rien n'était gardé. C'était le propre de la maquette, et le
+   prestataire ne pouvait donc pas fournir la photo pourtant obligatoire.
+   Désormais l'appui ouvre l'appareil photo du téléphone.
+
+   Deux précautions, parce qu'une photo de téléphone pèse plusieurs mégaoctets
+   et que la mémoire du navigateur est petite (environ 5 Mo en tout) :
+     - l'image est **réduite** à 900 pixels de côté et recompressée (≈ 60 Ko) ;
+     - si la mémoire est pleine, on le dit au lieu de perdre la photo en
+       silence.
+   -------------------------------------------------------------------------- */
+
+/** Retrouve la définition d'une étape (pour savoir si elle exige une photo). */
+function etapeDe(pid, sid) {
+  var trouve = null;
+  rooms(pid).forEach(function (r) {
+    r.steps.forEach(function (s) { if (s.id === sid) trouve = s; });
+  });
+  return trouve;
+}
+
+/** Réduit une image choisie ou prise par l'appareil photo. */
+function reduirePhoto(fichier, quand) {
+  var lecteur = new FileReader();
+  lecteur.onerror = function () { quand(null, 'La photo n\'a pas pu être lue.'); };
+  lecteur.onload = function () {
+    var img = new Image();
+    img.onerror = function () { quand(null, 'Ce fichier n\'est pas une image.'); };
+    img.onload = function () {
+      var max = 900;
+      var ech = Math.min(1, max / Math.max(img.width, img.height));
+      var c = document.createElement('canvas');
+      c.width = Math.round(img.width * ech);
+      c.height = Math.round(img.height * ech);
+      try {
+        c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+        quand(c.toDataURL('image/jpeg', 0.55), null);
+      } catch (e) {
+        quand(null, 'La photo n\'a pas pu être enregistrée sur cet appareil.');
+      }
+    };
+    img.src = lecteur.result;
+  };
+  lecteur.readAsDataURL(fichier);
+}
+
+/** Ouvre l'appareil photo (ou la galerie) et enregistre le cliché sur l'étape. */
+function prendrePhoto(mid, sid) {
+  var champ = document.createElement('input');
+  champ.type = 'file';
+  champ.accept = 'image/*';
+  champ.setAttribute('capture', 'environment');   // appareil arrière du téléphone
+  champ.style.cssText = 'position:fixed;left:-9999px;top:0';
+  document.body.appendChild(champ);
+
+  champ.addEventListener('change', function () {
+    var f = champ.files && champ.files[0];
+    if (champ.parentNode) champ.parentNode.removeChild(champ);
+    if (!f) return;
+    state.mMsg = 'Enregistrement de la photo…';
+    render();
+    reduirePhoto(f, function (url, err) {
+      if (err) { state.mMsg = err; render(); return; }
+      var ph = state.photos[mid] || {};
+      ph[sid] = url;
+      state.photos[mid] = ph;
+      flash = mid + sid;
+      if (save()) {
+        state.mMsg = '';
+      } else {
+        delete ph[sid];
+        state.mMsg = 'La mémoire de ce téléphone est pleine : la photo n\'a pas pu être gardée. ' +
+          'Termine cette mission, ou supprime une photo déjà prise.';
+      }
+      render();
+      setTimeout(function () { flash = null; }, 700);
+    });
+  });
+
+  champ.click();
+}
+
 function shoot(mid, sid) {
+  var m = mission(mid);
+  if (!m) return;
   var ph = state.photos[mid] || {};
-  ph[sid] = !ph[sid];
+  var etape = etapeDe(m.prop, sid);
+
+  // Une étape sans photo obligatoire reste une simple case à cocher.
+  if (!etape || !etape.photo) {
+    ph[sid] = !ph[sid];
+    state.photos[mid] = ph;
+    flash = ph[sid] ? mid + sid : null;
+    save();
+    render();
+    if (flash) setTimeout(function () { flash = null; }, 700);
+    return;
+  }
+
+  prendrePhoto(mid, sid);
+}
+
+/** Retire la photo d'une étape : l'étape redevient à faire. */
+function retirerPhoto(mid, sid) {
+  var ph = state.photos[mid] || {};
+  delete ph[sid];
   state.photos[mid] = ph;
-  flash = ph[sid] ? mid + sid : null;
+  state.mMsg = '';
   save();
   render();
-  if (flash) setTimeout(function () { flash = null; }, 700);
 }
 
 function bump(key, delta) {
@@ -6065,11 +6285,18 @@ function finish(id) {
   var photos = photoCount(m);
   var ph = state.photos[id] || {};
 
+  /* La date de la mission, et pas celle du jour. Deux lignes de la maquette
+     étaient restées figées au « 30 juil. », et le mois de paie était pris sur
+     l'horloge : un ménage fait le 30 juillet apparaissait donc en août, avec
+     une étiquette qui disait juillet. Corrigé en session 15. */
+  var quand = fmtDate(m.date);
+  var moisDePaie = moisDe(m.date);
+
   // Compte rendu figé : la checklist du bien peut être modifiée ensuite,
   // la revue du propriétaire doit rester le reflet de ce qui a été fait.
   state.reports[id] = {
     agent: state.me,
-    dateLabel: '30 juil.',
+    dateLabel: quand,
     price: m.price,
     photos: photos,
     rooms: rooms(m.prop).map(function (r) {
@@ -6091,7 +6318,7 @@ function finish(id) {
   // l'autorise, le voyageur suivant le verra dans son livret d'accueil.
   state.ready[m.prop] = { date: m.date, at: nowHM(), mid: id, agent: state.me };
   if (!m.taker) m.taker = state.me;
-  state.done.push({ mid: id, agent: state.me, month: CURRENT_MONTH, prop: m.prop, type: m.type, dateLabel: '30 juil.', price: m.price });
+  state.done.push({ mid: id, agent: state.me, month: moisDePaie, prop: m.prop, type: m.type, dateLabel: quand, price: m.price });
   state.lastDone = { price: m.price, photos: photos, low: lowKeys.length };
   state.draft = null;
   save();
@@ -6396,6 +6623,7 @@ var actions = {
   start: function (el) { start(el.dataset.id); },
   resume: function (el) { start(el.dataset.id); },
   shoot: function (el) { shoot(el.dataset.mid, el.dataset.sid); },
+  unshoot: function (el) { retirerPhoto(el.dataset.mid, el.dataset.sid); },
   bump: function (el) { bump(el.dataset.k, parseInt(el.dataset.d, 10)); render(); },
   finish: function (el) { finish(el.dataset.id); },
   'm-stock-group': function (el) { state.mStockGroup = el.dataset.g; save(); render(); },
@@ -6524,6 +6752,11 @@ var actions = {
     state.newFeed = '';
     save(); render();
   },
+  'del-feed': function (el) {
+    var pid = el.dataset.pid, i = parseInt(el.dataset.i, 10);
+    state.extraFeeds[pid] = (state.extraFeeds[pid] || []).filter(function (_, k) { return k !== i; });
+    save(); render();
+  },
 
   /* Biens : création et suppression ------------------------------------- */
   'toggle-new-bien': function () { state.showNewBien = !state.showNewBien; save(); render(); },
@@ -6558,6 +6791,23 @@ var actions = {
     state.showNewBien = false;
     state.bienTab = 'infos';
     save();
+
+    /* Un logement neuf part TOUT DE SUITE dans le cahier partagé, et on dit ce
+       qui s'est passé. Auparavant l'envoi était différé de huit dixièmes de
+       seconde : si le cahier se relisait entre-temps, le logement à peine créé
+       était effacé de l'écran — « j'ai voulu ajouter un bien, ça n'a pas
+       marché ». Et si le cahier refusait l'écriture, personne ne l'apprenait.
+       Deux causes, un seul remède : écrire maintenant, et le dire. */
+    if (typeof DB !== 'undefined' && DB.estDispo() && DB.profil()) {
+      state.migMsg = 'Enregistrement de « ' + nom + ' » dans le cahier partagé…';
+      DB.pousserMaintenant().then(function (bilan) {
+        state.migMsg = bilan && bilan.ok
+          ? '✅ « ' + nom + ' » est enregistré dans le cahier partagé.'
+          : 'Le logement est bien créé sur cet ordinateur, mais le cahier partagé l\'a refusé : ' +
+            (DB.erreur() || 'raison inconnue') + '. Il repartira à la prochaine modification.';
+        render();
+      });
+    }
     go('#/admin/biens/' + pid);
   },
   'remove-bien': function (el) {

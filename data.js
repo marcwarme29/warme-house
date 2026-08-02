@@ -254,9 +254,20 @@ var DB = (function () {
     var parId = {};
     (secrets || []).forEach(function (s) { parId[s.property_id] = s; });
 
+    /* RÈGLE DE FUSION (session 15, après incident « j'ai ajouté un bien et il
+       a disparu ») : la lecture du cahier ne remplace plus la liste locale,
+       elle la MET À JOUR. Un logement créé il y a deux secondes n'a pas encore
+       été écrit dans le cahier — l'écriture est différée de huit dixièmes de
+       seconde. Remplacer la liste effaçait donc le logement tout juste saisi,
+       et l'écriture suivante figeait cette disparition. On garde ce qui n'est
+       pas encore parti ; il partira au prochain envoi. */
+    var connus = {};
+    lignes.forEach(function (l) { connus[l.id] = true; });
+    var enAttente = (state.props || []).filter(function (p) { return !connus[p.id]; });
+
     state.props = lignes.map(function (l) {
       return { id: l.id, name: l.name, short: l.short, city: l.city, address: l.address, color: l.color, tint: l.tint };
-    });
+    }).concat(enAttente);
     lignes.forEach(function (l) {
       var s = parId[l.id] || {};
       state.info[l.id] = Object.assign({}, l.info || {}, { code: s.code || '', wifi: s.wifi || '' });
@@ -308,6 +319,12 @@ var DB = (function () {
   function resasDepuisBase(lignes) {
     var parBien = {};
     (state.props || []).forEach(function (p) { parBien[p.id] = []; });
+
+    // Même règle de fusion que pour les logements : un séjour saisi à
+    // l'instant, pas encore parti dans le cahier, ne doit pas disparaître.
+    var connus = {};
+    lignes.forEach(function (l) { connus[l.id] = true; });
+
     lignes.forEach(function (l) {
       var r = {
         id: l.id, uid: l.uid || '', source: l.source, plat: l.plat, guest: l.guest,
@@ -319,6 +336,18 @@ var DB = (function () {
       if (!parBien[l.property_id]) parBien[l.property_id] = [];
       parBien[l.property_id].push(r);
       if (l.depart_at) state.departs[l.property_id + ':' + l.start_date + ':' + l.end_date] = l.depart_at;
+    });
+
+    Object.keys(state.resas || {}).forEach(function (pid) {
+      (state.resas[pid] || []).forEach(function (r) {
+        if (connus[r.id]) return;                    // déjà rendu par le cahier
+        if (!parBien[pid]) parBien[pid] = [];
+        parBien[pid].push(r);
+      });
+    });
+
+    Object.keys(parBien).forEach(function (pid) {
+      parBien[pid].sort(function (a, b) { return a.start < b.start ? -1 : a.start > b.start ? 1 : 0; });
     });
     state.resas = parBien;
   }
@@ -340,13 +369,44 @@ var DB = (function () {
     });
   }
 
+  /* DEUX FAÇONS DE DÉSIGNER LE MÊME SÉJOUR, et c'est ce qui coinçait.
+     L'application repère un séjour par une clé composée — « bien:début:fin »,
+     c'est `m.fromResa` — tandis que la base attend son identifiant, « r_… ».
+     Les deux ne se ressemblent pas : la comparaison ne tombait donc JAMAIS
+     juste, et toutes les missions partaient dans le cahier **sans lien vers
+     leur séjour**. Conséquences en chaîne : le prestataire n'avait pas le
+     droit de lire le séjour (les règles de lecture passent par ce lien), donc
+     ni le nom du voyageur, ni le nombre de personnes, ni la plateforme.
+     Repéré en session 15. Ces deux fonctions traduisent dans les deux sens. */
+  function idDuSejour(cle) {
+    if (!cle) return null;
+    var p = String(cle).split(':');
+    if (p.length !== 3) return resaExiste(cle) ? cle : null;   // déjà un identifiant
+    var liste = (state.resas && state.resas[p[0]]) || [];
+    for (var i = 0; i < liste.length; i++) {
+      if (liste[i].start === p[1] && liste[i].end === p[2]) return liste[i].id || null;
+    }
+    return null;
+  }
+
+  function cleDuSejour(rid) {
+    if (!rid) return null;
+    var trouve = null;
+    Object.keys(state.resas || {}).forEach(function (pid) {
+      (state.resas[pid] || []).forEach(function (r) {
+        if (r.id === rid) trouve = pid + ':' + r.start + ':' + r.end;
+      });
+    });
+    return trouve;
+  }
+
   var ETATS_MISSION = ['dispo', 'prise', 'encours', 'termine', 'annulee'];
 
   function missionVersBase(m) {
     return {
       id: m.id,
       property_id: m.prop,
-      reservation_id: resaExiste(m.fromResa) ? m.fromResa : null,
+      reservation_id: idDuSejour(m.fromResa),
       type: m.type || 'menage',
       date: m.date,
       window_label: m.windowLabel || '',
@@ -375,13 +435,20 @@ var DB = (function () {
   }
 
   function missionsDepuisBase(lignes) {
+    var connues = {};
+    lignes.forEach(function (l) { connues[l.id] = true; });
+    // Même règle de fusion que les logements et les séjours : une mission
+    // créée à l'instant ne doit pas disparaître avant d'être partie.
+    var enAttente = (state.missions || []).filter(function (m) { return !connues[m.id]; });
+
     state.missions = lignes.map(function (l) {
+      var sejour = sejourLie(l.reservation_id);
       var m = {
         id: l.id, prop: l.property_id, type: l.type, date: l.date,
         dateLabel: typeof fmtDate === 'function' ? fmtDate(l.date) : l.date,
         windowLabel: l.window_label || '', price: Number(l.price) || 0,
         status: l.status, urgent: l.urgent || '', note: l.note || '',
-        turnover: !!l.turnover, fromResa: l.reservation_id || null,
+        turnover: !!l.turnover, fromResa: cleDuSejour(l.reservation_id),
         review: l.review || null, redo: l.redo || ''
       };
       var taker = l.taker_legacy || prenomDuCompte(l.provider_id);
@@ -389,17 +456,34 @@ var DB = (function () {
       /* La table des missions ne retient pas la plateforme : on la reprend au
          séjour lié quand il est lisible, et on retombe sur « Direct » sinon.
          Elle valait auparavant la chaîne vide, ce qui faisait planter l'écran
-         de la mission côté prestataire (session 14). */
-      if (l.guest) {
+         de la mission côté prestataire (session 14).
+         Le nombre de voyageurs n'est plus inventé : « 1 » par défaut faisait
+         refaire un seul lit à un prestataire qui en avait quatre à faire.
+         Inconnu vaut mieux que faux (session 15). */
+      if (l.guest || sejour) {
         m.res = {
-          guest: l.guest, guests: l.guests || 1, nights: 0,
-          plat: platDuSejour(l.reservation_id)
+          guest: l.guest || (sejour && sejour.guest) || 'Voyageur',
+          guests: l.guests || (sejour && sejour.guests) || null,
+          nights: sejour && typeof nights === 'function' ? nights(sejour.start, sejour.end) : 0,
+          plat: (sejour && sejour.plat) || platDuSejour(l.reservation_id)
         };
       }
       if (l.next_guest) m.next = l.next_guest;
       if (l.report) state.reports[l.id] = l.report;
       return m;
+    }).concat(enAttente);
+
+    state.missions.sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : 0; });
+  }
+
+  /* Le séjour d'une mission, s'il est lisible par le compte connecté. */
+  function sejourLie(rid) {
+    if (!rid) return null;
+    var trouve = null;
+    Object.keys(state.resas || {}).forEach(function (pid) {
+      (state.resas[pid] || []).forEach(function (r) { if (r.id === rid) trouve = r; });
     });
+    return trouve;
   }
 
   /* La plateforme d'une réservation déjà chargée. Un prestataire ne voit le
@@ -496,6 +580,16 @@ var DB = (function () {
         a.kind = l.kind || a.kind;
         a.props = l.props || [];
         if (l.services) a.services = l.services;
+        /* L'identifiant de la fiche doit rester exactement celui que
+           `state.me` désigne. Une fiche fabriquée avant que le propriétaire
+           n'ait relié le compte portait l'ancien nom : elle existait, mais
+           n'était plus jamais retrouvée, et l'écran restait bloqué sur
+           « accès en attente » quoi que coche le propriétaire (session 15). */
+        var attendu = identifiantDeCompte(l);
+        if (a.id !== attendu) {
+          (state.missions || []).forEach(function (m) { if (m.taker === a.id) m.taker = attendu; });
+          a.id = attendu;
+        }
       }
     });
 
@@ -809,13 +903,22 @@ var DB = (function () {
         });
       });
     }, Promise.resolve()).then(function () {
-      return majComptesLies();          // les droits suivent les cases cochées
-    }).then(function () {
-      derniereErreur = null;
       return { ok: true, biens: biens.length, resas: resas.length, missions: missions.length };
     }).catch(function (e) {
-      derniereErreur = e.message || messageClair(e);
-      return { ok: false };
+      return { ok: false, erreur: e.message || messageClair(e) };
+    }).then(function (bilan) {
+      derniereErreur = bilan.ok ? null : bilan.erreur;
+      /* LES DROITS PARTENT DANS TOUS LES CAS (session 15, après incident).
+         Ils étaient jusqu'ici accrochés à la fin de la chaîne ci-dessus : la
+         moindre écriture refusée — une mission, un séjour — et les logements
+         cochés par le propriétaire n'atteignaient jamais le compte du
+         prestataire. Sur son téléphone : « aucun logement confié », alors que
+         tout était coché de l'autre côté. Ce sont deux sujets distincts, ils
+         ne doivent plus dépendre l'un de l'autre.
+         `majComptesLies()` renseigne elle-même `derniereErreur` si la base
+         refuse : on ne masque donc rien en la laissant passer après. */
+      return majComptesLies().then(function () { return bilan; },
+        function () { return bilan; });
     });
   }
 
