@@ -4,7 +4,7 @@
    Aucune dépendance, aucune étape de construction : 3 fichiers statiques.
 
    Sommaire
-     1. Données de démonstration
+     1. Données de référence
      2. État, sauvegarde locale
      3. Utilitaires
      4. Routage (adresses en #/…)
@@ -17,21 +17,35 @@
 'use strict';
 
 /* ==========================================================================
-   1. Données de démonstration
+   1. Données de référence
+
+   Il n'y a PLUS de données de démonstration ici (session 14) : ni logement
+   inventé, ni voyageur inventé, ni prestataire inventé. L'application démarre
+   vide et se remplit de deux façons seulement — ce que le propriétaire saisit,
+   et ce que le grand cahier partagé lui rend.
+   Ce qui reste ci-dessous est ce qui n'appartient à personne en particulier :
+   la palette, les prestations proposées par défaut, la liste des articles de
+   stock, les rubriques du livret et leurs traductions.
    ========================================================================== */
 
 var C = { terracotta: '#C75B39', vert: '#2F8F6B', ambre: '#D99A2B', bleu: '#3E7FA8', ink: '#241E1A' };
-var TODAY = '2026-07-30';
-var TODAY_LABEL = 'jeudi 30 juillet 2026';
-var CURRENT_MONTH = '2026-07';
-var MOIS = ['janv.', 'févr.', 'mars', 'avril', 'mai', 'juin', 'juil.', 'août', 'sept.', 'oct.', 'nov.', 'déc.'];
 
-var PROPS = [
-  { id: 'p1', name: 'Le Nid du Vieux Port', short: 'Vieux Port', city: 'Marseille 2e', address: '12 rue Fortia', color: C.terracotta, tint: '#F7E7DF' },
-  { id: 'p2', name: 'Studio Canal Saint-Martin', short: 'Canal St-M.', city: 'Paris 10e', address: '8 rue de la Grange', color: C.bleu, tint: '#E4EDF4' },
-  { id: 'p3', name: 'Villa Les Oliviers', short: 'Les Oliviers', city: 'Aix-en-Provence', address: '34 chemin des Cigales', color: C.vert, tint: '#E3F0E9' },
-  { id: 'p4', name: 'Loft Bellecour', short: 'Bellecour', city: 'Lyon 2e', address: '5 place Antonin', color: C.ambre, tint: '#F7EEDC' }
-];
+/* La vraie date du jour. Le prototype travaillait sur une date figée au
+   30 juillet 2026 : c'était le propre de la démonstration, et avec de vraies
+   réservations cela décalait tout. */
+function isoDate(d) {
+  return d.getFullYear() + '-' + ('0' + (d.getMonth() + 1)).slice(-2) + '-' + ('0' + d.getDate()).slice(-2);
+}
+
+var TODAY = isoDate(new Date());
+var TODAY_LABEL = new Date().toLocaleDateString('fr-FR',
+  { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+var CURRENT_MONTH = TODAY.slice(0, 7);
+var MOIS = ['janv.', 'févr.', 'mars', 'avril', 'mai', 'juin', 'juil.', 'août', 'sept.', 'oct.', 'nov.', 'déc.'];
+var MOIS_LONGS = ['janvier', 'février', 'mars', 'avril', 'mai', 'juin',
+  'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre'];
+
+var PROPS = [];
 
 /* Prestations : liste commune à tous les biens (nom + durée réglables).
    Le tarif, lui, reste propre à chaque bien — voir state.tariffs. */
@@ -79,26 +93,7 @@ var CONNECTEURS = [
    Booking.com n'envoie rien d'exploitable — ces séjours-là passeront donc par
    la voie B de la porte d'entrée (D-47). Une réservation en direct porte le
    numéro parce que le propriétaire l'a lui-même saisi. */
-var RESAS = {
-  p1: [
-    { plat: 'Airbnb', guest: 'Emma Dufour', guests: 4, start: '2026-07-26', end: '2026-07-30', source: 'ical', tel4: '4271' },
-    { plat: 'Airbnb', guest: 'Marc Lenoir', guests: 2, start: '2026-07-30', end: '2026-08-03', source: 'ical', tel4: '8830' },
-    { plat: 'Booking.com', guest: 'Sophie Aubert', guests: 3, start: '2026-08-06', end: '2026-08-10', source: 'ical' }
-  ],
-  p2: [
-    { plat: 'Booking.com', guest: 'Liam Carter', guests: 2, start: '2026-07-27', end: '2026-07-30', source: 'ical' },
-    { plat: 'Airbnb', guest: 'Chloé Mercier', guests: 2, start: '2026-07-31', end: '2026-08-04', source: 'ical', tel4: '6142' },
-    { plat: 'Direct', guest: 'Paul Nguyen', guests: 1, start: '2026-08-08', end: '2026-08-12', source: 'ical', tel4: '3907' }
-  ],
-  p3: [
-    { plat: 'Airbnb', guest: 'Famille Rossi', guests: 6, start: '2026-07-25', end: '2026-07-31', source: 'ical', tel4: '5518' },
-    { plat: 'Booking.com', guest: 'Jonas Weber', guests: 5, start: '2026-08-01', end: '2026-08-08', source: 'ical' }
-  ],
-  p4: [
-    { plat: 'Airbnb', guest: 'Inès Baptiste', guests: 3, start: '2026-07-27', end: '2026-07-31', source: 'ical', tel4: '2064' },
-    { plat: 'Airbnb', guest: 'Tom Kessler', guests: 2, start: '2026-08-02', end: '2026-08-06', source: 'ical', tel4: '7789' }
-  ]
-};
+var RESAS = {};
 
 /* `props` = biens sur lesquels le prestataire a le droit de se positionner. */
 /* Deux métiers cohabitent (voir D-39) :
@@ -113,15 +108,10 @@ var AGENT_KINDS = [
     hint: 'Voit seulement le calendrier des logements confiés : arrivées, départs, nom du voyageur.' }
 ];
 
-var AGENTS = [
-  /* `services` : les prestations que la personne fait réellement (D-53).
-     Karim est l'exemple parlant — maintenance et extérieur, pas de ménage
-     simple : les missions de ménage n'apparaîtront jamais sur son téléphone. */
-  { id: 'Sofia', name: 'Sofia Lemaire', init: 'SL', kind: 'menage', role: 'Référente ménage', since: 'mars 2025', note: '4,9', email: 'sofia.lemaire@mail.fr', iban: 'IBAN ··· 4417', avatarBg: '#F7E7DF', avatarFg: '#B04A26', roleBg: '#F7E7DF', roleFg: '#B04A26', props: ['p1', 'p2', 'p3', 'p4'], services: ['menage', 'menage_jardin', 'stock'] },
-  { id: 'Amandine', name: 'Amandine Roux', init: 'AR', kind: 'menage', role: 'Ménage', since: 'janv. 2026', note: '4,8', email: 'amandine.roux@mail.fr', iban: 'IBAN ··· 8102', avatarBg: '#E4EDF4', avatarFg: '#2F6C93', roleBg: '#E4EDF4', roleFg: '#2F6C93', props: ['p3', 'p4'], services: ['menage', 'stock'] },
-  { id: 'Karim', name: 'Karim Belaïd', init: 'KB', kind: 'menage', role: 'Maintenance & extérieur', since: 'sept. 2025', note: '5,0', email: 'karim.belaid@mail.fr', iban: 'IBAN ··· 2390', avatarBg: '#E3F0E9', avatarFg: '#227052', roleBg: '#E3F0E9', roleFg: '#227052', props: ['p1', 'p2', 'p3', 'p4'], services: ['menage_jardin', 'maintenance'] },
-  { id: 'Camille', name: 'Camille Roussel', init: 'CR', kind: 'cles', role: 'Remise des clés', since: 'juin 2026', note: '—', email: 'camille.roussel@mail.fr', iban: '—', avatarBg: '#EAE6F4', avatarFg: '#5B4E85', roleBg: '#EAE6F4', roleFg: '#5B4E85', props: ['p1', 'p2'] }
-];
+/* Les prestataires sont créés par le propriétaire, puis invités par lien
+   (§19.8). `services` retient les prestations que la personne fait réellement
+   (D-53) : une femme de ménage ne verra jamais les missions de maintenance. */
+var AGENTS = [];
 
 /* Palette d'identité proposée à la création d'un bien ou d'un prestataire. */
 var PALETTE = [
@@ -133,36 +123,29 @@ var PALETTE = [
   { color: '#7A6BA8', tint: '#EAE6F4', fg: '#5B4E85' }
 ];
 
-var MONTHS = [
-  { key: '2026-07', label: 'Juillet 2026', paid: false, payNote: 'Versement prévu le 5 août' },
-  { key: '2026-06', label: 'Juin 2026', paid: true, payNote: 'Payé le 5 juillet 2026' },
-  { key: '2026-05', label: 'Mai 2026', paid: true, payNote: 'Payé le 5 juin 2026' }
-];
+/* Les six derniers mois, à partir d'aujourd'hui : c'est ce qui alimente le
+   sélecteur de mois des gains et de la paie. Aucun mois n'est « déjà payé » —
+   ce qui est versé se coche dans l'application (state.payouts). */
+function moisRecents(n) {
+  var out = [], auj = new Date();
+  for (var i = 0; i < n; i++) {
+    var m = new Date(auj.getFullYear(), auj.getMonth() - i, 1);
+    var suivant = new Date(auj.getFullYear(), auj.getMonth() - i + 1, 5);
+    out.push({
+      key: isoDate(m).slice(0, 7),
+      label: MOIS_LONGS[m.getMonth()].charAt(0).toUpperCase() + MOIS_LONGS[m.getMonth()].slice(1) + ' ' + m.getFullYear(),
+      paid: false,
+      payNote: 'Versement prévu le 5 ' + MOIS_LONGS[suivant.getMonth()]
+    });
+  }
+  return out;
+}
 
-var HISTORY = [
-  { agent: 'Sofia', month: '2026-07', prop: 'p2', type: 'menage', dateLabel: '28 juil.', price: 55 },
-  { agent: 'Sofia', month: '2026-07', prop: 'p1', type: 'menage', dateLabel: '26 juil.', price: 65 },
-  { agent: 'Sofia', month: '2026-07', prop: 'p4', type: 'menage', dateLabel: '22 juil.', price: 60 },
-  { agent: 'Sofia', month: '2026-07', prop: 'p3', type: 'menage_jardin', dateLabel: '19 juil.', price: 90 },
-  { agent: 'Sofia', month: '2026-06', prop: 'p1', type: 'menage', dateLabel: '27 juin', price: 65 },
-  { agent: 'Sofia', month: '2026-06', prop: 'p2', type: 'menage', dateLabel: '21 juin', price: 55 },
-  { agent: 'Sofia', month: '2026-06', prop: 'p2', type: 'menage', dateLabel: '14 juin', price: 55 },
-  { agent: 'Sofia', month: '2026-06', prop: 'p4', type: 'menage', dateLabel: '6 juin', price: 60 },
-  { agent: 'Sofia', month: '2026-05', prop: 'p1', type: 'menage', dateLabel: '30 mai', price: 65 },
-  { agent: 'Sofia', month: '2026-05', prop: 'p3', type: 'menage_jardin', dateLabel: '23 mai', price: 90 },
-  { agent: 'Sofia', month: '2026-05', prop: 'p1', type: 'stock', dateLabel: '12 mai', price: 25 },
-  { agent: 'Amandine', month: '2026-07', prop: 'p3', type: 'menage', dateLabel: '29 juil.', price: 78 },
-  { agent: 'Amandine', month: '2026-07', prop: 'p4', type: 'menage', dateLabel: '24 juil.', price: 60 },
-  { agent: 'Amandine', month: '2026-07', prop: 'p3', type: 'menage', dateLabel: '17 juil.', price: 78 },
-  { agent: 'Amandine', month: '2026-06', prop: 'p3', type: 'menage', dateLabel: '25 juin', price: 78 },
-  { agent: 'Amandine', month: '2026-06', prop: 'p4', type: 'menage', dateLabel: '11 juin', price: 60 },
-  { agent: 'Amandine', month: '2026-05', prop: 'p4', type: 'menage', dateLabel: '28 mai', price: 60 },
-  { agent: 'Karim', month: '2026-07', prop: 'p1', type: 'maintenance', dateLabel: '23 juil.', price: 45 },
-  { agent: 'Karim', month: '2026-07', prop: 'p3', type: 'menage_jardin', dateLabel: '15 juil.', price: 90 },
-  { agent: 'Karim', month: '2026-06', prop: 'p2', type: 'maintenance', dateLabel: '18 juin', price: 45 },
-  { agent: 'Karim', month: '2026-06', prop: 'p3', type: 'menage_jardin', dateLabel: '9 juin', price: 90 },
-  { agent: 'Karim', month: '2026-05', prop: 'p1', type: 'maintenance', dateLabel: '20 mai', price: 45 }
-];
+var MONTHS = moisRecents(6);
+
+/* L'historique de paie des mois passés. Vide : il se remplit tout seul, mission
+   terminée après mission terminée (state.done). */
+var HISTORY = [];
 
 var ARTICLES = [
   ['Salle de bain', [
@@ -200,41 +183,20 @@ function baseArticles() {
   }, []);
 }
 
-var RAW_CHECK = {
-  p1: [
-    ['Séjour & entrée', [['Aspirer et laver le sol', 1], ['Dépoussiérer surfaces et vitres', 1]]],
-    ['Cuisine', [['Frigo vidé et nettoyé', 1], ['Plaques, évier, plan de travail', 1]]],
-    ['Salle de bain', [['Douche et WC désinfectés', 1], ['Serviettes propres pliées', 1]]],
-    ['Chambre', [['Lit refait, draps propres', 1]]],
-    ['Avant de partir', [['Poubelles sorties', 1], ['Vue d’ensemble du logement', 1]]]
-  ],
-  p2: [
-    ['Pièce principale', [['Aspirer, laver le sol', 1], ['Canapé-lit remis en place', 1]]],
-    ['Kitchenette', [['Frigo et micro-ondes nettoyés', 1], ['Évier et plan dégraissés', 1]]],
-    ['Salle de bain', [['Douche et WC désinfectés', 1], ['Serviettes propres pliées', 1]]],
-    ['Avant de partir', [['Poubelles sorties', 1], ['Vue d’ensemble', 1]]]
-  ],
-  p3: [
-    ['Séjour', [['Sols et surfaces', 1]]],
-    ['Cuisine', [['Frigo, four, évier', 1]]],
-    ['Salles de bain (2)', [['Douches et WC', 1]]],
-    ['Chambres (3)', [['Lits refaits', 1]]],
-    ['Extérieur', [['Terrasse balayée, coussins rangés', 1], ['Piscine : écumage de surface', 1], ['Arrosage des plantes', 0]]]
-  ],
-  p4: [
-    ['Mezzanine & séjour', [['Sols et escalier', 1]]],
-    ['Cuisine', [['Frigo et plaques', 1]]],
-    ['Salle de bain', [['Douche et WC', 1]]],
-    ['Avant de partir', [['Poubelles + vue d’ensemble', 1]]]
-  ]
-};
+/* Modèle de checklist proposé à la création d'un logement. Générique exprès :
+   le propriétaire ajoute, retire et renomme ensuite pièce par pièce depuis la
+   fiche du bien. Le chiffre 1 veut dire « photo demandée à cette étape ». */
+var CHECK_MODELE = [
+  ['Séjour & entrée', [['Aspirer et laver le sol', 1], ['Dépoussiérer les surfaces', 1]]],
+  ['Cuisine', [['Frigo vidé et nettoyé', 1], ['Plaques, évier, plan de travail', 1]]],
+  ['Salle de bain', [['Douche et WC désinfectés', 1], ['Serviettes propres pliées', 1]]],
+  ['Chambre', [['Lit refait, draps propres', 1]]],
+  ['Avant de partir', [['Poubelles sorties', 1], ['Vue d’ensemble du logement', 1]]]
+];
 
-var BIEN_INFO = {
-  p1: { capacity: '4 voyageurs', surface: '46 m²', code: 'Boîte à clés — 4821', wifi: 'NidVieuxPort / soleil2024', parking: 'Parking Estienne, place 34', linge: '2 parures, 6 serviettes', checkin: '16:00', checkout: '11:00', prixNuit: 118 },
-  p2: { capacity: '2 voyageurs', surface: '28 m²', code: 'Digicode 12B45 · clé sous tapis', wifi: 'CanalStM / paris1900', parking: 'Aucun', linge: '1 parure, 4 serviettes', checkin: '15:00', checkout: '11:00', prixNuit: 96 },
-  p3: { capacity: '6 voyageurs', surface: '140 m²', code: 'Portail 7788 · clé maison', wifi: 'Oliviers / cigales2025', parking: '2 places dans l’allée', linge: '3 parures, 12 serviettes', checkin: '16:00', checkout: '10:00', prixNuit: 245 },
-  p4: { capacity: '3 voyageurs', surface: '62 m²', code: 'Boîte à clés — 9021', wifi: 'LoftBellecour / rhone77', parking: 'Parking Bellecour', linge: '2 parures, 6 serviettes', checkin: '17:00', checkout: '11:00', prixNuit: 134 }
-};
+var RAW_CHECK = {};
+
+var BIEN_INFO = {};
 
 /* Champs de la fiche bien : clé technique, libellé, et présence dans le livret. */
 var INFO_FIELDS = [
@@ -431,45 +393,28 @@ function langSwitch() {
   }).join('') + '</div>';
 }
 
-function baseLivret() {
-  var out = {};
-  [['p1', 'Marseille'], ['p2', 'Paris'], ['p3', 'Aix-en-Provence'], ['p4', 'Lyon']].forEach(function (x) {
-    out[x[0]] = {
-      mot: 'Bienvenue ! Vous trouverez ici tout ce qu’il faut pour votre séjour à ' + x[1] + '. Bon séjour !',
-      arrivee: [{ titre: 'Entrer dans le logement', texte: 'Le code d’accès est indiqué en haut de ce livret. Composez-le, puis poussez la porte.', media: '' }],
-      questions: [], activites: [], restos: [],
-      depart: [
-        { titre: 'Avant de fermer la porte', texte: 'Sortez les poubelles, laissez la vaisselle propre et rangée, fermez les fenêtres.', media: '' },
-        { titre: 'Les clés', texte: 'Remettez les clés là où vous les avez trouvées à votre arrivée.', media: '' }
-      ]
-    };
-  });
-  return out;
+/* Le livret d'un logement neuf : un mot d'accueil à compléter et deux
+   consignes de départ, pour ne pas partir de la page blanche. */
+function livretModele(ville) {
+  return {
+    mot: 'Bienvenue ! Vous trouverez ici tout ce qu’il faut pour votre séjour' +
+      (ville ? ' à ' + ville : '') + '. Bon séjour !',
+    arrivee: [],
+    questions: [], activites: [], restos: [],
+    depart: [
+      { titre: 'Avant de fermer la porte', texte: 'Sortez les poubelles, laissez la vaisselle propre et rangée, fermez les fenêtres.', media: '' },
+      { titre: 'Les clés', texte: 'Remettez les clés là où vous les avez trouvées à votre arrivée.', media: '' }
+    ]
+  };
 }
 
-var BIEN_NOTES = {
-  p1: 'Voisin du dessous sensible au bruit après 22 h. Aspirateur dans le placard de l’entrée.',
-  p2: 'Poubelles à sortir dans la cour, container vert. Le canapé-lit doit être refermé.',
-  p3: 'Vérifier le niveau de la piscine et prévenir en cas de fuite. Volets fermés côté sud en été.',
-  p4: 'Escalier de la mezzanine à passer à la microfibre, pas d’eau sur le bois.'
-};
+function baseLivret() { return {}; }
 
-var TARIFFS = {
-  p1: { menage: 65, menage_jardin: 80, stock: 25, maintenance: 45 },
-  p2: { menage: 55, menage_jardin: 70, stock: 20, maintenance: 45 },
-  p3: { menage: 78, menage_jardin: 90, stock: 30, maintenance: 55 },
-  p4: { menage: 60, menage_jardin: 75, stock: 25, maintenance: 45 }
-};
+var BIEN_NOTES = {};
 
-var MISSIONS = [
-  { id: 'm1', prop: 'p1', type: 'menage', date: '2026-07-30', dateLabel: 'Aujourd’hui', windowLabel: '11:00 → 15:30', price: 65, status: 'dispo', urgent: 'Turnover · arrivée 16:00', turnover: true, res: { plat: 'Airbnb', guest: 'Emma Dufour', guests: 4, nights: 4 }, next: { guest: 'Marc Lenoir', guests: 2, at: '16:00' } },
-  { id: 'm2', prop: 'p2', type: 'menage', date: '2026-07-30', dateLabel: 'Aujourd’hui', windowLabel: '10:00 → 18:00', price: 55, status: 'prise', taker: 'Sofia', urgent: '', res: { plat: 'Booking.com', guest: 'Liam Carter', guests: 2, nights: 3 }, next: { guest: 'Chloé Mercier', guests: 2, at: 'demain 15:00' } },
-  { id: 'm3', prop: 'p3', type: 'menage_jardin', date: '2026-07-31', dateLabel: 'Demain', windowLabel: '11:00 → 16:00', price: 90, status: 'dispo', urgent: '', res: { plat: 'Airbnb', guest: 'Famille Rossi', guests: 6, nights: 6 }, next: { guest: 'Jonas Weber', guests: 5, at: '1 août 16:00' } },
-  { id: 'm4', prop: 'p4', type: 'menage', date: '2026-07-31', dateLabel: 'Demain', windowLabel: '10:00 → 15:00', price: 60, status: 'dispo', urgent: '', res: { plat: 'Airbnb', guest: 'Inès Baptiste', guests: 3, nights: 4 }, next: { guest: 'Tom Kessler', guests: 2, at: '2 août 17:00' } },
-  { id: 'm5', prop: 'p1', type: 'stock', date: '2026-08-01', dateLabel: 'Sam. 1 août', windowLabel: '09:00 → 12:00', price: 25, status: 'dispo', urgent: '' },
-  { id: 'm6', prop: 'p2', type: 'maintenance', date: '2026-08-01', dateLabel: 'Sam. 1 août', windowLabel: '14:00 → 17:00', price: 45, status: 'dispo', urgent: 'Mitigeur qui fuit' },
-  { id: 'm7', prop: 'p4', type: 'menage', date: '2026-08-02', dateLabel: 'Dim. 2 août', windowLabel: '10:00 → 16:00', price: 60, status: 'dispo', urgent: '', res: { plat: 'Airbnb', guest: 'Tom Kessler', guests: 2, nights: 4 } }
-];
+var TARIFFS = {};
+
+var MISSIONS = [];
 
 var STATUS = {
   dispo: { label: 'Disponible', cls: 'badge--terra' },
@@ -495,22 +440,23 @@ function buildChecklists() {
   return out;
 }
 
-function baseStock() {
-  var s = {}, list = baseArticles();
-  PROPS.forEach(function (p, pi) {
-    s[p.id] = {};
-    list.forEach(function (a, ai) {
-      var mix = (pi * 7 + ai * 3) % 11;
-      var q = a.par;
-      if (mix < 2) q = Math.max(0, Math.round(a.par * 0.15));
-      else if (mix < 4) q = Math.round(a.par * 0.45);
-      else if (mix < 7) q = Math.round(a.par * 0.8);
-      s[p.id][a.key] = q;
-    });
+/* La checklist d'un logement neuf, à partir du modèle. Les identifiants
+   d'étape doivent être uniques dans toute l'application : les photos sont
+   rangées par mission ET par étape. */
+function checklistModele() {
+  return CHECK_MODELE.map(function (r) {
+    return {
+      name: r[0],
+      steps: r[1].map(function (s) {
+        return { id: slug(s[0], 's'), label: s[0], photo: !!s[1] };
+      })
+    };
   });
-  s.p1.pq = 3; s.p1.cafe = 8; s.p2.vaisselle = 0; s.p2.serviettes = 4; s.p4.pastilles = 6;
-  return s;
 }
+
+/* Les stocks partent vides : ils se créent logement par logement, à zéro,
+   et se relèvent à la fin de chaque ménage. */
+function baseStock() { return {}; }
 
 function baseSeuils() {
   var s = {};
@@ -525,10 +471,9 @@ function clone(o) { return JSON.parse(JSON.stringify(o)); }
 function initialState() {
   return {
     auth: null,                       // null | 'owner' | 'presta'
-    me: 'Sofia',                      // prestataire connecté
-    loginRole: 'owner',
-    loginEmail: 'julien@maisonwarme.fr',
-    loginPwd: '',          // vide = connexion de démonstration ; rempli = vrai compte
+    me: null,                         // prestataire connecté (son legacy_id)
+    loginEmail: '',
+    loginPwd: '',
     loginErreur: '',
     loginEnCours: false,
     migMsg: '',
@@ -537,7 +482,14 @@ function initialState() {
     priseEnCours: null,    // mission dont la prise est en cours d'arbitrage
     comptes: [],           // les comptes existants dans le cahier partagé
     lienCompte: {},        // { idFiche: uidCompte } — choix en cours de rapprochement
-    loginPresta: 'Sofia',
+
+    // Invitations (session 14) — voir D-63
+    invits: [],            // invitations en attente, relues depuis le cahier
+    invitLien: {},         // { idFiche: lien } — le lien qui vient d'être fabriqué
+    inv: {                 // l'écran « je finalise mon inscription »
+      token: '', email: '', nom: '', etat: '', pwd: '', pwd2: '',
+      erreur: '', enCours: false
+    },
 
     // Données de référence, désormais modifiables depuis l'interface
     props: clone(PROPS),              // les biens
@@ -582,13 +534,13 @@ function initialState() {
     stockGroup: 'Tous',
     stockTab: 'matrice',
     mStockGroup: 'Tous',
-    ownerMonth: '2026-07',
-    openAgent: 'Sofia',
-    openGainMonth: '2026-06',
+    ownerMonth: CURRENT_MONTH,
+    openAgent: null,
+    openGainMonth: null,
     bienTab: 'infos',
-    calMonth: '2026-07',
+    calMonth: CURRENT_MONTH,
     showNew: false,
-    nm: { prop: 'p1', type: 'menage', date: '2026-08-05', window: '11:00 → 15:00', price: 65, note: '' },
+    nm: { prop: '', type: 'menage', date: '', window: '11:00 → 15:00', price: 0, note: '' },
     stepDrafts: {},
     newRoom: '',
     newFeed: '',
@@ -615,9 +567,9 @@ function initialState() {
     lvEdLang: 'fr',                   // langue en cours d'écriture, côté propriétaire
 
     // Écrans de la session 10
-    planStart: '2026-07-20',          // premier jour affiché dans le planning
+    planStart: TODAY,                 // premier jour affiché dans le planning
     planProps: null,                  // logements affichés (null = tous)
-    statMonth: '2026-07',             // mois des statistiques
+    statMonth: CURRENT_MONTH,         // mois des statistiques
     msgFilter: 'encours',             // 'encours' | 'avenir' | 'tous'
     showNewAuto: false,
     am: null,                         // message programmé en cours d'écriture
@@ -683,6 +635,21 @@ function upgrade() {
   // `lienCompte` ne retient qu'un choix en cours, jamais une donnée utile.
   if (!Array.isArray(state.comptes)) state.comptes = [];
   if (!state.lienCompte) state.lienCompte = {};
+
+  // Session 14 — les invitations, et la fin de la connexion de démonstration.
+  if (!Array.isArray(state.invits)) state.invits = [];
+  if (!state.invitLien) state.invitLien = {};
+  if (!state.inv) {
+    state.inv = { token: '', email: '', nom: '', etat: '', pwd: '', pwd2: '', erreur: '', enCours: false };
+  }
+  // Ces deux-là servaient à choisir son rôle dans une liste, sans mot de passe.
+  delete state.loginRole;
+  delete state.loginPresta;
+  if (state.me && !agentExiste(state.me)) state.me = null;
+  if (state.openAgent && !agentExiste(state.openAgent)) state.openAgent = null;
+  // Ni mot de passe ni message d'erreur ne survivent à la fermeture de l'onglet.
+  state.loginPwd = '';
+  state.loginErreur = '';
 
   // Nouveautés de la session 8 : durées par bien, départs signalés, avis.
   // Posées d'abord : les boucles ci-dessous s'appuient dessus.
@@ -807,13 +774,31 @@ function upgrade() {
   }
 }
 
-function resetDemo() {
-  var auth = state.auth, me = state.me;
+/** Cette fiche de prestataire existe-t-elle encore ? */
+function agentExiste(id) {
+  return (state.agents || []).some(function (a) { return a.id === id; });
+}
+
+/* Les quatre logements de la démonstration d'origine. Ils ne peuvent pas être
+   confondus avec un vrai logement : ceux créés depuis l'interface portent un
+   identifiant fabriqué à partir de leur nom ('bmaison_des_pins_k3x9'). */
+var IDS_DEMO = ['p1', 'p2', 'p3', 'p4'];
+
+function resteDeDemo() {
+  return (state.props || []).some(function (p) { return IDS_DEMO.indexOf(p.id) >= 0; });
+}
+
+/* Repartir de zéro : on jette tout ce qui décrit une activité — logements,
+   séjours, missions, prestataires, stocks, avis — et on garde ce qui n'est
+   à personne : la liste des prestations, les articles, la connexion en cours.
+   Le cahier partagé est vidé séparément, par DB.viderDonnees(). */
+function viderTout() {
+  var auth = state.auth, me = state.me, mail = state.loginEmail;
   state = initialState();
   upgrade();
   state.auth = auth;
   state.me = me;
-  state.loginPresta = me;
+  state.loginEmail = mail;
   save();
 }
 
@@ -1101,25 +1086,25 @@ function mayTakeMission(agentId, m) { return mayTake(agentId, m.prop) && mayDo(a
 /** Écran d'accueil du compte connecté. */
 function homePath() {
   if (state.auth === 'owner') return '#/admin';
-  if (state.auth === 'presta') return isCles(state.me) ? '#/app/calendrier' : '#/app/missions';
+  if (state.auth === 'presta') {
+    if (!accesOuvert()) return '#/app/attente';
+    return isCles(state.me) ? '#/app/calendrier' : '#/app/missions';
+  }
   return '#/login';
 }
 
-/* Connexion de démonstration : aucun mot de passe, on choisit son rôle.
-   Conservée telle quelle — elle sert hors ligne et pour la recette. */
-function loginDemo() {
-  state.auth = state.loginRole;
-  if (state.loginRole === 'presta') {
-    state.me = state.loginPresta;
-    state.openAgent = state.loginPresta;
-  }
-  save();
-  location.replace(homePath());
-  render();
+/* Le compte est bien créé, mais le propriétaire ne lui a encore confié aucun
+   logement : il n'y a littéralement rien à afficher, et la base ne lui
+   laisserait rien lire non plus. Mieux vaut le dire que montrer du vide. */
+function accesOuvert() {
+  var a = (state.agents || []).find(function (x) { return x.id === state.me; });
+  return !!(a && (a.props || []).length);
 }
 
 /* Entrée dans l'application avec un vrai compte : c'est la fiche du compte
-   (table `profiles`) qui décide du rôle, plus le bouton choisi à l'écran. */
+   (table `profiles`) qui décide du rôle. Il n'y a plus d'autre porte : la
+   connexion de démonstration, qui laissait entrer sans mot de passe, a été
+   retirée en session 14 (D-63). */
 function entrerAvecProfil(p) {
   state.auth = p.role === 'owner' ? 'owner' : 'presta';
   if (state.auth === 'presta') {
@@ -1133,6 +1118,28 @@ function entrerAvecProfil(p) {
   save();
   location.replace(homePath());
   render();
+  if (state.auth === 'owner') relireInvitations();
+}
+
+/* Les invitations encore en attente, relues depuis le cahier. Le propriétaire
+   seul peut les lire ; pour tous les autres la liste reste vide, et l'écran
+   des prestataires se comporte comme si personne n'était invité. */
+function relireInvitations() {
+  if (typeof DB === 'undefined' || !DB.estDispo()) return Promise.resolve();
+  return DB.invitations().then(function (l) {
+    state.invits = (l || []).filter(function (i) { return !i.accepted_at; });
+
+    // Un lien gardé sur cet ordinateur alors que l'invitation a été acceptée
+    // (ou annulée depuis un autre appareil) ne doit plus s'afficher.
+    var vivants = {};
+    state.invits.forEach(function (i) { if (i.legacy_id) vivants[i.legacy_id] = true; });
+    Object.keys(state.invitLien || {}).forEach(function (id) {
+      if (!vivants[id]) delete state.invitLien[id];
+    });
+
+    save();
+    render();
+  }).catch(function () { /* pas grave : l'écran reste utilisable */ });
 }
 
 /* Quelqu'un d'autre a écrit dans le grand cahier : on relit et on redessine.
@@ -1712,6 +1719,10 @@ function parseRoute() {
   // toutes plateformes et tous logements confondus (D-46). Page publique.
   if (seg[0] === 'bienvenue') return { name: 'bienvenue', id: null, sec: null };
 
+  // Le lien d'invitation d'un prestataire (§19.8). Page publique : celui qui
+  // l'ouvre n'a pas encore de compte — c'est justement ce qu'il vient créer.
+  if (seg[0] === 'invitation') return { name: 'invitation', id: seg[1] || null, sec: null };
+
   // Livret d'accueil : page publique, destinée au voyageur (pas de connexion).
   // Sans troisième segment, c'est l'accueil : les grandes rubriques à choisir.
   if (seg[0] === 'livret' && seg[1]) {
@@ -1727,6 +1738,7 @@ function parseRoute() {
       if (sub === 'incident') return { name: 'p-incident', id: seg[2] };
       return { name: 'p-detail', id: seg[2] };
     }
+    if (seg[1] === 'attente') return { name: 'p-attente', id: null };
     if (seg[1] === 'calendrier') return { name: 'p-cles', id: null };
     if (seg[1] === 'mes-missions') return { name: 'p-mes', id: null };
     if (seg[1] === 'notes') return { name: 'p-notes', id: null };
@@ -1767,6 +1779,7 @@ function guard() {
   // Le livret et sa porte d'entrée s'ouvrent sans connexion : ce sont les
   // pages du voyageur.
   if (r.name === 'bienvenue') return r;
+  if (r.name === 'invitation') return r;
   if (r.name === 'livret') return r;
   if (r.name === 'livret-sec') {
     var ok = LIVRET_SECTIONS.some(function (s) { return s.k === r.sec; });
@@ -1784,6 +1797,13 @@ function guard() {
   // Chaque métier reste chez lui : la remise des clés n'a que son calendrier
   // et son profil ; une femme de ménage n'a pas ce calendrier.
   if (state.auth === 'presta') {
+    // Compte créé, mais aucun logement confié : une seule page, qui l'explique.
+    if (!accesOuvert()) {
+      if (r.name !== 'p-attente' && r.name !== 'p-profil') { location.replace('#/app/attente'); return null; }
+      return r;
+    }
+    if (r.name === 'p-attente') { location.replace(homePath()); return null; }
+
     var cles = isCles(state.me);
     if (cles && r.name !== 'p-cles' && r.name !== 'p-profil') { location.replace('#/app/calendrier'); return null; }
     if (!cles && r.name === 'p-cles') { location.replace('#/app/missions'); return null; }
@@ -1806,6 +1826,11 @@ function guard() {
   if (r.id && isPresta) {
     var pm = mission(r.id);
     if (pm && pm.taker !== state.me && !mayTakeMission(state.me, pm)) {
+      // Sans ce message, le clic sur une mission semblait ne rien faire du
+      // tout : l'écran revenait à la liste, sans un mot. Corrigé en session 14.
+      state.mMsg = !mayTake(state.me, pm.prop)
+        ? 'Ce logement ne t\'est pas confié : demande au propriétaire de te l\'ouvrir.'
+        : 'Cette prestation n\'est pas dans ta liste : demande au propriétaire de te l\'ajouter.';
       location.replace('#/app/missions'); return null;
     }
   }
@@ -2483,7 +2508,7 @@ function viewPrestaCles() {
       : '<p class="empty">Rien de prévu sur les logements qui te sont confiés.</p>') +
 
     '<h2 class="kd-title">Calendrier des logements</h2>' +
-    '<div class="seg">' + [['2026-07', 'Juillet'], ['2026-08', 'Août']].map(function (m) {
+    '<div class="seg">' + moisCalendrier().map(function (m) {
       return '<button type="button" aria-pressed="' + (state.calMonth === m[0]) + '"' +
         act('cal-month', { m: m[0] }) + '>' + m[1] + '</button>';
     }).join('') + '</div>' +
@@ -2506,9 +2531,9 @@ function blocDiagnostic() {
   var p = DB.profil();
   if (!p) {
     return '<article class="card" style="border-radius:22px;border-left:4px solid var(--terra)">' +
-      '<div style="font:700 14px Figtree,sans-serif;margin-bottom:6px">Mode démonstration</div>' +
-      '<p class="sec-note" style="margin:0">Tu n\'es pas connecté avec un vrai compte : ' +
-      'les données restent sur cet appareil.</p></article>';
+      '<div style="font:700 14px Figtree,sans-serif;margin-bottom:6px">Hors connexion</div>' +
+      '<p class="sec-note" style="margin:0">Le cahier partagé ne répond pas : tu vois ce qui ' +
+      'était enregistré sur cet appareil. Reconnecte-toi dès que le réseau revient.</p></article>';
   }
 
   var fiche = (state.agents || []).filter(function (a) { return a.id === state.me; })[0];
@@ -2575,8 +2600,7 @@ function viewPrestaProfil() {
       }).join('') +
     '</div></article>' +
     '<button type="button" class="btn btn--quiet"' + act('logout') + '>Se déconnecter</button>' +
-    '<button type="button" class="btn btn--sm" style="background:var(--fill);color:var(--ink-soft);width:100%"' + act('reset') + '>Réinitialiser la démonstration</button>' +
-    '<p class="sec-note center">Version de démonstration · les données sont enregistrées dans ce navigateur uniquement.</p>' +
+    '<p class="sec-note center">Tes missions et tes gains sont enregistrés dans le cahier partagé de MAISON WARME.</p>' +
     '</div>';
 
   return prestaShell(prestaHeader('Mon compte', 'Profil'), body);
@@ -2585,6 +2609,12 @@ function viewPrestaProfil() {
 /* ==========================================================================
    6. Vues propriétaire
    ========================================================================== */
+
+/** L'adresse e-mail avec laquelle on est connecté, pour ne jamais douter. */
+function compteConnecte() {
+  var p = typeof DB !== 'undefined' && DB.estDispo() ? DB.profil() : null;
+  return p && p.email ? 'Connecté : ' + p.email : 'Connecté';
+}
 
 function ownerShell(page, content) {
   var openCount = state.missions.filter(function (m) { return m.status === 'dispo'; }).length;
@@ -2606,10 +2636,9 @@ function ownerShell(page, content) {
         ' · ' + TODAY_LABEL + '</div></div>' +
       '<nav class="rail-nav">' + nav + '</nav>' +
       '<div class="rail-foot">' +
-        '<div class="rail-sync">Calendriers synchronisés il y a 12 min · Airbnb · Booking.com' +
-          '<br><br>Démonstration : les données sont enregistrées dans ce navigateur.</div>' +
+        '<div class="rail-sync">' + esc(compteConnecte()) + '<br><br>' +
+          'Logements, séjours et missions sont enregistrés dans le cahier partagé.</div>' +
         '<div class="rail-actions">' +
-          '<button type="button"' + act('reset') + '>Réinitialiser</button>' +
           '<button type="button"' + act('logout') + '>Se déconnecter</button>' +
         '</div>' +
       '</div>' +
@@ -2620,35 +2649,62 @@ function ownerShell(page, content) {
 
 /* --- Tableau de bord ----------------------------------------------------- */
 
+/** « Bonjour Marc », d'après le nom du compte connecté — plus de prénom en dur. */
+function bonjourProprio() {
+  var p = typeof DB !== 'undefined' && DB.estDispo() ? DB.profil() : null;
+  var nom = (p && (p.full_name || '').trim()) || '';
+  var prenom = nom.split(/\s+/)[0];
+  return prenom ? 'Bonjour ' + prenom : 'Bonjour';
+}
+
 function viewOwnerDash() {
   var openCount = state.missions.filter(function (m) { return m.status === 'dispo'; }).length;
   var lowByProp = state.props.map(function (p) { return { p: p, lows: lowsFor(p.id) }; });
   var totalLow = lowByProp.reduce(function (n, x) { return n + x.lows.length; }, 0);
-  var m1 = mission('m1');
 
   var kpis = [
     { v: String(state.missions.filter(function (m) { return m.status !== 'termine'; }).length), l: 'missions à venir', c: C.ink },
     { v: String(openCount), l: 'non prises', c: C.terracotta },
     { v: String(totalLow), l: 'articles sous seuil', c: C.ambre },
-    { v: state.agents.reduce(function (n, a) { return n + monthTotal(a.id, CURRENT_MONTH); }, 0) + ' €', l: 'à payer en juillet', c: C.vert }
+    { v: state.agents.reduce(function (n, a) { return n + monthTotal(a.id, CURRENT_MONTH); }, 0) + ' €',
+      l: 'à payer en ' + MOIS_LONGS[parseInt(CURRENT_MONTH.split('-')[1], 10) - 1], c: C.vert }
   ];
 
-  var alerts = [
-    { cls: 'alert--terra', dot: C.terracotta, kind: 'Turnover serré',
-      title: 'Le Nid du Vieux Port · aujourd’hui',
-      det: 'Emma Dufour part à 11:00, Marc Lenoir arrive à 16:00. ' +
-        (!m1 || m1.status === 'dispo' ? 'Mission encore non prise.'
-          : m1.status === 'termine' ? 'Ménage terminé par ' + m1.taker + '.'
-            : m1.status === 'encours' ? 'Ménage en cours par ' + m1.taker + '.'
-              : 'Acceptée par ' + m1.taker + '.') },
-    { cls: 'alert--amber', dot: C.ambre, kind: 'Stock bas',
-      title: totalLow + ' articles sous leur seuil',
-      det: lowByProp.filter(function (x) { return x.lows.length; })
-        .map(function (x) { return x.p.short + ' (' + x.lows.length + ')'; }).join(' · ') || 'Rien à signaler' },
-    { cls: 'alert--blue', dot: C.bleu, kind: 'Signalement',
-      title: state.problems.length ? state.problems.length + ' problème(s) signalé(s)' : 'Mitigeur qui fuit · Canal Saint-Martin',
-      det: state.problems.length ? 'Envoyé pendant une mission, photo jointe.' : 'Mission de réparation créée pour le 1er août, 45 €.' }
-  ];
+  /* Les alertes se calculent sur les vraies réservations du jour (session 14 :
+     elles étaient écrites en dur, du temps de la démonstration). */
+  var turnovers = state.props.map(function (p) {
+    var part = stayLeaving(p.id), arrive = stayArriving(p.id);
+    if (!part || !arrive) return null;
+    var m = state.missions.filter(function (x) {
+      return x.prop === p.id && x.date === TODAY && x.type !== 'maintenance';
+    })[0];
+    return { p: p, part: part, arrive: arrive, m: m };
+  }).filter(Boolean);
+
+  var alerts = [];
+
+  turnovers.forEach(function (t) {
+    var inf = state.info[t.p.id] || {};
+    var m = t.m;
+    alerts.push({ cls: 'alert--terra', dot: C.terracotta, kind: 'Turnover serré',
+      title: t.p.name + ' · aujourd’hui',
+      det: t.part.guest + ' part' + (inf.checkout ? ' à ' + inf.checkout : '') + ', ' +
+        t.arrive.guest + ' arrive' + (t.arrive.arriveePrevue || inf.checkin ? ' à ' + (t.arrive.arriveePrevue || inf.checkin) : '') + '. ' +
+        (!m ? 'Aucune mission de ménage n’est prévue.'
+          : m.status === 'dispo' ? 'Mission encore non prise.'
+            : m.status === 'termine' ? 'Ménage terminé par ' + m.taker + '.'
+              : m.status === 'encours' ? 'Ménage en cours par ' + m.taker + '.'
+                : 'Acceptée par ' + m.taker + '.') });
+  });
+
+  alerts.push({ cls: 'alert--amber', dot: C.ambre, kind: 'Stock bas',
+    title: totalLow ? totalLow + ' articles sous leur seuil' : 'Aucun article sous son seuil',
+    det: lowByProp.filter(function (x) { return x.lows.length; })
+      .map(function (x) { return x.p.short + ' (' + x.lows.length + ')'; }).join(' · ') || 'Rien à signaler' });
+
+  alerts.push({ cls: 'alert--blue', dot: C.bleu, kind: 'Signalement',
+    title: state.problems.length ? state.problems.length + ' problème(s) signalé(s)' : 'Aucun problème signalé',
+    det: state.problems.length ? 'Envoyé pendant une mission, photo jointe.' : 'Rien à traiter pour le moment.' });
 
   /* Départs signalés par les voyageurs eux-mêmes, depuis leur livret d'accueil. */
   var libres = state.props.map(function (p) {
@@ -2678,7 +2734,7 @@ function viewOwnerDash() {
 
   return ownerShell('dash',
     '<div class="page-head">' +
-      '<div><h1 class="page-title">Bonjour Julien</h1>' +
+      '<div><h1 class="page-title">' + esc(bonjourProprio()) + '</h1>' +
       '<p class="page-sub">' + openCount + ' mission(s) encore sans prestataire · ' + totalLow + ' articles sous le seuil</p></div>' +
       '<div class="kpis">' + kpis.map(function (k) {
         return '<div class="kpi"><div class="v num" style="color:' + k.c + '">' + esc(k.v) + '</div><div class="l">' + k.l + '</div></div>';
@@ -3061,6 +3117,40 @@ function blocDemenagement() {
       ? '<p class="page-sub" style="margin:12px 0 0;color:' + (fini ? 'var(--vert)' : 'var(--terra)') + '">' +
         esc(state.migMsg) + '</p>'
       : '') +
+    '</div>' +
+    blocRepartirDeZero();
+}
+
+/* Repartir de zéro (session 14). Sert une fois : jeter les quatre logements
+   de démonstration — « Le Nid du Vieux Port » et les autres — avec leurs
+   voyageurs inventés. Tant qu'ils sont là, l'encadré insiste ; ensuite il
+   devient discret, mais reste disponible. */
+function blocRepartirDeZero() {
+  if (typeof DB === 'undefined' || !DB.estDispo()) return '';
+  var p = DB.profil();
+  if (!p || p.role !== 'owner') return '';
+
+  var demo = resteDeDemo();
+
+  return '<div class="card" style="margin-top:20px;border-left:4px solid ' +
+      (demo ? 'var(--terra)' : 'var(--line)') + '">' +
+    '<h2 class="sec-title" style="margin:0 0 6px">' +
+      (demo ? '⚠️ Il reste des logements de démonstration' : 'Repartir de zéro') + '</h2>' +
+    '<p class="page-sub" style="margin:0 0 14px">' +
+      (demo
+        ? 'Les logements « Le Nid du Vieux Port », « Studio Canal Saint-Martin », ' +
+          '« Villa Les Oliviers » et « Loft Bellecour » sont des exemples, avec des voyageurs ' +
+          'inventés. Ce bouton les efface — ici et dans le cahier partagé — pour que tu saisisses ' +
+          'tes vrais logements sur une page blanche.'
+        : 'Efface tous les logements, séjours et missions, ici et dans le cahier partagé. ' +
+          'À n\'utiliser que pour tout recommencer.') +
+    '</p>' +
+    '<button type="button" class="btn" style="background:var(--terra);color:#fff"' +
+      act('vider-tout') + '>Tout effacer et repartir de zéro</button>' +
+    '<p class="sec-note" style="margin:10px 0 0">Sans retour possible : logements, séjours, ' +
+      'missions, stocks, fiches de prestataires et historique de paie repartent à zéro. ' +
+      'Seuls les comptes déjà créés (le tien, ceux de tes prestataires) sont conservés — ' +
+      'il suffira de les relier à leur nouvelle fiche.</p>' +
     '</div>';
 }
 
@@ -4025,11 +4115,25 @@ function comptesLibres() {
   });
 }
 
+/** L'invitation encore en attente pour cette fiche, s'il y en a une. */
+function invitationDe(a) {
+  var mail = (a.email || '').trim().toLowerCase();
+  return (state.invits || []).filter(function (i) {
+    return !i.accepted_at && (i.legacy_id === a.id || (mail && i.email === mail));
+  })[0] || null;
+}
+
+/** L'adresse complète du lien d'invitation, telle qu'on l'envoie. */
+function lienInvitation(token) {
+  return location.origin + location.pathname + '#/invitation/' + token;
+}
+
 function ligneCompte(a) {
   if (typeof DB === 'undefined' || !DB.estDispo()) return '';
   var p = DB.profil();
   if (!p || p.role !== 'owner') return '';
 
+  // 1. Elle a déjà un compte, et il est relié à cette fiche : rien à faire.
   if (a.uid) {
     var c = (state.comptes || []).filter(function (x) { return x.uid === a.uid; })[0] || {};
     return '<div class="invite-row">' +
@@ -4044,34 +4148,66 @@ function ligneCompte(a) {
       '</div>';
   }
 
-  var libres = comptesLibres();
-  if (!libres.length) {
-    return '<div class="invite-row">' +
-      '<span class="invite-state"><span class="invite-todo">Aucun compte</span></span>' +
-      '<span class="sec-note" style="flex:1;min-width:220px">' +
-        'Crée d\'abord son compte dans Supabase (Authentication → Users → Add user, ' +
-        'en cochant « Auto Confirm User »). Il apparaîtra ici.</span>' +
+  // 2. Une invitation vient d'être créée, ou attend encore : on montre le lien.
+  var lien = (state.invitLien && state.invitLien[a.id]) || null;
+  var inv = invitationDe(a);
+  if (lien || inv) {
+    var url = lien || lienInvitation(inv.token);
+    return '<div class="invite-row" style="flex-direction:column;align-items:stretch;gap:8px">' +
+      '<span class="invite-state"><span class="invite-todo">Invitation envoyée — en attente</span>' +
+        '<span class="invite-mail num">' + esc(a.email || (inv && inv.email) || '') + '</span></span>' +
+      '<p class="sec-note" style="margin:0">Envoie-lui ce lien par SMS, par WhatsApp ou par mail. ' +
+        'Il lui fera choisir son mot de passe. Valable 14 jours, et une seule fois.</p>' +
+      '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">' +
+        '<input class="inp num" style="flex:1;min-width:min(100%,260px);font-size:12.5px" readonly' +
+          ' value="' + esc(url) + '" data-fid="lien-' + a.id + '">' +
+        '<button type="button" class="btn btn--xs" style="background:var(--ink);color:#fff"' +
+          act('copier-lien', { ag: a.id, url: url }) + '>Copier le lien</button>' +
+        '<button type="button" class="btn-danger-xs"' +
+          act('annuler-invit', { ag: a.id, tk: (inv && inv.token) || '' }) + '>Annuler</button>' +
+      '</div>' +
       '</div>';
   }
 
+  // 3. Rien encore : on invite. Sans adresse e-mail sur la fiche, impossible —
+  // c'est elle qui prouve que le lien arrive bien à la bonne personne.
   var choix = state.lienCompte && state.lienCompte[a.id];
-  return '<div class="invite-row">' +
-    '<span class="invite-state"><span class="invite-todo">Pas encore de compte</span></span>' +
-    '<select class="inp" style="flex:1;min-width:200px;max-width:340px"' +
-      ' data-fid="lien-' + a.id + '" data-ch="choix-compte" data-ag="' + a.id + '">' +
-      '<option value="">Relier un compte…</option>' +
-      libres.map(function (c) {
-        return '<option value="' + esc(c.uid) + '"' + (choix === c.uid ? ' selected' : '') + '>' +
-          esc(c.email || c.nom || c.uid) + '</option>';
-      }).join('') +
-    '</select>' +
-    '<button type="button" class="btn btn--xs" style="background:var(--ink);color:#fff"' +
-      (choix ? '' : ' disabled') + act('lier-compte', { ag: a.id }) + '>Relier</button>' +
+  var libres = comptesLibres();
+  return '<div class="invite-row" style="flex-direction:column;align-items:stretch;gap:8px">' +
+    '<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">' +
+      '<span class="invite-state"><span class="invite-todo">Pas encore de compte</span></span>' +
+      (a.email
+        ? '<span class="sec-note" style="flex:1;min-width:200px">Un lien sera fabriqué pour ' +
+            esc(a.email) + '. C\'est toi qui le lui envoies.</span>' +
+          '<button type="button" class="btn btn--xs" style="background:var(--terra);color:#fff"' +
+            act('inviter', { ag: a.id }) + '>Inviter cette personne</button>'
+        : '<span class="sec-note" style="flex:1;min-width:200px">Renseigne d\'abord son adresse e-mail ' +
+            'ci-dessus : sans elle, aucun lien d\'invitation n\'est possible.</span>') +
+    '</div>' +
+    // Reste utile pour un compte créé autrement (le tien, par exemple).
+    (libres.length
+      ? '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">' +
+          '<span class="sec-note" style="flex:none">Ou relier un compte qui existe déjà :</span>' +
+          '<select class="inp" style="flex:1;min-width:180px;max-width:320px"' +
+            ' data-fid="choix-' + a.id + '" data-ch="choix-compte" data-ag="' + a.id + '">' +
+            '<option value="">Choisir…</option>' +
+            libres.map(function (c) {
+              return '<option value="' + esc(c.uid) + '"' + (choix === c.uid ? ' selected' : '') + '>' +
+                esc(c.email || c.nom || c.uid) + '</option>';
+            }).join('') +
+          '</select>' +
+          '<button type="button" class="btn btn--xs" style="background:var(--ink);color:#fff"' +
+            (choix ? '' : ' disabled') + act('lier-compte', { ag: a.id }) + '>Relier</button>' +
+        '</div>'
+      : '') +
     '</div>';
 }
 
 function viewOwnerAgents() {
-  var monthDef = MONTHS.find(function (m) { return m.key === state.ownerMonth; });
+  // Les mois glissent avec le calendrier : un mois enregistré l'an dernier
+  // peut être sorti de la liste. On retombe alors sur le mois en cours.
+  var monthDef = MONTHS.find(function (m) { return m.key === state.ownerMonth; }) || MONTHS[0];
+  if (state.ownerMonth !== monthDef.key) state.ownerMonth = monthDef.key;
 
   var cards = state.agents.map(function (a) {
     var rows = monthRows(a.id, state.ownerMonth);
@@ -4820,6 +4956,23 @@ function bienChecklist(pid, b) {
     '</div></div>';
 }
 
+/* Les trois mois proposés dans les calendriers : celui en cours et les deux
+   suivants. La démonstration n'en connaissait que deux, figés à 2026. */
+function moisCalendrier() {
+  var out = [], auj = new Date();
+  for (var i = 0; i < 3; i++) {
+    var m = new Date(auj.getFullYear(), auj.getMonth() + i, 1);
+    out.push([isoDate(m).slice(0, 7), moisTitre(m.getMonth() + 1)]);
+  }
+  return out;
+}
+
+/** « Juillet », à partir du numéro du mois. */
+function moisTitre(n) {
+  var m = MOIS_LONGS[n - 1] || '';
+  return m.charAt(0).toUpperCase() + m.slice(1);
+}
+
 function bienCalendar(pid) {
   var cm = state.calMonth;
   var cy = parseInt(cm.split('-')[0], 10), cmo = parseInt(cm.split('-')[1], 10);
@@ -4845,8 +4998,8 @@ function bienCalendar(pid) {
   return '<div class="cols" style="margin-top:22px">' +
     '<div class="card" style="flex:1.4;min-width:min(100%,380px);padding:20px 22px">' +
       '<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">' +
-        '<h2 style="font:700 18px Figtree,sans-serif;flex:1;margin:0">' + (cmo === 7 ? 'Juillet' : 'Août') + ' ' + cy + '</h2>' +
-        '<div class="seg">' + [['2026-07', 'Juillet'], ['2026-08', 'Août']].map(function (m) {
+        '<h2 style="font:700 18px Figtree,sans-serif;flex:1;margin:0">' + moisTitre(cmo) + ' ' + cy + '</h2>' +
+        '<div class="seg">' + moisCalendrier().map(function (m) {
           return '<button type="button" aria-pressed="' + (cm === m[0]) + '"' + act('cal-month', { m: m[0] }) + '>' + m[1] + '</button>';
         }).join('') + '</div>' +
       '</div>' +
@@ -5563,25 +5716,25 @@ function livretVoyageur(pid, inf) {
 }
 
 function bienIcal(pid) {
-  var feeds = [
-    { cls: 'feed--ok', dot: C.vert, fg: 'var(--green-t)', source: 'Airbnb', url: 'airbnb.fr/calendar/ical/' + pid + '9f2c.ics', status: 'Synchronisé' },
-    pid === 'p4'
-      ? { cls: 'feed--warn', dot: C.terracotta, fg: 'var(--terra-d)', source: 'Booking.com', url: 'admin.booking.com/ical/…', status: 'À reconnecter' }
-      : { cls: 'feed--ok', dot: C.vert, fg: 'var(--green-t)', source: 'Booking.com', url: 'admin.booking.com/ical/' + pid + '7b1.ics', status: 'Synchronisé' }
-  ].concat((state.extraFeeds[pid] || []).map(function (u) {
-    return { cls: 'feed--new', dot: C.bleu, fg: 'var(--blue-t)', source: 'Lien manuel', url: u, status: 'En attente' };
-  }));
+  // Seulement les liens réellement collés par le propriétaire. La démonstration
+  // affichait deux flux « Synchronisé » qui n'existaient pas : trompeur, retiré
+  // en session 14. Aucun lien n'est encore relevé — il y faut le serveur (D-42).
+  var feeds = (state.extraFeeds[pid] || []).map(function (u) {
+    return { cls: 'feed--new', dot: C.bleu, fg: 'var(--blue-t)', source: 'Lien collé', url: u, status: 'En attente du serveur' };
+  });
 
   return '<div class="card" style="margin-top:22px;padding:22px">' +
     '<h2 style="font:700 16px Figtree,sans-serif;margin:0">Liens iCal de ce bien</h2>' +
-    '<p class="sec-note" style="margin-top:4px">Chaque check-out détecté crée une mission de ménage planifiée le jour du départ.</p>' +
-    '<div class="stack" style="margin-top:16px">' + feeds.map(function (f) {
+    '<p class="sec-note" style="margin-top:4px">Le jour où le relevé automatique sera branché, chaque ' +
+      'départ détecté créera une mission de ménage. En attendant, les liens collés ici sont ' +
+      'seulement mis de côté : rien n’est encore relevé.</p>' +
+    '<div class="stack" style="margin-top:16px">' + (feeds.length ? feeds.map(function (f) {
       return '<div class="feed ' + f.cls + '">' +
         '<span class="dot" style="background:' + f.dot + '"></span>' +
         '<div style="flex:1;min-width:200px"><div style="font:600 13.5px Figtree,sans-serif">' + esc(f.source) + '</div>' +
         '<div class="url">' + esc(f.url) + '</div></div>' +
         '<span style="font:600 12px Figtree,sans-serif;color:' + f.fg + ';flex:none">' + f.status + '</span></div>';
-    }).join('') + '</div>' +
+    }).join('') : '<p class="empty">Aucun lien iCal enregistré pour ce logement.</p>') + '</div>' +
     '<div style="margin-top:18px;display:flex;gap:12px;flex-wrap:wrap">' +
       '<input class="inp" style="flex:1;min-width:260px" type="text" placeholder="Coller un nouveau lien iCal…" value="' + esc(state.newFeed) + '" data-fid="new-feed" data-in="new-feed">' +
       '<button type="button" class="btn btn--dark btn--sm"' + act('add-feed', { pid: pid }) + '>Connecter</button>' +
@@ -5616,37 +5769,133 @@ function bienIcal(pid) {
    Écran de connexion
    ========================================================================== */
 
+/* Une seule porte : une adresse e-mail et un mot de passe, vérifiés par le
+   cahier partagé. La connexion de démonstration — qui laissait entrer sans
+   mot de passe et en choisissant son rôle dans une liste — a été retirée en
+   session 14 (D-63) : c'était une porte grande ouverte sur de vraies données. */
 function viewLogin() {
-  var isOwner = state.loginRole === 'owner';
+  var dispo = typeof DB !== 'undefined' && DB.estDispo();
+
   return '<div class="login"><div class="login-card">' +
     '<div class="login-logo">MAISON WARME</div>' +
     '<p class="login-sub">Gestion du ménage et des stocks de vos locations courte durée.</p>' +
-    '<div class="login-seg">' +
-      '<button type="button" aria-pressed="' + isOwner + '"' + act('login-role', { r: 'owner' }) + '>Propriétaire</button>' +
-      '<button type="button" aria-pressed="' + !isOwner + '"' + act('login-role', { r: 'presta' }) + '>Prestataire</button>' +
-    '</div>' +
-    (isOwner ? '' :
-      '<div class="login-field"><label class="lab" for="lg-who">Qui es-tu ?</label>' +
-        '<select class="inp" id="lg-who" data-fid="lg-who" data-ch="login-presta">' + state.agents.map(function (a) {
-          return '<option value="' + a.id + '"' + (state.loginPresta === a.id ? ' selected' : '') + '>' + esc(a.name + ' · ' + a.role) + '</option>';
-        }).join('') + '</select></div>') +
+    (dispo ? '' :
+      '<p class="login-err" role="alert">Impossible de joindre le cahier partagé. ' +
+        'Vérifie ta connexion internet, puis recharge la page.</p>') +
     '<div class="login-field"><label class="lab" for="lg-mail">E-mail</label>' +
-      '<input class="inp" id="lg-mail" type="email" autocomplete="username" value="' + esc(state.loginEmail) + '" data-fid="lg-mail" data-in="login-email"></div>' +
+      '<input class="inp" id="lg-mail" type="email" autocomplete="username" inputmode="email" value="' + esc(state.loginEmail) + '" data-fid="lg-mail" data-in="login-email"></div>' +
     '<div class="login-field"><label class="lab" for="lg-pwd">Mot de passe</label>' +
       '<input class="inp" id="lg-pwd" type="password" autocomplete="current-password" value="' + esc(state.loginPwd) + '" data-fid="lg-pwd" data-in="login-pwd"></div>' +
     (state.loginErreur
       ? '<p class="login-err" role="alert">' + esc(state.loginErreur) + '</p>'
       : '') +
     '<button type="button" class="btn btn--primary" style="margin-top:22px"' +
-      (state.loginEnCours ? ' disabled' : '') + act('login') + '>' +
+      (state.loginEnCours || !dispo ? ' disabled' : '') + act('login') + '>' +
       (state.loginEnCours ? 'Connexion…' : 'Se connecter') + '</button>' +
-    '<p class="login-hint">' + (isOwner
-      ? 'Accès propriétaire : biens, missions, stocks, prestataires.'
-      : 'Accès prestataire : missions, checklists, gains.') +
-      '<br>' + (typeof DB !== 'undefined' && DB.estDispo()
-        ? 'Connecté au cahier partagé. Sans compte, laisse le mot de passe vide pour la démonstration.'
-        : 'Mode démonstration : n\'importe quel mot de passe fonctionne.') + '</p>' +
+    '<p class="login-hint">Pas encore de compte ? Il n\'y a pas d\'inscription libre : ' +
+      'le propriétaire envoie un lien d\'invitation à ton adresse e-mail, et c\'est ce lien ' +
+      'qui te fait choisir ton mot de passe.</p>' +
     '</div></div>';
+}
+
+/* ==========================================================================
+   Le lien d'invitation — l'écran où un prestataire choisit son mot de passe
+   ==========================================================================
+   Trois moments, dans le même écran : on lit l'invitation (à qui est-elle ?),
+   la personne choisit un mot de passe, puis son compte reçoit exactement les
+   droits que le propriétaire avait cochés sur sa fiche. */
+
+function viewInvitation() {
+  var inv = state.inv;
+
+  // Premier passage : on va demander au cahier à qui ce lien est destiné.
+  if (inv.token !== route.id) {
+    state.inv = {
+      token: route.id, email: '', nom: '', etat: 'chargement',
+      pwd: '', pwd2: '', erreur: '', enCours: false
+    };
+    setTimeout(chargerInvitation, 0);
+    inv = state.inv;
+  }
+
+  var corps;
+
+  if (inv.etat === 'chargement') {
+    corps = '<p class="login-sub">Un instant…</p>';
+
+  } else if (inv.etat === 'erreur') {
+    corps = '<p class="login-err" role="alert">' + esc(inv.erreur) + '</p>';
+
+  } else if (inv.etat === 'acceptee') {
+    corps = '<p class="login-sub">Ce lien a déjà servi : ton compte existe.</p>' +
+      '<button type="button" class="btn btn--primary" style="margin-top:18px"' +
+      act('nav', { path: '#/login' }) + '>Aller à la connexion</button>';
+
+  } else if (inv.etat === 'expiree') {
+    corps = '<p class="login-err" role="alert">Ce lien a expiré (les invitations durent 14 jours). ' +
+      'Demande au propriétaire de t\'en envoyer un nouveau.</p>';
+
+  } else if (inv.etat === 'fini') {
+    corps = '<p class="login-sub">C\'est fait : ton compte est prêt.</p>' +
+      '<button type="button" class="btn btn--primary" style="margin-top:18px"' +
+      act('inv-entrer') + '>Entrer dans l\'application</button>';
+
+  } else {
+    corps =
+      '<p class="login-sub">' + (inv.nom ? esc(inv.nom) + ', b' : 'B') + 'ienvenue. ' +
+        'Choisis ton mot de passe : il te servira à chaque fois.</p>' +
+      '<div class="login-field"><label class="lab" for="iv-mail">Ton adresse e-mail</label>' +
+        '<input class="inp" id="iv-mail" type="email" value="' + esc(inv.email) + '" disabled></div>' +
+      '<div class="login-field"><label class="lab" for="iv-pwd">Mot de passe (6 caractères minimum)</label>' +
+        '<input class="inp" id="iv-pwd" type="password" autocomplete="new-password" value="' + esc(inv.pwd) + '" data-fid="iv-pwd" data-in="inv-pwd"></div>' +
+      '<div class="login-field"><label class="lab" for="iv-pwd2">Le même, pour vérifier</label>' +
+        '<input class="inp" id="iv-pwd2" type="password" autocomplete="new-password" value="' + esc(inv.pwd2) + '" data-fid="iv-pwd2" data-in="inv-pwd2"></div>' +
+      (inv.erreur ? '<p class="login-err" role="alert">' + esc(inv.erreur) + '</p>' : '') +
+      '<button type="button" class="btn btn--primary" style="margin-top:22px"' +
+        (inv.enCours ? ' disabled' : '') + act('inv-creer') + '>' +
+        (inv.enCours ? 'Création…' : 'Créer mon compte') + '</button>';
+  }
+
+  return '<div class="login"><div class="login-card">' +
+    '<div class="login-logo">MAISON WARME</div>' + corps + '</div></div>';
+}
+
+function chargerInvitation() {
+  if (typeof DB === 'undefined' || !DB.estDispo()) {
+    state.inv.etat = 'erreur';
+    state.inv.erreur = 'Pas de connexion internet : impossible de vérifier ce lien.';
+    render();
+    return;
+  }
+  DB.lireInvitation(state.inv.token)
+    .then(function (l) {
+      state.inv.email = l.email || '';
+      state.inv.nom = (l.full_name || '').split(' ')[0] || '';
+      state.inv.etat = l.etat;                 // 'valide' | 'acceptee' | 'expiree'
+      render();
+    })
+    .catch(function (e) {
+      state.inv.etat = 'erreur';
+      state.inv.erreur = DB.messageClair(e);
+      render();
+    });
+}
+
+/* --- L'écran d'un prestataire dont l'accès n'est pas encore ouvert -------- */
+
+function viewPrestaAttente() {
+  var body =
+    '<div class="card" style="padding:26px;text-align:center">' +
+      '<div style="font-size:32px;line-height:1">⏳</div>' +
+      '<h2 style="font:700 17px Figtree,sans-serif;margin:12px 0 8px">Ton compte est bien créé</h2>' +
+      '<p class="page-sub" style="margin:0">Il reste au propriétaire à te confier des logements. ' +
+        'Tant que ce n\'est pas fait, il n\'y a rien à afficher ici — et c\'est normal.</p>' +
+      '<p class="sec-note" style="margin-top:14px">Préviens-le : il coche tes logements dans ' +
+        '« Prestataires », et tes missions apparaissent aussitôt sur cet écran.</p>' +
+      '<button type="button" class="btn btn--sm" style="margin-top:18px;background:var(--fill);color:var(--ink-soft)"' +
+        act('logout') + '>Se déconnecter</button>' +
+    '</div>';
+  return prestaShell(prestaHeader('Bonjour', 'Accès en attente'), body, '', { noTabs: true });
 }
 
 /* ==========================================================================
@@ -5778,39 +6027,73 @@ var actions = {
   },
 
   /* Connexion ------------------------------------------------------------ */
-  'login-role': function (el) {
-    state.loginRole = el.dataset.r;
-    state.loginEmail = el.dataset.r === 'owner' ? 'julien@maisonwarme.fr' : agent(state.loginPresta).email;
-    render();
-  },
   login: function () {
-    // Connexion réelle dès que le grand cahier répond ; sinon on retombe sur
-    // la connexion de démonstration, pour que l'application reste essayable
-    // hors ligne et que la recette ne dépende pas du réseau.
-    if (typeof DB !== 'undefined' && DB.estDispo() && state.loginEmail && state.loginPwd) {
-      state.loginErreur = '';
-      state.loginEnCours = true;
-      render();
-      DB.connexion(state.loginEmail.trim(), state.loginPwd)
-        .then(function (p) {
-          state.loginEnCours = false;
-          if (!p) throw new Error('Compte introuvable.');
-          return DB.charger().then(function () { return p; });
-        })
-        .then(function (p) {
-          entrerAvecProfil(p);
-        })
-        .catch(function (e) {
-          state.loginEnCours = false;
-          state.loginErreur = DB.messageClair(e);
-          render();
-        });
-      return;
+    // Il n'y a plus de repli : sans cahier partagé, sans adresse ou sans mot
+    // de passe, on n'entre pas. C'est tout l'objet de la session 14 (D-63).
+    if (typeof DB === 'undefined' || !DB.estDispo()) {
+      state.loginErreur = 'Pas de connexion au cahier partagé : impossible de vérifier ton mot de passe.';
+      render(); return;
     }
-    loginDemo();
+    if (!state.loginEmail.trim() || !state.loginPwd) {
+      state.loginErreur = 'Il faut ton adresse e-mail et ton mot de passe.';
+      render(); return;
+    }
+    state.loginErreur = '';
+    state.loginEnCours = true;
+    render();
+    DB.connexion(state.loginEmail.trim(), state.loginPwd)
+      .then(function (p) {
+        state.loginEnCours = false;
+        if (!p) throw new Error('Compte introuvable.');
+        return DB.charger().then(function () { return p; });
+      })
+      .then(function (p) {
+        entrerAvecProfil(p);
+      })
+      .catch(function (e) {
+        state.loginEnCours = false;
+        state.loginErreur = DB.messageClair(e);
+        render();
+      });
+  },
+
+  /* Le prestataire invité choisit son mot de passe : création du compte, puis
+     réclamation des droits inscrits dans l'invitation. Les deux gestes sont
+     enchaînés — si le second échoue, le compte existe mais ne voit rien, et
+     l'écran d'attente le dira plutôt que de laisser croire à une panne. */
+  'inv-creer': function () {
+    var inv = state.inv;
+    if (inv.pwd.length < 6) { inv.erreur = 'Le mot de passe doit faire au moins 6 caractères.'; render(); return; }
+    if (inv.pwd !== inv.pwd2) { inv.erreur = 'Les deux mots de passe ne sont pas identiques.'; render(); return; }
+    inv.erreur = '';
+    inv.enCours = true;
+    render();
+    DB.inscription(inv.email, inv.pwd)
+      .then(function () { return DB.accepterInvitation(inv.token); })
+      .then(function () { return DB.charger(); })
+      .then(function () {
+        state.inv.enCours = false;
+        state.inv.etat = 'fini';
+        state.inv.pwd = '';
+        state.inv.pwd2 = '';
+        render();
+      })
+      .catch(function (e) {
+        state.inv.enCours = false;
+        state.inv.erreur = DB.messageClair(e);
+        render();
+      });
+  },
+  'inv-entrer': function () {
+    var p = DB.profil();
+    state.loginEmail = state.inv.email;
+    state.inv = { token: '', email: '', nom: '', etat: '', pwd: '', pwd2: '', erreur: '', enCours: false };
+    if (p) entrerAvecProfil(p);
+    else go('#/login');
   },
   logout: function () {
     state.auth = null;
+    state.me = null;
     state.draft = null;
     state.loginPwd = '';
     state.loginErreur = '';
@@ -5818,6 +6101,46 @@ var actions = {
     save();
     location.replace('#/login');
     render();
+  },
+
+  /* Inviter un prestataire (§19.8, D-63). Le lien apparaît aussitôt à l'écran :
+     c'est le propriétaire qui l'envoie, par le moyen qu'il veut. Aucun e-mail
+     n'est expédié par l'application — elle n'a pas de serveur pour cela. */
+  inviter: function (el) {
+    var a = agent(el.dataset.ag);
+    state.migMsg = '';
+    DB.creerInvitation(a)
+      .then(function (token) {
+        if (!state.invitLien) state.invitLien = {};
+        state.invitLien[a.id] = lienInvitation(token);
+        save();
+        return relireInvitations();
+      })
+      .catch(function (e) {
+        state.migMsg = '⚠️ ' + DB.messageClair(e);
+        render();
+      });
+  },
+  'copier-lien': function (el) {
+    var url = el.dataset.url;
+    var dit = function (m) { state.migMsg = m; render(); };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(url)
+        .then(function () { dit('✅ Lien copié. Colle-le dans un SMS ou un mail.'); })
+        .catch(function () { dit('Le lien est affiché ci-dessus : sélectionne-le et copie-le à la main.'); });
+    } else {
+      dit('Le lien est affiché ci-dessus : sélectionne-le et copie-le à la main.');
+    }
+  },
+  'annuler-invit': function (el) {
+    var id = el.dataset.ag, tk = el.dataset.tk;
+    if (!confirm('Annuler cette invitation ? Le lien déjà envoyé cessera de fonctionner.')) return;
+    if (state.invitLien) delete state.invitLien[id];
+    save();
+    if (!tk) { render(); return; }
+    DB.annulerInvitation(tk)
+      .then(relireInvitations)
+      .catch(function (e) { state.migMsg = '⚠️ ' + DB.messageClair(e); render(); });
   },
 
   /* Relier une fiche de prestataire à un compte Supabase (§19.8).
@@ -5901,11 +6224,32 @@ var actions = {
         render();
       });
   },
-  reset: function () {
-    if (!confirm('Remettre la démonstration à zéro ? Les missions prises, les photos, les stocks et les checklists modifiées reviendront à leur état d\'origine.')) return;
-    resetDemo();
-    location.replace(homePath());
-    render();
+  /* Repartir de zéro : jeter les logements de démonstration. Deux gestes en
+     un — vider le cahier partagé, puis vider ce navigateur. L'ordre compte :
+     si on vidait d'abord le navigateur, la lecture suivante du cahier
+     rapporterait aussitôt tout ce qu'on vient d'effacer. */
+  'vider-tout': function () {
+    if (!confirm('Effacer TOUS les logements, réservations et missions ?\n\n' +
+      'C\'est ce qu\'il faut faire une fois, pour jeter les logements de démonstration. ' +
+      'Cela efface aussi le cahier partagé, pour tout le monde. Rien ne pourra être récupéré.')) return;
+    if (!confirm('Dernière vérification : tu es sur le point de tout effacer et de repartir d\'une page blanche. On y va ?')) return;
+
+    state.migMsg = '';
+    var suite = (typeof DB !== 'undefined' && DB.estDispo() && DB.profil())
+      ? DB.viderDonnees()
+      : Promise.resolve(0);
+
+    suite
+      .then(function () {
+        viderTout();
+        state.migMsg = '✅ Tout est effacé. Crée maintenant ton premier logement dans « Biens & connexions ».';
+        location.replace('#/admin/biens');
+        render();
+      })
+      .catch(function (e) {
+        state.migMsg = '⚠️ ' + DB.messageClair(e) + ' — rien n\'a été effacé.';
+        render();
+      });
   },
 
   /* Prestataire ---------------------------------------------------------- */
@@ -6066,11 +6410,11 @@ var actions = {
       state.tariffs[pid][s.key] = 0;
       state.durations[pid][s.key] = s.duration || '';
     });
-    state.checklists[pid] = [];
+    state.checklists[pid] = checklistModele();
     state.info[pid] = { capacity: '', surface: '', code: '', wifi: '', parking: '', linge: '', checkin: '16:00', checkout: '11:00', early: true };
     state.notes[pid] = '';
     state.resas[pid] = [];
-    state.livret[pid] = lvVide();
+    state.livret[pid] = livretModele((nb.city || '').trim());
 
     state.nb = { name: '', city: '', address: '', color: C.terracotta };
     state.showNewBien = false;
@@ -6567,7 +6911,6 @@ var actions = {
   },
   'remove-agent': function (el) {
     var id = el.dataset.ag, a = agent(id);
-    if (state.agents.length <= 1) { alert('Gardez au moins un prestataire.'); return; }
     var enCours = state.missions.filter(function (m) {
       return m.taker === id && m.status !== 'termine';
     });
@@ -6577,8 +6920,7 @@ var actions = {
 
     enCours.forEach(function (m) { m.status = 'dispo'; m.taker = null; });
     state.agents = state.agents.filter(function (x) { return x.id !== id; });
-    if (state.me === id) state.me = state.agents[0].id;
-    if (state.loginPresta === id) state.loginPresta = state.agents[0].id;
+    if (state.me === id) state.me = null;
     if (state.openAgent === id) state.openAgent = null;
     save(); render();
   },
@@ -6741,6 +7083,8 @@ var inputs = {
 
   'login-email': function (el) { state.loginEmail = el.value; },
   'login-pwd': function (el) { state.loginPwd = el.value; },
+  'inv-pwd': function (el) { state.inv.pwd = el.value; },
+  'inv-pwd2': function (el) { state.inv.pwd2 = el.value; },
   'nm-window': function (el) { state.nm.window = el.value; },
   'nm-price': function (el) { state.nm.price = parseInt(el.value || '0', 10) || 0; },
   'nm-note': function (el) { state.nm.note = el.value; },
@@ -6846,11 +7190,6 @@ var changes = {
   'bv-pid': function (el) { state.bienvenue.pid = el.value; state.bienvenue.erreur = ''; save(); },
   'gf-heure': function (el) { state.gform.arrivee = el.value; save(); },
 
-  'login-presta': function (el) {
-    state.loginPresta = el.value;
-    state.loginEmail = agent(el.value).email;
-    render();
-  },
   'nm-prop': function (el) {
     state.nm.prop = el.value;
     state.nm.price = (state.tariffs[el.value] || {})[state.nm.type] || 0;
@@ -6887,6 +7226,8 @@ var changes = {
 
 var VIEWS = {
   'login': viewLogin,
+  'invitation': viewInvitation,
+  'p-attente': viewPrestaAttente,
   'bienvenue': viewBienvenue,
   'livret': viewLivret,
   'livret-sec': viewLivretSection,
@@ -6993,7 +7334,9 @@ document.addEventListener('change', function (e) {
 document.addEventListener('keydown', function (e) {
   if (e.key !== 'Enter' || state.auth) return;
   var el = e.target.closest('[data-in]');
-  if (el && (el.dataset.in === 'login-email' || el.dataset.in === 'login-pwd')) actions.login();
+  if (!el) return;
+  if (el.dataset.in === 'login-email' || el.dataset.in === 'login-pwd') actions.login();
+  if (el.dataset.in === 'inv-pwd' || el.dataset.in === 'inv-pwd2') actions['inv-creer']();
 });
 
 window.addEventListener('hashchange', render);
@@ -7002,17 +7345,29 @@ window.addEventListener('hashchange', render);
 window.addEventListener('beforeunload', save);
 
 load();
+
+/* Le cahier partagé s'ouvre AVANT le premier dessin. Dans l'autre ordre,
+   l'écran de connexion s'affichait une fraction de seconde en annonçant une
+   panne de réseau qui n'existait pas, bouton grisé à l'appui. */
+var cahierPret = typeof DB !== 'undefined' && DB.demarrer();
+
 if (!location.hash) location.replace(homePath());
 render();
 
 /* Le grand cahier partagé. On ouvre la connexion, puis on regarde si une
    session est déjà ouverte sur cet appareil : le prestataire qui rouvre
    l'application le matin ne doit pas retaper son mot de passe.
-   Tout échoue en silence : sans réseau, l'application reste celle d'avant. */
-if (typeof DB !== 'undefined' && DB.demarrer()) {
+
+   Et si personne n'est connecté, on REFERME l'application (session 14, D-63).
+   Sans cela, l'écran restait ouvert au rechargement pour quiconque s'assoit
+   devant l'ordinateur : le souvenir de la dernière connexion était gardé dans
+   le navigateur et faisait office de laissez-passer. On ne referme que si
+   l'appareil n'a vraiment aucune session — pas si le réseau est simplement
+   coupé, sinon on empêcherait de travailler dans un logement sans wifi. */
+if (cahierPret) {
   DB.relireProfil()
     .then(function (p) {
-      if (!p) return null;
+      if (!p) return DB.sessionLocale().then(fermerSiPersonne);
       return DB.charger().then(function () {
         state.auth = p.role === 'owner' ? 'owner' : 'presta';
         if (state.auth === 'presta') {
@@ -7024,7 +7379,20 @@ if (typeof DB !== 'undefined' && DB.demarrer()) {
         // un lien précis (un livret, une mission).
         if (location.hash === '#/login' || !location.hash) location.replace(homePath());
         render();
+        if (state.auth === 'owner') relireInvitations();
       });
     })
     .catch(function () { /* hors ligne : on garde ce qui est dans le navigateur */ });
+}
+
+/* Aucune session sur cet appareil : on repasse par l'écran de connexion.
+   Les données restent dans le navigateur — elles y étaient déjà — mais plus
+   aucun écran ne s'ouvre sans mot de passe. */
+function fermerSiPersonne(sessionOuverte) {
+  if (sessionOuverte || !state.auth) return;
+  state.auth = null;
+  state.me = null;
+  save();
+  location.replace('#/login');
+  render();
 }

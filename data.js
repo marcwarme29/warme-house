@@ -60,6 +60,19 @@ var DB = (function () {
     });
   }
 
+  /* Y a-t-il une session ouverte sur CET appareil ? La réponse est lue dans
+     le navigateur, sans réseau : c'est ce qui permet de distinguer « personne
+     n'est connecté » (il faut refermer l'application) de « le réseau est
+     coupé » (on laisse la personne travailler avec ce qu'elle a).
+     Sans ce contrôle, l'écran restait ouvert au rechargement pour quiconque
+     s'assoit devant l'ordinateur — le trou signalé en session 14. */
+  function sessionLocale() {
+    if (!dispo) return Promise.resolve(false);
+    return client.auth.getSession()
+      .then(function (r) { return !!(r && r.data && r.data.session); })
+      .catch(function () { return false; });
+  }
+
   function connexion(email, motDePasse) {
     if (!dispo) return Promise.reject(new Error(derniereErreur || 'Connexion indisponible.'));
     return client.auth.signInWithPassword({ email: email, password: motDePasse })
@@ -75,6 +88,115 @@ var DB = (function () {
     return client.auth.signOut().catch(function () { });
   }
 
+  /* Création du compte, au bout d'un lien d'invitation. Personne ne passe par
+     ici sans lien : l'application n'offre aucun autre écran d'inscription.
+     Si Supabase demande encore une confirmation par e-mail (réglage
+     « Confirm email », voir 04-invitations.sql), aucune session n'est ouverte
+     et on le dit clairement plutôt que de laisser la personne devant un écran
+     qui ne fait rien. */
+  function inscription(email, motDePasse) {
+    if (!dispo) return Promise.reject(new Error(derniereErreur || 'Connexion indisponible.'));
+    return client.auth.signUp({ email: email, password: motDePasse })
+      .then(function (r) {
+        if (r.error) throw r.error;
+        if (!r.data || !r.data.session) {
+          throw new Error('Le compte est créé, mais Supabase attend une confirmation par e-mail. ' +
+            'Le propriétaire doit décocher « Confirm email » dans Supabase (Authentication → Sign In / Providers → Email).');
+        }
+        return relireProfil();
+      });
+  }
+
+  /* ---- Les invitations (§19.8) ------------------------------------------
+     Le propriétaire enregistre une adresse et un métier ; la base rend un
+     lien. C'est le lien qui fait foi : la personne ne peut réclamer que les
+     droits inscrits dedans, et seulement depuis l'adresse visée. */
+
+  /* Morceau secret du lien : 32 caractères tirés au hasard par le navigateur. */
+  function nouveauJeton() {
+    var a = new Uint8Array(16);
+    (window.crypto || window.msCrypto).getRandomValues(a);
+    return Array.prototype.map.call(a, function (n) {
+      return ('0' + n.toString(16)).slice(-2);
+    }).join('');
+  }
+
+  function creerInvitation(fiche) {
+    if (!dispo || !profil || profil.role !== 'owner') {
+      return Promise.reject(new Error('Réservé au propriétaire.'));
+    }
+    if (!fiche || !fiche.email) return Promise.reject(new Error('Il faut d\'abord renseigner son adresse e-mail sur sa fiche.'));
+    var jeton = nouveauJeton();
+    return client.from('invitations').insert({
+      token: jeton,
+      email: String(fiche.email).trim().toLowerCase(),
+      legacy_id: fiche.id,
+      full_name: fiche.name || '',
+      job_label: fiche.role || '',
+      kind: fiche.kind || 'menage',
+      props: fiche.props || [],
+      services: fiche.services || null,
+      iban: fiche.iban || '',
+      since: fiche.since || '',
+      created_by: profil.id
+    }).then(function (r) {
+      if (r.error) throw new Error(messageClair(r.error));
+      return jeton;
+    });
+  }
+
+  /* Les invitations encore en attente, pour les afficher au propriétaire. */
+  function invitations() {
+    if (!dispo || !profil || profil.role !== 'owner') return Promise.resolve([]);
+    return client.from('invitations').select('*').order('created_at', { ascending: false })
+      .then(function (r) { return r.error ? [] : (r.data || []); });
+  }
+
+  function annulerInvitation(jeton) {
+    if (!dispo || !profil || profil.role !== 'owner') {
+      return Promise.reject(new Error('Réservé au propriétaire.'));
+    }
+    return client.from('invitations').delete().eq('token', jeton).then(function (r) {
+      if (r.error) throw new Error(messageClair(r.error));
+      return true;
+    });
+  }
+
+  /* Côté invité : à qui ce lien est-il destiné ? Appelée sans compte. */
+  function lireInvitation(jeton) {
+    if (!dispo) return Promise.reject(new Error(derniereErreur || 'Connexion indisponible.'));
+    return client.rpc('lire_invitation', { jeton: jeton }).then(function (r) {
+      if (r.error) throw new Error(messageClair(r.error));
+      var l = (r.data || [])[0];
+      if (!l) throw new Error('Ce lien d\'invitation n\'existe pas. Demande au propriétaire de t\'en renvoyer un.');
+      return l;
+    });
+  }
+
+  /* Côté invité : le compte vient d'être créé, on réclame les droits prévus. */
+  function accepterInvitation(jeton) {
+    if (!dispo) return Promise.reject(new Error(derniereErreur || 'Connexion indisponible.'));
+    return client.rpc('accepter_invitation', { jeton: jeton }).then(function (r) {
+      if (r.error) throw new Error(messageClair(r.error));
+      profil = r.data || profil;
+      return profil;
+    });
+  }
+
+  /* Repartir de zéro : jeter les logements de démonstration et tout ce qui
+     s'y rattache. La base efface en cascade codes d'accès, réservations et
+     missions. Sans retour possible — d'où la double confirmation à l'écran. */
+  function viderDonnees() {
+    if (!dispo || !profil || profil.role !== 'owner') {
+      return Promise.reject(new Error('Réservé au propriétaire.'));
+    }
+    return client.rpc('vider_mes_donnees').then(function (r) {
+      if (r.error) throw new Error(messageClair(r.error));
+      premiereLectureFaite = true;
+      return r.data;
+    });
+  }
+
   /* Traduit les messages techniques de Supabase en français compréhensible. */
   function messageClair(e) {
     var m = (e && (e.message || e.error_description)) || String(e || '');
@@ -83,6 +205,13 @@ var DB = (function () {
     if (/Failed to fetch|NetworkError|network/i.test(m)) return 'Pas de connexion internet, ou le projet Supabase ne répond pas.';
     if (/row-level security/i.test(m)) return 'Ce compte n\'a pas le droit d\'écrire ici.';
     if (/JWT|token/i.test(m)) return 'La session a expiré : reconnecte-toi.';
+    if (/schema cache|Could not find the (function|table)/i.test(m)) {
+      return 'Le cahier partagé n\'est pas encore à jour : le propriétaire doit coller le script ' +
+        '« 04-invitations.sql » dans Supabase (SQL Editor → New query → Run).';
+    }
+    if (/User already registered/i.test(m)) return 'Un compte existe déjà avec cette adresse e-mail : utilise « Se connecter ».';
+    if (/Password should be at least/i.test(m)) return 'Le mot de passe est trop court : il faut au moins 6 caractères.';
+    if (/Signups not allowed/i.test(m)) return 'Les inscriptions sont fermées dans Supabase (Authentication → Sign In / Providers → « Allow new users to sign up »).';
     return m;
   }
 
@@ -633,8 +762,16 @@ var DB = (function () {
     erreur: function () { return derniereErreur; },
     messageClair: messageClair,
     relireProfil: relireProfil,
+    sessionLocale: sessionLocale,
     connexion: connexion,
+    inscription: inscription,
     deconnexion: deconnexion,
+    creerInvitation: creerInvitation,
+    invitations: invitations,
+    annulerInvitation: annulerInvitation,
+    lireInvitation: lireInvitation,
+    accepterInvitation: accepterInvitation,
+    viderDonnees: viderDonnees,
     charger: charger,
     lierCompte: lierCompte,
     delierCompte: delierCompte,
