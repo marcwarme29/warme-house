@@ -1108,7 +1108,7 @@ function accesOuvert() {
 function entrerAvecProfil(p) {
   state.auth = p.role === 'owner' ? 'owner' : 'presta';
   if (state.auth === 'presta') {
-    var moi = p.legacy_id || p.full_name || p.email;
+    var moi = DB.identifiantDeCompte(p);
     state.me = moi;
     state.openAgent = moi;
   }
@@ -4136,15 +4136,29 @@ function ligneCompte(a) {
   // 1. Elle a déjà un compte, et il est relié à cette fiche : rien à faire.
   if (a.uid) {
     var c = (state.comptes || []).filter(function (x) { return x.uid === a.uid; })[0] || {};
-    return '<div class="invite-row">' +
-      '<span class="invite-state">' +
-        '<span class="invite-ok">✓ Compte relié</span>' +
-        '<span class="invite-mail num">' + esc(c.email || '—') + '</span>' +
-      '</span>' +
-      '<span class="sec-note" style="flex:1;min-width:200px">' +
-        'Cette personne peut se connecter, et ne voit que ce qui est coché ci-dessus.</span>' +
-      '<button type="button" class="btn-danger-xs"' +
-        act('delier-compte', { ag: a.id }) + '>Détacher le compte</button>' +
+    var ouverts = (c.props || []).length;
+    var coches = (a.props || []).length;
+    // Ce qui est coché ici et ce que son téléphone voit ne sont pas la même
+    // chose : entre les deux, il y a une écriture dans le cahier, qui peut
+    // n'avoir pas encore eu lieu. On le montre plutôt que de le supposer.
+    var ecart = ouverts !== coches;
+    return '<div class="invite-row" style="flex-direction:column;align-items:stretch;gap:8px">' +
+      '<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">' +
+        '<span class="invite-state">' +
+          '<span class="invite-ok">✓ Compte relié</span>' +
+          '<span class="invite-mail num">' + esc(c.email || '—') + '</span>' +
+        '</span>' +
+        '<span class="sec-note" style="flex:1;min-width:200px">' +
+          (ecart
+            ? '⚠️ Son téléphone n\'ouvre que <strong>' + ouverts + '</strong> logement(s) sur les <strong>' +
+              coches + '</strong> cochés ici. Appuie sur « Renvoyer ses droits ».'
+            : 'Elle voit ' + ouverts + ' logement(s) sur son téléphone — exactement ce qui est coché ci-dessus.') +
+        '</span>' +
+        '<button type="button" class="btn btn--xs" style="background:' + (ecart ? 'var(--terra)' : 'var(--ink)') + ';color:#fff"' +
+          act('renvoyer-droits', { ag: a.id }) + '>Renvoyer ses droits</button>' +
+        '<button type="button" class="btn-danger-xs"' +
+          act('delier-compte', { ag: a.id }) + '>Détacher le compte</button>' +
+      '</div>' +
       '</div>';
   }
 
@@ -4201,6 +4215,16 @@ function ligneCompte(a) {
         '</div>'
       : '') +
     '</div>';
+}
+
+/* Le retour du cahier partagé — invitation créée, lien copié, droits
+   renvoyés, erreur. Il n'était affiché que sur le tableau de bord : les
+   boutons de cette page semblaient donc ne rien faire. */
+function messageCahier() {
+  if (!state.migMsg) return '';
+  var bon = /^✅/.test(state.migMsg);
+  return '<p class="page-sub" role="status" style="margin:14px 0 0;color:' +
+    (bon ? 'var(--vert)' : 'var(--terra)') + '">' + esc(state.migMsg) + '</p>';
 }
 
 function viewOwnerAgents() {
@@ -4388,7 +4412,7 @@ function viewOwnerAgents() {
           ';min-height:42px;font-size:13px"' + act('toggle-new-agent') + '>' +
           (state.showNewAgent ? 'Fermer' : '+ Ajouter un prestataire') + '</button>' +
       '</div>' +
-    '</div>' + form +
+    '</div>' + messageCahier() + form +
 
     '<div class="cols" style="margin-top:22px;gap:12px">' +
       '<div class="kpi" style="min-width:200px"><div class="v num">' +
@@ -5884,17 +5908,44 @@ function chargerInvitation() {
 /* --- L'écran d'un prestataire dont l'accès n'est pas encore ouvert -------- */
 
 function viewPrestaAttente() {
+  var p = typeof DB !== 'undefined' && DB.estDispo() ? DB.profil() : null;
+
+  /* Ce que l'application voit vraiment. Sans ces quatre lignes, le
+     propriétaire qui a bel et bien coché un logement et le prestataire qui
+     ne voit rien n'ont aucun moyen de savoir lequel des deux a raison —
+     c'est exactement ce qui s'est produit en session 14. */
+  var lignes = [
+    ['Compte connecté', (p && p.email) || '—'],
+    ['Reconnu comme', p ? (p.role === 'owner' ? 'propriétaire' : 'prestataire') : '—'],
+    ['Relié à la fiche', (p && p.legacy_id) ? p.legacy_id : '⚠️ aucune fiche'],
+    ['Logements ouverts', p ? ((p.props || []).length + ' logement(s)') : '—']
+  ];
+
   var body =
     '<div class="card" style="padding:26px;text-align:center">' +
       '<div style="font-size:32px;line-height:1">⏳</div>' +
       '<h2 style="font:700 17px Figtree,sans-serif;margin:12px 0 8px">Ton compte est bien créé</h2>' +
       '<p class="page-sub" style="margin:0">Il reste au propriétaire à te confier des logements. ' +
         'Tant que ce n\'est pas fait, il n\'y a rien à afficher ici — et c\'est normal.</p>' +
-      '<p class="sec-note" style="margin-top:14px">Préviens-le : il coche tes logements dans ' +
-        '« Prestataires », et tes missions apparaissent aussitôt sur cet écran.</p>' +
-      '<button type="button" class="btn btn--sm" style="margin-top:18px;background:var(--fill);color:var(--ink-soft)"' +
-        act('logout') + '>Se déconnecter</button>' +
-    '</div>';
+      '<p class="sec-note" style="margin-top:14px">S\'il t\'en a déjà confié un, demande-lui ' +
+        'd\'ouvrir sa rubrique « Prestataires » et de <strong>recharger sa page</strong> : ' +
+        'c\'est ce geste qui transmet tes droits. Puis appuie sur « Vérifier à nouveau ».</p>' +
+      '<button type="button" class="btn btn--primary btn--sm" style="margin-top:18px"' +
+        act('revenir-verifier') + '>Vérifier à nouveau</button>' +
+    '</div>' +
+
+    '<article class="card card--flush" style="border-radius:22px;margin-top:14px"><div class="list">' +
+      '<div style="font:700 13px Figtree,sans-serif;padding:14px 0 4px">Ce que l\'application voit</div>' +
+      lignes.map(function (r) {
+        return '<div class="kv" style="padding:12px 0;font-size:14px;min-height:44px;align-items:center">' +
+          '<span>' + esc(r[0]) + '</span>' +
+          '<span class="num" style="color:var(--muted2);font-size:13px">' + esc(r[1]) + '</span></div>';
+      }).join('') +
+    '</div></article>' +
+
+    '<button type="button" class="btn btn--sm" style="margin-top:14px;background:var(--fill);color:var(--ink-soft);width:100%"' +
+      act('logout') + '>Se déconnecter</button>';
+
   return prestaShell(prestaHeader('Bonjour', 'Accès en attente'), body, '', { noTabs: true });
 }
 
@@ -6084,6 +6135,29 @@ var actions = {
         render();
       });
   },
+  /* « Vérifier à nouveau », depuis l'écran d'attente : on relit la fiche du
+     compte et le cahier, puis on redessine. Si le propriétaire vient d'ouvrir
+     un logement, l'écran bascule sur les missions tout seul. */
+  'revenir-verifier': function () {
+    state.mMsg = 'Vérification…';
+    render();
+    DB.relireProfil()
+      .then(function (p) {
+        if (!p) throw new Error('La session a expiré : reconnecte-toi.');
+        state.me = DB.identifiantDeCompte(p);
+        return DB.charger();
+      })
+      .then(function () {
+        state.mMsg = accesOuvert() ? '' : 'Toujours aucun logement confié pour le moment.';
+        save();
+        location.replace(homePath());
+        render();
+      })
+      .catch(function (e) {
+        state.mMsg = DB.messageClair(e);
+        render();
+      });
+  },
   'inv-entrer': function () {
     var p = DB.profil();
     state.loginEmail = state.inv.email;
@@ -6106,6 +6180,29 @@ var actions = {
   /* Inviter un prestataire (§19.8, D-63). Le lien apparaît aussitôt à l'écran :
      c'est le propriétaire qui l'envoie, par le moyen qu'il veut. Aucun e-mail
      n'est expédié par l'application — elle n'a pas de serveur pour cela. */
+  /* Recopier dans le compte les logements et prestations cochés sur la fiche.
+     Se fait normalement tout seul à chaque enregistrement ; ce bouton existe
+     parce qu'un échec silencieux ressemble, pour le propriétaire, à « j'ai
+     confié un bien et il ne voit toujours rien ». */
+  'renvoyer-droits': function () {
+    state.migMsg = 'Envoi en cours…';
+    render();
+    DB.majComptesLies()
+      .then(function (ok) {
+        if (!ok) throw new Error(DB.erreur() || 'L\'envoi a échoué.');
+        return DB.charger();
+      })
+      .then(function () {
+        state.migMsg = '✅ Droits renvoyés. Sur son téléphone, il lui suffit d\'appuyer sur ' +
+          '« Vérifier à nouveau », ou de recharger la page.';
+        save();
+        render();
+      })
+      .catch(function (e) {
+        state.migMsg = '⚠️ ' + DB.messageClair(e);
+        render();
+      });
+  },
   inviter: function (el) {
     var a = agent(el.dataset.ag);
     state.migMsg = '';
@@ -7371,7 +7468,7 @@ if (cahierPret) {
       return DB.charger().then(function () {
         state.auth = p.role === 'owner' ? 'owner' : 'presta';
         if (state.auth === 'presta') {
-          state.me = p.legacy_id || p.full_name || p.email;
+          state.me = DB.identifiantDeCompte(p);
           state.openAgent = state.me;
         }
         DB.ecouter(surChangementDistant);

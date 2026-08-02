@@ -407,38 +407,73 @@ var DB = (function () {
        - un COMPTE (`profiles` dans la base) : de quoi se connecter.
      Le rapprochement se fait par `legacy_id`. Une fiche sans compte reste
      parfaitement utilisable — c'est l'état de tout le monde aujourd'hui. */
-  function comptesDepuisBase(lignes) {
+  /* `roleLecteur` n'est là que pour pouvoir vérifier cette fonction depuis la
+     console sans être connecté : en usage normal on ne le passe pas, et c'est
+     le compte courant qui décide. */
+  function comptesDepuisBase(lignes, roleLecteur) {
     state.comptes = lignes.map(function (l) {
       return {
         uid: l.id, email: l.email || '', nom: l.full_name || '',
-        role: l.role, kind: l.kind, legacy_id: l.legacy_id || ''
+        role: l.role, kind: l.kind, legacy_id: l.legacy_id || '',
+        // Les droits réellement inscrits dans le compte — c'est ce que la
+        // base regarde, et donc ce que la personne verra sur son téléphone.
+        props: l.props || [], services: l.services || null
       };
     });
 
     var vivants = {};
     lignes.forEach(function (l) { vivants[l.id] = true; });
 
-    // Un compte lié impose ses droits à la fiche : c'est lui qui fait foi,
-    // puisque c'est lui que la base regarde pour décider ce qui est visible.
-    lignes.forEach(function (l) {
-      if (l.role !== 'provider' || !l.legacy_id) return;
-      var a = (state.agents || []).filter(function (x) { return x.id === l.legacy_id; })[0];
+    /* QUI FAIT FOI ? La réponse dépend de l'appareil, et c'est capital
+       (corrigé en session 14, après incident) :
 
-      // Sur l'appareil du prestataire, sa propre fiche n'existe pas : les
-      // fiches vivent encore dans le navigateur du propriétaire (lot 4).
-      // Sans elle, `allowedProps()` rend une liste vide et AUCUNE mission
-      // n'est sélectionnable. On la fabrique donc à partir du compte.
+       - Sur l'appareil du PROPRIÉTAIRE, c'est **la fiche** : c'est lui qui
+         coche les logements, et les cases qu'il vient de cocher n'ont pas
+         encore forcément atteint le compte. La version précédente recopiait
+         le compte sur la fiche dans tous les cas — donc un compte tout neuf,
+         sans aucun logement, **effaçait à chaque lecture** les logements
+         cochés, et le prestataire restait bloqué sur « accès en attente »
+         quoi que fasse le propriétaire. Tout écart constaté ici est renvoyé
+         vers le compte, jamais l'inverse. Même esprit que D-63.
+
+       - Sur l'appareil du PRESTATAIRE, c'est **le compte** : sa fiche
+         n'existe nulle part ailleurs (les fiches ne migrent qu'au lot 4),
+         elle est fabriquée à partir du compte, et de toute façon c'est le
+         compte que la base regarde pour décider de ce qui est visible. */
+    var jeSuisLeProprio = (roleLecteur || (profil && profil.role)) === 'owner';
+    var aRenvoyer = false;
+
+    lignes.forEach(function (l) {
+      if (l.role !== 'provider') return;
+
+      // Le rapprochement se fait par `legacy_id` ; à défaut — un compte relié
+      // avant que l'identifiant ne soit posé — par l'identifiant du compte.
+      var a = (state.agents || []).filter(function (x) {
+        return (l.legacy_id && x.id === l.legacy_id) || (x.uid && x.uid === l.id);
+      })[0];
+
       if (!a) {
+        // Chez le propriétaire, un compte sans fiche n'est pas une fiche à
+        // inventer : c'est un compte à relier, et l'écran des prestataires
+        // le propose déjà.
+        if (jeSuisLeProprio) return;
         a = ficheDepuisCompte(l);
         if (!Array.isArray(state.agents)) state.agents = [];
         state.agents.push(a);
       }
+
       a.uid = l.id;
       a.email = l.email || a.email;
-      a.kind = l.kind || a.kind;
-      a.props = l.props || a.props || [];
-      if (l.services) a.services = l.services;
       if (l.full_name) a.name = l.full_name;
+
+      if (jeSuisLeProprio) {
+        if (!Array.isArray(a.props)) a.props = l.props || [];
+        if (ecartDeDroits(a, l)) aRenvoyer = true;
+      } else {
+        a.kind = l.kind || a.kind;
+        a.props = l.props || [];
+        if (l.services) a.services = l.services;
+      }
     });
 
     // Un compte supprimé dans Supabase ne doit pas laisser une fiche
@@ -446,6 +481,26 @@ var DB = (function () {
     (state.agents || []).forEach(function (a) {
       if (a.uid && !vivants[a.uid]) delete a.uid;
     });
+
+    // Ce que le compte n'avait pas encore, on le lui donne — sans attendre
+    // que le propriétaire modifie quoi que ce soit.
+    if (aRenvoyer) setTimeout(majComptesLies, 0);
+  }
+
+  /* Les droits inscrits sur la fiche et ceux inscrits dans le compte
+     disent-ils la même chose ? C'est le compte que la base regarde. */
+  function ecartDeDroits(a, l) {
+    return memeListe(a.props || [], l.props || []) === false ||
+      memeListe(a.services || null, l.services || null) === false ||
+      (a.kind || 'menage') !== (l.kind || 'menage');
+  }
+
+  function memeListe(x, y) {
+    if (x === null || y === null) return x === y;
+    if (!Array.isArray(x) || !Array.isArray(y)) return false;
+    if (x.length !== y.length) return false;
+    var tri = function (v) { return v.slice().sort().join('|'); };
+    return tri(x) === tri(y);
   }
 
   /* Fabrique une fiche de prestataire à partir d'un compte. Sert sur
@@ -457,11 +512,22 @@ var DB = (function () {
     { bg: '#EAE6F4', fg: '#5B4E85' }
   ];
 
+  /* Sous quel nom l'application désigne-t-elle ce compte ? `legacy_id` est
+     l'identifiant de sa fiche ('Sofia') ; à défaut — un compte créé sans
+     invitation, ou relié à la main — on retombe sur son nom puis sur son
+     adresse. **La même règle doit servir partout** : `entrerAvecProfil()`
+     s'en sert pour poser `state.me`, et la fiche fabriquée ci-dessous pour
+     son `id`. Deux règles différentes, et la fiche ne serait jamais
+     retrouvée : écran « accès en attente » sans issue. */
+  function identifiantDeCompte(l) {
+    return l.legacy_id || l.full_name || l.email || l.id;
+  }
+
   function ficheDepuisCompte(l) {
     var nom = l.full_name || l.email || 'Prestataire';
     var t = TEINTES[Math.abs(hachage(l.id)) % TEINTES.length];
     return {
-      id: l.legacy_id,
+      id: identifiantDeCompte(l),
       uid: l.id,
       name: nom,
       init: initiales(nom),
@@ -564,22 +630,34 @@ var DB = (function () {
   }
 
   /* Les droits d'un prestataire lié doivent suivre les cases cochées par le
-     propriétaire : sans cette recopie, décocher un logement ne changerait
-     rien à ce que la base laisse voir. */
+     propriétaire : sans cette recopie, cocher — ou décocher — un logement ne
+     changerait rien à ce que la base laisse voir, et donc rien à ce que le
+     prestataire voit sur son téléphone.
+     Les erreurs étaient avalées en silence : elles sont désormais retenues,
+     car c'est exactement le genre d'échec invisible qui fait dire « j'ai
+     pourtant confié un bien, et il ne voit toujours rien ». */
   function majComptesLies() {
-    if (!dispo || !profil || profil.role !== 'owner') return Promise.resolve();
+    if (!dispo || !profil || profil.role !== 'owner') return Promise.resolve(false);
     var lies = (state.agents || []).filter(function (a) { return a.uid; });
+    if (!lies.length) return Promise.resolve(true);
     return lies.reduce(function (chaine, a) {
-      return chaine.then(function () {
+      return chaine.then(function (ok) {
         return client.from('profiles').update({
           kind: a.kind || 'menage',
           props: a.props || [],
           services: a.services || null,
+          legacy_id: a.id,
           full_name: a.name || '',
           job_label: a.role || ''
-        }).eq('id', a.uid);
+        }).eq('id', a.uid).then(function (r) {
+          if (r && r.error) {
+            derniereErreur = messageClair(r.error) + ' (en ouvrant les droits de ' + (a.name || a.id) + ')';
+            return false;
+          }
+          return ok;
+        });
       });
-    }, Promise.resolve());
+    }, Promise.resolve(true));
   }
 
   /* ----------------------------------------------------------------------
@@ -779,6 +857,8 @@ var DB = (function () {
     // et c'est le point le plus délicat de la couche (une erreur ici fait
     // disparaître des prestataires ou leur retire tous leurs droits).
     appliquerComptes: comptesDepuisBase,
+    identifiantDeCompte: identifiantDeCompte,
+    majComptesLies: majComptesLies,
     prendreMission: prendreMission,
     majMission: majMission,
     estPrestataireRelie: estPrestataireRelie,
