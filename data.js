@@ -212,6 +212,17 @@ var DB = (function () {
     if (/User already registered/i.test(m)) return 'Un compte existe déjà avec cette adresse e-mail : utilise « Se connecter ».';
     if (/Password should be at least/i.test(m)) return 'Le mot de passe est trop court : il faut au moins 6 caractères.';
     if (/Signups not allowed/i.test(m)) return 'Les inscriptions sont fermées dans Supabase (Authentication → Sign In / Providers → « Allow new users to sign up »).';
+    // Le casier à photos (lot 2). Les deux cas se produisent si le script
+    // « 05-photos.sql » n'a pas été collé, ou l'a été dans un autre projet.
+    if (/Bucket not found/i.test(m)) {
+      return 'Le casier à photos n\'existe pas encore : le propriétaire doit coller le script ' +
+        '« 05-photos.sql » dans Supabase (SQL Editor → New query → Run).';
+    }
+    if (/new row violates row-level security policy|Unauthorized/i.test(m)) {
+      return 'Le cahier partagé refuse cette photo : cette mission ne t\'appartient pas, ou les ' +
+        'règles du casier ne sont pas encore posées (script « 05-photos.sql »).';
+    }
+    if (/Payload too large|exceeded the maximum/i.test(m)) return 'Cette photo est trop lourde pour être envoyée.';
     return m;
   }
 
@@ -713,6 +724,64 @@ var DB = (function () {
     return !!(dispo && profil && profil.role === 'provider');
   }
 
+  /* ---- LES PHOTOS DE CHECKLIST (lot 2) -----------------------------------
+     Un cahier range du texte ; les images vont dans un **casier** à part
+     (Supabase Storage), et le cahier ne garde que l'étiquette qui dit où les
+     trouver. Rangement : <casier>/<mission>/<étape>.jpg — le premier dossier
+     est l'identifiant de la mission, et c'est lui que regardent les règles
+     posées par `supabase/05-photos.sql`.
+
+     Le casier n'est PAS public : on ne peut pas en construire l'adresse. On
+     demande à Supabase une adresse **signée**, valable une heure, et elle
+     n'est jamais enregistrée — elle serait périmée au rechargement. */
+
+  var CASIER_PHOTOS = 'photos-missions';
+
+  function cheminPhoto(missionId, etapeId) {
+    return missionId + '/' + etapeId + '.jpg';
+  }
+
+  /* Dépose une photo. Le prestataire ne peut écrire que dans le dossier d'une
+     mission qu'il détient : c'est la base qui le vérifie, pas nous. */
+  function envoyerPhoto(missionId, etapeId, image) {
+    if (!dispo || !profil) return Promise.reject(new Error('Pas de connexion au cahier partagé.'));
+    return client.storage.from(CASIER_PHOTOS)
+      .upload(cheminPhoto(missionId, etapeId), image, {
+        contentType: 'image/jpeg',
+        upsert: true                      // refaire une photo remplace l'ancienne
+      })
+      .then(function (r) {
+        if (r.error) throw new Error(messageClair(r.error));
+        return cheminPhoto(missionId, etapeId);
+      });
+  }
+
+  /* Retire une photo. Sans conséquence si elle n'était jamais partie. */
+  function supprimerPhoto(missionId, etapeId) {
+    if (!dispo || !profil) return Promise.resolve(false);
+    return client.storage.from(CASIER_PHOTOS)
+      .remove([cheminPhoto(missionId, etapeId)])
+      .then(function (r) { return !(r && r.error); })
+      .catch(function () { return false; });
+  }
+
+  /* Les adresses signées des photos d'une mission, pour la revue du
+     propriétaire. Rend { etapeId: adresse } — les étapes sans photo déposée
+     sont simplement absentes du résultat. */
+  function urlsPhotos(missionId, etapeIds) {
+    if (!dispo || !profil || !etapeIds || !etapeIds.length) return Promise.resolve({});
+    var chemins = etapeIds.map(function (sid) { return cheminPhoto(missionId, sid); });
+    return client.storage.from(CASIER_PHOTOS).createSignedUrls(chemins, 3600)
+      .then(function (r) {
+        if (r.error) throw new Error(messageClair(r.error));
+        var out = {};
+        (r.data || []).forEach(function (x, i) {
+          if (x && x.signedUrl && !x.error) out[etapeIds[i]] = x.signedUrl;
+        });
+        return out;
+      });
+  }
+
   /* --- rapprochement fiche ↔ compte, depuis l'écran Prestataires --- */
 
   function lierCompte(uid, fiche) {
@@ -988,6 +1057,9 @@ var DB = (function () {
     prendreMission: prendreMission,
     majMission: majMission,
     estPrestataireRelie: estPrestataireRelie,
+    envoyerPhoto: envoyerPhoto,
+    supprimerPhoto: supprimerPhoto,
+    urlsPhotos: urlsPhotos,
     pousser: pousser,
     pousserMaintenant: pousserMaintenant,
     ecouter: ecouter,

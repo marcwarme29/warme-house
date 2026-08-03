@@ -513,7 +513,8 @@ function initialState() {
     autoMsgs: [],                     // messages programmés (modèles + déclencheur)
 
     missions: clone(MISSIONS),
-    photos: {},                       // { missionId: { stepId: true } }
+    photos: {},                       // { missionId: { stepId: photo enregistrée sur l'appareil } }
+    photosEnvoi: {},                  // { 'missionId:stepId': 'encours' | 'ok' | 'erreur' } — dépôt dans le casier (lot 2)
     stock: baseStock(),
     seuils: baseSeuils(),
     draft: null,                      // { id, prop, qty }
@@ -656,6 +657,14 @@ function upgrade() {
   // `lienCompte` ne retient qu'un choix en cours, jamais une donnée utile.
   if (!Array.isArray(state.comptes)) state.comptes = [];
   if (!state.lienCompte) state.lienCompte = {};
+
+  // Session 15 — le dépôt des photos dans le casier partagé (lot 2).
+  // Un envoi resté « encours » à la fermeture de la page n'a jamais abouti :
+  // on le rouvre, pour que le filet de fin de mission le reprenne.
+  if (!state.photosEnvoi) state.photosEnvoi = {};
+  Object.keys(state.photosEnvoi).forEach(function (k) {
+    if (state.photosEnvoi[k] === 'encours') state.photosEnvoi[k] = 'erreur';
+  });
 
   // Session 14 — les invitations, et la fin de la connexion de démonstration.
   if (!Array.isArray(state.invits)) state.invits = [];
@@ -1223,6 +1232,10 @@ var relectureEnCours = false;
 function surChangementDistant() {
   if (relectureEnCours) return;
   relectureEnCours = true;
+  // Le prestataire vient peut-être de déposer une photo : les adresses gardées
+  // en mémoire sont donc à redemander (lot 2).
+  photosParMission = {};
+  photosDemandees = {};
   DB.charger()
     .then(function () { render(); })
     .catch(function () { })
@@ -1677,9 +1690,13 @@ function planUrl(adresse) {
   return 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(adresse);
 }
 
-/** Texte de l'invitation. Il dit la vérité : aujourd'hui il n'y a pas de mot
-    de passe à créer, le prestataire choisit son nom dans une liste. */
-function inviteTexte(a) {
+/* Le message à envoyer avec le lien d'invitation. Réécrit en session 15 : la
+   version précédente datait de la session 8 et expliquait de choisir son nom
+   dans une liste, sans mot de passe — un parcours supprimé depuis (D-65). Elle
+   aurait envoyé le prestataire dans le mur.
+   Ce texte-ci **contient le lien** : c'est lui qu'on copie, pas le lien seul,
+   pour que le propriétaire n'ait rien à rédiger. */
+function inviteTexte(a, url) {
   var prenom = String(a.name || '').split(/\s+/)[0] || '';
   return 'Bonjour ' + prenom + ',\n\n' +
     (a.kind === 'cles'
@@ -1687,24 +1704,16 @@ function inviteTexte(a) {
         'des logements dont tu remets les clés : qui arrive, qui repart, à quelle heure, ' +
         'le nom du voyageur et le nombre de personnes.\n\n'
       : 'Tu peux désormais suivre tes missions depuis ton téléphone avec MAISON WARME : ' +
-        'les ménages à prendre, la checklist de chaque logement, le relevé des stocks et tes gains du mois.\n\n') +
-    'Voici ton lien :\n' + appUrl() + '\n\n' +
-    'Pour te connecter :\n' +
-    '1. Ouvre le lien sur ton téléphone\n' +
-    '2. Choisis « Prestataire »\n' +
-    '3. Sélectionne ton nom dans la liste : ' + a.name + '\n' +
-    '4. Appuie sur « Se connecter »\n\n' +
-    'Aucun mot de passe ne t\'est demandé pour le moment.\n\n' +
+        'les ménages à prendre, la checklist en photos, le relevé des stocks et tes gains du mois.\n\n') +
+    'Voici ton lien personnel pour créer ton compte :\n' + url + '\n\n' +
+    '1. Ouvre ce lien sur ton téléphone\n' +
+    '2. Choisis ton mot de passe (6 caractères au minimum)\n' +
+    '3. C\'est fait : tu es connecté(e)\n\n' +
+    'Ce lien n\'est valable que 14 jours, et une seule fois. Il ne fonctionne que pour ' +
+    'l\'adresse ' + (a.email || 'la tienne') + '.\n\n' +
     'Astuce : depuis ton navigateur, choisis « Ajouter à l\'écran d\'accueil ». ' +
     'L\'application s\'ouvrira ensuite comme une vraie application.\n\n' +
     'À bientôt,\nMAISON WARME';
-}
-
-/** Le lien mailto complet, prêt à ouvrir. */
-function inviteMailto(a) {
-  return 'mailto:' + encodeURIComponent(a.email || '') +
-    '?subject=' + encodeURIComponent('Ton accès à MAISON WARME') +
-    '&body=' + encodeURIComponent(inviteTexte(a));
 }
 
 /** Cinq étoiles pleines ou vides, en lecture seule. */
@@ -2284,8 +2293,13 @@ function viewPrestaChecklist() {
         // gardait qu'un « oui ». Les deux cohabitent le temps que les missions
         // en cours se terminent.
         var image = typeof val === 'string' && val.indexOf('data:') === 0 ? val : '';
+        // Où en est le dépôt de cette photo dans le casier partagé (lot 2) ?
+        var envoi = state.photosEnvoi[m.id + ':' + s.id];
+        var motEnvoi = envoi === 'ok' ? ' · envoyée'
+          : envoi === 'encours' ? ' · envoi en cours…'
+            : envoi === 'erreur' ? ' · pas encore envoyée, elle repartira à la fin' : '';
         var hint = ok
-          ? (s.photo ? (image ? 'Photo prise · toucher pour la refaire' : 'Validé sans photo · toucher pour photographier') : 'Validé')
+          ? (s.photo ? (image ? 'Photo prise' + motEnvoi : 'Validé sans photo · toucher pour photographier') : 'Validé')
           : (s.photo ? 'Photo obligatoire · ouvre l’appareil photo' : 'À cocher');
         var right = image
           ? '<span style="display:flex;align-items:center;gap:8px;flex:none">' +
@@ -3362,9 +3376,42 @@ function blocAcces(attente) {
 
 /* --- Revue d'une mission terminée ---------------------------------------- */
 
+/* LES PHOTOS DU CASIER, CÔTÉ PROPRIÉTAIRE (lot 2).
+   Le casier n'est pas public : on ne peut pas fabriquer l'adresse d'une photo,
+   il faut la **demander** à Supabase, qui en rend une valable une heure. Ces
+   adresses ne sont donc **jamais enregistrées** — elles seraient périmées au
+   rechargement suivant. On les garde en mémoire vive, le temps de la visite.
+
+   La vue étant une fonction pure appelée à chaque redessin, elle ne peut pas
+   attendre : on lance la demande une fois, on redessine quand la réponse
+   arrive, et entre les deux l'écran dit « chargement ». */
+var photosParMission = {};      // { missionId: { etapeId: adresse } }
+var photosDemandees = {};       // { missionId: true } — demande déjà lancée
+
+function photosDeLaMission(mid, rep) {
+  if (photosParMission[mid]) return photosParMission[mid];
+  if (photosDemandees[mid]) return null;                 // en cours
+  if (typeof DB === 'undefined' || !DB.estDispo() || !DB.profil()) return {};
+
+  var etapes = [];
+  (rep && rep.rooms ? rep.rooms : []).forEach(function (r) {
+    (r.steps || []).forEach(function (s) { if (s.id && s.photo && s.done) etapes.push(s.id); });
+  });
+  if (!etapes.length) { photosParMission[mid] = {}; return photosParMission[mid]; }
+
+  photosDemandees[mid] = true;
+  DB.urlsPhotos(mid, etapes)
+    .then(function (urls) { photosParMission[mid] = urls || {}; render(); })
+    .catch(function () { photosParMission[mid] = {}; render(); });
+  return null;
+}
+
 function viewOwnerMission() {
   var m = mission(route.id), d = decorate(m);
   var rep = state.reports[m.id];
+  var lotPhotos = photosDeLaMission(m.id, rep);
+  var photosEnCours = lotPhotos === null;
+  var photosMission = lotPhotos || {};
   var ag = m.taker ? agent(m.taker) : null;
   var fini = m.status === 'termine';
   var valide = m.review === 'valide';
@@ -3393,14 +3440,28 @@ function viewOwnerMission() {
               dn + '/' + r.steps.length + '</span>' +
           '</div>' +
           '<div class="revue-grid">' + r.steps.map(function (s) {
-            var thumb = s.photo && s.done
-              ? '<span class="revue-thumb stripe">PHOTO</span>'
-              : '<span class="revue-thumb revue-thumb--none">' + (s.done ? '✓' : '—') + '</span>';
+            /* La vraie photo, si elle est arrivée dans le casier (lot 2).
+               Trois cas, et il faut les distinguer pour ne pas faire croire à
+               une panne : l'image est là ; elle est en cours de récupération ;
+               ou elle n'a jamais été déposée — comptes rendus d'avant la
+               session 15, ou mission faite sans réseau. */
+            var url = s.id ? photosMission[s.id] : null;
+            var thumb = url
+              ? '<span class="revue-thumb" style="padding:0;overflow:hidden">' +
+                  '<img src="' + esc(url) + '" alt="Photo · ' + esc(s.label) + '" ' +
+                  'style="width:100%;height:100%;object-fit:cover;display:block"></span>'
+              : s.photo && s.done
+                ? '<span class="revue-thumb stripe">' + (photosEnCours ? '…' : 'PHOTO') + '</span>'
+                : '<span class="revue-thumb revue-thumb--none">' + (s.done ? '✓' : '—') + '</span>';
             return '<div class="revue-step">' + thumb +
               '<div class="grow">' +
                 '<div style="font:600 13.5px/1.3 Figtree,sans-serif">' + esc(s.label) + '</div>' +
                 '<div style="font:500 11.5px Figtree,sans-serif;color:var(--muted2);margin-top:3px">' +
-                  (s.done ? (s.photo ? 'Photo envoyée' : 'Validé sans photo') : 'Non validé') + '</div>' +
+                  (!s.done ? 'Non validé'
+                    : !s.photo ? 'Validé sans photo'
+                      : url ? 'Photo reçue'
+                        : photosEnCours ? 'Photo en cours de chargement…'
+                          : 'Validée · photo restée sur le téléphone') + '</div>' +
               '</div></div>';
           }).join('') + '</div>' +
           '</div>';
@@ -4298,6 +4359,9 @@ function ligneCompte(a) {
           ' value="' + esc(url) + '" data-fid="lien-' + a.id + '">' +
         '<button type="button" class="btn btn--xs" style="background:var(--ink);color:#fff"' +
           act('copier-lien', { ag: a.id, url: url }) + '>Copier le lien</button>' +
+        // Le message tout prêt, lien compris : le propriétaire n'a rien à rédiger.
+        '<button type="button" class="btn btn--xs" style="background:var(--cream);color:var(--ink-soft)"' +
+          act('copier-message', { ag: a.id, url: url }) + '>Copier le message tout prêt</button>' +
         '<button type="button" class="btn-danger-xs"' +
           act('annuler-invit', { ag: a.id, tk: (inv && inv.token) || '' }) + '>Annuler</button>' +
       '</div>' +
@@ -4424,22 +4488,12 @@ function viewOwnerAgents() {
         }).join('') : '<span class="sec-note">Aucune prestation enregistrée.</span>') +
       '</div>') +
 
-      /* Invitation : le message est préparé ici, l'envoi se fait depuis la
-         messagerie du propriétaire (voir inviteMailto). */
-      '<div class="invite-row">' +
-        '<span class="invite-state">' +
-          (a.invited
-            ? '<span class="invite-ok">✓ Invitation envoyée le ' + esc(a.invited) + '</span>'
-            : '<span class="invite-todo">Pas encore invité</span>') +
-          (a.email ? '<span class="invite-mail num">' + esc(a.email) + '</span>'
-                   : '<span class="invite-mail invite-mail--none">aucune adresse e-mail</span>') +
-        '</span>' +
-        '<button type="button" class="btn btn--xs" style="background:var(--ink);color:#fff"' +
-          act('invite-agent', { ag: a.id }) + '>✉ ' + (a.invited ? 'Renvoyer l\'invitation' : 'Inviter par mail') + '</button>' +
-        '<button type="button" class="btn btn--xs" style="background:var(--cream);color:var(--ink-soft)"' +
-          act('invite-copy', { ag: a.id }) + '>Copier le message</button>' +
-      '</div>' +
-
+      /* Il n'y a plus qu'UN SEUL bloc d'invitation (session 15).
+         Celui de la session 8 vivait ici : deux boutons « ✉ Inviter par mail »
+         et « Copier le message », dont le texte disait de choisir son nom dans
+         une liste et annonçait qu'aucun mot de passe n'était demandé. Ce
+         parcours n'existe plus depuis la session 14 (D-65) : le message envoyait
+         donc le prestataire dans le mur. Tout passe par `ligneCompte()`. */
       ligneCompte(a) +
       /* Ce que les voyageurs ont pensé de ses ménages. */
       (rt ? '<div class="avis-row">' +
@@ -6179,7 +6233,9 @@ function etapeDe(pid, sid) {
   return trouve;
 }
 
-/** Réduit une image choisie ou prise par l'appareil photo. */
+/** Réduit une image choisie ou prise par l'appareil photo.
+    Rend deux formes de la même image : `url` pour l'afficher tout de suite et
+    la garder sur l'appareil, `fichier` pour la déposer dans le casier. */
 function reduirePhoto(fichier, quand) {
   var lecteur = new FileReader();
   lecteur.onerror = function () { quand(null, 'La photo n\'a pas pu être lue.'); };
@@ -6194,7 +6250,11 @@ function reduirePhoto(fichier, quand) {
       c.height = Math.round(img.height * ech);
       try {
         c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
-        quand(c.toDataURL('image/jpeg', 0.55), null);
+        var url = c.toDataURL('image/jpeg', 0.55);
+        // `toBlob` est asynchrone et peut manquer sur un très vieux navigateur :
+        // on rend la photo dans tous les cas, quitte à ne pas pouvoir l'envoyer.
+        if (!c.toBlob) { quand({ url: url, image: null }, null); return; }
+        c.toBlob(function (b) { quand({ url: url, image: b }, null); }, 'image/jpeg', 0.55);
       } catch (e) {
         quand(null, 'La photo n\'a pas pu être enregistrée sur cet appareil.');
       }
@@ -6202,6 +6262,55 @@ function reduirePhoto(fichier, quand) {
     img.src = lecteur.result;
   };
   lecteur.readAsDataURL(fichier);
+}
+
+/* ENVOI DE LA PHOTO DANS LE CASIER PARTAGÉ (lot 2).
+   Règle de conception : **l'envoi ne doit jamais gêner le travail en cours.**
+   La photo est d'abord enregistrée sur l'appareil — la checklist avance
+   aussitôt, même sans réseau — puis déposée dans le casier en arrière-plan.
+   Si le dépôt échoue, l'étape reste validée ; seule une pastille indique que
+   la photo n'est pas encore partie, et elle repartira à la fin de la mission. */
+function envoiPhoto(mid, sid, image) {
+  if (!image || typeof DB === 'undefined' || !DB.estDispo() || !DB.profil()) return;
+  var cle = mid + ':' + sid;
+  state.photosEnvoi[cle] = 'encours';
+  DB.envoyerPhoto(mid, sid, image)
+    .then(function () {
+      state.photosEnvoi[cle] = 'ok';
+      save(); render();
+    })
+    .catch(function (e) {
+      state.photosEnvoi[cle] = 'erreur';
+      state.mMsg = 'La photo est bien enregistrée sur ton téléphone, mais elle n\'a pas pu être ' +
+        'envoyée : ' + DB.messageClair(e) + ' Elle repartira à la fin de la mission.';
+      save(); render();
+    });
+}
+
+/* Deuxième chance, au moment de terminer : tout ce qui n'est pas parti repart.
+   C'est le filet pour une mission faite dans un logement sans réseau. */
+function renvoyerPhotosManquantes(mid) {
+  if (typeof DB === 'undefined' || !DB.estDispo() || !DB.profil()) return Promise.resolve(0);
+  var ph = state.photos[mid] || {};
+  var aRenvoyer = Object.keys(ph).filter(function (sid) {
+    return typeof ph[sid] === 'string' && ph[sid].indexOf('data:') === 0 &&
+      state.photosEnvoi[mid + ':' + sid] !== 'ok';
+  });
+  if (!aRenvoyer.length) return Promise.resolve(0);
+
+  return aRenvoyer.reduce(function (chaine, sid) {
+    return chaine.then(function (n) {
+      return dataUrlEnImage(ph[sid])
+        .then(function (img) { return DB.envoyerPhoto(mid, sid, img); })
+        .then(function () { state.photosEnvoi[mid + ':' + sid] = 'ok'; return n + 1; })
+        .catch(function () { return n; });
+    });
+  }, Promise.resolve(0));
+}
+
+/** Reconstruit un fichier image à partir de la photo gardée sur l'appareil. */
+function dataUrlEnImage(url) {
+  return fetch(url).then(function (r) { return r.blob(); });
 }
 
 /** Ouvre l'appareil photo (ou la galerie) et enregistre le cliché sur l'étape. */
@@ -6219,14 +6328,15 @@ function prendrePhoto(mid, sid) {
     if (!f) return;
     state.mMsg = 'Enregistrement de la photo…';
     render();
-    reduirePhoto(f, function (url, err) {
+    reduirePhoto(f, function (res, err) {
       if (err) { state.mMsg = err; render(); return; }
       var ph = state.photos[mid] || {};
-      ph[sid] = url;
+      ph[sid] = res.url;
       state.photos[mid] = ph;
       flash = mid + sid;
       if (save()) {
         state.mMsg = '';
+        envoiPhoto(mid, sid, res.image);      // dépôt dans le casier, en arrière-plan
       } else {
         delete ph[sid];
         state.mMsg = 'La mémoire de ce téléphone est pleine : la photo n\'a pas pu être gardée. ' +
@@ -6265,9 +6375,12 @@ function retirerPhoto(mid, sid) {
   var ph = state.photos[mid] || {};
   delete ph[sid];
   state.photos[mid] = ph;
+  delete state.photosEnvoi[mid + ':' + sid];
   state.mMsg = '';
   save();
   render();
+  // Le casier suit : une photo retirée ici ne doit pas rester chez le propriétaire.
+  if (typeof DB !== 'undefined' && DB.estDispo() && DB.profil()) DB.supprimerPhoto(mid, sid);
 }
 
 function bump(key, delta) {
@@ -6302,7 +6415,10 @@ function finish(id) {
     rooms: rooms(m.prop).map(function (r) {
       return {
         name: r.name,
-        steps: r.steps.map(function (s) { return { label: s.label, photo: s.photo, done: !!ph[s.id] }; })
+        // `id` est nouveau (session 15) : sans lui, le propriétaire ne peut pas
+        // retrouver la photo de l'étape dans le casier partagé. Les comptes
+        // rendus antérieurs n'en ont pas — leur revue reste telle qu'avant.
+        steps: r.steps.map(function (s) { return { id: s.id, label: s.label, photo: s.photo, done: !!ph[s.id] }; })
       };
     }),
     qty: Object.assign({}, d.qty),
@@ -6322,7 +6438,17 @@ function finish(id) {
   state.lastDone = { price: m.price, photos: photos, low: lowKeys.length };
   state.draft = null;
   save();
-  if (typeof DB !== 'undefined' && DB.estDispo()) DB.majMission(m);
+
+  /* Deuxième chance pour les photos (lot 2) : celles qui n'ont pas pu partir
+     — logement sans réseau, coupure — repartent maintenant. On n'attend pas
+     la réponse pour afficher l'écran de fin : le prestataire a terminé, il n'a
+     pas à patienter devant un sablier. Le compte rendu, lui, part ensuite,
+     avec le nombre de photos réellement déposées. */
+  renvoyerPhotosManquantes(id).then(function (n) {
+    if (n) { save(); render(); }
+    if (typeof DB !== 'undefined' && DB.estDispo()) DB.majMission(m);
+  });
+
   go('#/app/missions/' + id + '/fin');
 }
 
@@ -6495,6 +6621,25 @@ var actions = {
         .catch(function () { dit('Le lien est affiché ci-dessus : sélectionne-le et copie-le à la main.'); });
     } else {
       dit('Le lien est affiché ci-dessus : sélectionne-le et copie-le à la main.');
+    }
+  },
+  /* Le message d'accompagnement, lien compris. Même repli que « Copier le
+     lien » : si le navigateur refuse le presse-papiers, on montre le texte
+     plutôt que de laisser le bouton sans effet (leçon de la session 8). */
+  'copier-message': function (el) {
+    var a = agent(el.dataset.ag);
+    var texte = inviteTexte(a, el.dataset.url);
+    var dit = function (m) { state.migMsg = m; render(); };
+    var replier = function () {
+      dit('Le presse-papiers a été refusé : le message s\'affiche, copie-le à la main.');
+      prompt('Sélectionne ce message et copie-le :', texte);
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(texte).then(function () {
+        dit('✅ Message copié, lien compris. Colle-le dans un SMS, un WhatsApp ou un mail.');
+      }, replier);
+    } else {
+      replier();
     }
   },
   'annuler-invit': function (el) {
@@ -7333,47 +7478,12 @@ var actions = {
       : a.services.concat([key]);
     save(); render();
   },
-  /* Ouvre le message d'invitation dans la messagerie du propriétaire.
-     L'application ne peut pas l'envoyer elle-même : il n'y a pas de serveur. */
-  'invite-agent': function (el) {
-    var a = state.agents.find(function (x) { return x.id === el.dataset.ag; });
-    if (!a) return;
-    if (!a.email) {
-      alert('Ce prestataire n\'a pas d\'adresse e-mail.\n\n' +
-        'Supprimez-le et recréez-le avec son adresse, ou utilisez « Copier le message » ' +
-        'pour le lui envoyer par SMS ou WhatsApp.');
-      return;
-    }
-    a.invited = fmtDate(TODAY);
-    save();
-    location.href = inviteMailto(a);
-    render();
-  },
-
-  /* Repli sans messagerie : le texte part dans le presse-papiers, pour être
-     collé dans un SMS ou un WhatsApp. Si le navigateur refuse le
-     presse-papiers, on affiche quand même le texte : il ne faut jamais que
-     le bouton reste sans effet visible. */
-  'invite-copy': function (el) {
-    var a = state.agents.find(function (x) { return x.id === el.dataset.ag; });
-    if (!a) return;
-    var texte = inviteTexte(a);
-
-    var marquer = function () { a.invited = fmtDate(TODAY); save(); render(); };
-    var replier = function () {
-      marquer();
-      prompt('Sélectionnez ce message et copiez-le :', texte);
-    };
-
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(texte).then(function () {
-        marquer();
-        alert('Message copié.\n\nCollez-le dans un SMS, un WhatsApp ou un e-mail.');
-      }, replier);
-    } else {
-      replier();
-    }
-  },
+  /* Les deux actions « Inviter par mail » et « Copier le message » de la
+     session 8 ont été RETIRÉES en session 15 : leur message expliquait de
+     choisir « Prestataire » puis son nom dans une liste, sans mot de passe —
+     un parcours supprimé en session 14 (D-65). Le propriétaire aurait envoyé
+     des instructions impossibles à suivre. Le seul chemin est désormais le
+     lien d'invitation de `ligneCompte()` (D-67). */
 
   'toggle-payout': function (el) {
     var k = el.dataset.ag + ':' + state.ownerMonth;
