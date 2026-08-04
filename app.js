@@ -554,6 +554,7 @@ function initialState() {
     problemTexte: '',                 // le commentaire en cours d'écriture (session 16)
     problemPhoto: '',                 // la photo en cours, gardée sur l'appareil (session 16)
     photoPlein: null,                 // 'missionId:etapeId' affiché en grand, ou 'probleme:id'
+    apercuSejour: null,               // le propriétaire regarde le lien personnel de ce séjour (session 17)
 
     // Formulaires de création ajoutés en session 7
     showNewBien: false,
@@ -649,6 +650,7 @@ function load() {
   state.mMsg = '';
   state.migMsg = '';
   state.photoPlein = null;            // une photo ouverte en grand n'est pas une donnée
+  state.apercuSejour = null;          // un aperçu n'est pas une donnée non plus
   if (state.inv) state.inv.enCours = false;
 
   // Appelé aussi sur un navigateur neuf : c'est upgrade() qui pose les valeurs
@@ -1380,30 +1382,60 @@ function stayArriving(pid) {
    propriétaire, ou visiteur qui ne s'est pas identifié). Rend D-31 caduque
    pour tout voyageur passé par `#/bienvenue`. */
 
+/* CLOISONNER LES VOYAGEURS (session 17 — D-85)
+
+   Jusqu'ici, quand on ne savait pas qui regardait le livret, on **devinait
+   par les dates**. C'était le repli assumé de D-52, et D-31 restait ouverte
+   pour ce cas. Le jour d'un turnover, cela donnait exactement ce que le
+   propriétaire a constaté : **le voyageur qui arrive voyait le formulaire de
+   notation du voyageur qui part, et le commentaire que celui-ci venait de
+   laisser** — « séjour bruyant, voisins pénibles » sous les yeux du suivant.
+
+   Deviner n'est plus nécessaire : depuis la session 16, chaque séjour a son
+   **lien personnel** (D-80). On ne devine donc plus. Un visiteur qu'on ne
+   reconnaît pas ne voit **aucun formulaire et aucun avis**, seulement une
+   invitation à retrouver son séjour.
+
+   Une seule exception, clairement annoncée à l'écran : le **propriétaire**
+   qui regarde son propre livret depuis l'administration. C'est un aperçu, il
+   est chez lui, et il doit pouvoir tout voir. */
+
+/** Le propriétaire regarde-t-il l'aperçu général (et non le lien d'un
+    voyageur précis) ? Seul cas où la déduction par dates subsiste. */
+function apercuGeneral() {
+  return state.auth === 'owner' && !state.apercuSejour;
+}
+
 /** Le séjour du visiteur, s'il s'est identifié et qu'il regarde bien ce
     logement-là. Rend null quand on ne sait pas qui c'est. */
 function sejourDuVisiteur(pid) {
-  if (state.auth === 'owner') return null;          // aperçu : comportement d'avant
+  if (state.auth === 'owner') {
+    // Le propriétaire a ouvert le lien personnel d'un voyageur : il doit voir
+    // ce que CE voyageur verra, pas la somme de tout le monde.
+    if (!state.apercuSejour) return null;
+    var a = resaById(state.apercuSejour);
+    return a && a.pid === pid ? a.r : null;
+  }
   var f = sejourDuPass();
   return f && f.pid === pid ? f.r : null;
 }
 
 function visiteurLeaving(pid) {
   var v = sejourDuVisiteur(pid);
-  if (!v) return stayLeaving(pid);
-  return v.end === TODAY ? v : null;
+  if (v) return v.end === TODAY ? v : null;
+  return apercuGeneral() ? stayLeaving(pid) : null;
 }
 
 function visiteurCurrent(pid) {
   var v = sejourDuVisiteur(pid);
-  if (!v) return stayCurrent(pid);
-  return (v.start <= TODAY && TODAY < v.end) ? v : null;
+  if (v) return (v.start <= TODAY && TODAY < v.end) ? v : null;
+  return apercuGeneral() ? stayCurrent(pid) : null;
 }
 
 function visiteurArriving(pid) {
   var v = sejourDuVisiteur(pid);
-  if (!v) return stayArriving(pid);
-  return v.start === TODAY ? v : null;
+  if (v) return v.start === TODAY ? v : null;
+  return apercuGeneral() ? stayArriving(pid) : null;
 }
 
 /** Le séjour concerné par une note : la propreté est notée par celui qui
@@ -1523,7 +1555,16 @@ function dansLesDates(r) {
       'complet'   — reconnu et sur place.
     Le propriétaire voit tout : c'est son aperçu. */
 function niveauAcces(pid) {
-  if (state.auth === 'owner') return 'complet';
+  if (state.auth === 'owner') {
+    // Aperçu du lien d'un voyageur précis : on applique **ses** dates, sinon
+    // l'aperçu montrerait un code que ce voyageur-là ne verra jamais (D-85).
+    if (state.apercuSejour) {
+      var a = resaById(state.apercuSejour);
+      if (!a || a.pid !== pid) return null;
+      return dansLesDates(a.r) ? 'complet' : 'horsdates';
+    }
+    return 'complet';
+  }
   var f = sejourDuPass();
   if (!f || f.pid !== pid) return null;
 
@@ -1717,6 +1758,13 @@ function agentRating(agentId) {
 /** « 4,7 » plutôt que « 4.7 » : virgule décimale française. */
 function fmtNote(n) { return String(n).replace('.', ','); }
 
+/** « d'Emma » plutôt que « de Emma ». Les noms viennent des voyageurs : on ne
+    choisit pas leur première lettre. */
+function de(nom) {
+  var n = String(nom || '').trim();
+  return /^[aeiouyàâäéèêëîïôöùûüh]/i.test(n) ? 'd’' + n : 'de ' + n;
+}
+
 /* --------------------------------------------------------------------------
    Invitation d'un prestataire
 
@@ -1839,7 +1887,40 @@ function coursesPropIds() {
   return state.coursesProps.slice();
 }
 
-function ledger() { return state.done.concat(HISTORY); }
+/* LE REGISTRE DE PAIE (revu en session 17 — D-87)
+
+   Il était bâti sur `state.done`, une liste alimentée par `finish()`. Or
+   `finish()` tourne sur **le téléphone du prestataire**, et `state.done` ne
+   voyage pas : le propriétaire n'en recevait donc jamais rien. Résultat, dès
+   que Sofia a eu son propre compte, l'écran « Prestataires » n'affichait plus
+   aucun historique et **aucun montant à lui verser** — alors que la mission
+   était bien terminée sous ses yeux, dans « Missions ».
+
+   On repart donc de la seule source que les deux écrans partagent : les
+   **missions terminées** du cahier partagé. Chacune porte tout ce qu'il faut
+   — qui l'a faite, quand, sur quel logement, pour combien.
+
+   `state.done` est conservé en second rang : il rattrape les missions
+   supprimées depuis, et les données d'avant la session 17. */
+function ledger() {
+  var vues = {};
+  var out = [];
+
+  (state.missions || []).forEach(function (m) {
+    if (m.status !== 'termine' || !m.taker) return;
+    vues[m.id] = true;
+    out.push({
+      mid: m.id, agent: m.taker, month: moisDe(m.date), prop: m.prop, type: m.type,
+      dateLabel: m.date === TODAY ? 'Aujourd’hui' : fmtDate(m.date), price: m.price || 0
+    });
+  });
+
+  (state.done || []).forEach(function (r) {
+    if (r && r.mid && !vues[r.mid]) { vues[r.mid] = true; out.push(r); }
+  });
+
+  return out.concat(HISTORY);
+}
 function monthRows(a, month) { return ledger().filter(function (r) { return r.agent === a && r.month === month; }); }
 function monthTotal(a, month) { return monthRows(a, month).reduce(function (n, r) { return n + r.price; }, 0); }
 
@@ -2341,10 +2422,27 @@ function viewPrestaDetail() {
       (m.note ? '<div class="owner-note">' +
         '<div class="k">✎ Note du propriétaire</div>' +
         '<div class="t">' + esc(m.note) + '</div></div>' : '') +
+      /* Le code de la porte et le Wi-Fi. Ils ne vivent pas avec le reste du
+         logement : ils sont rangés à part dans le cahier partagé (D-60), et
+         jusqu'à la session 17 **seul le propriétaire avait le droit de les
+         lire**. Sur le téléphone du prestataire, les deux cases affichaient
+         donc un tiret, sans un mot d'explication — il ne pouvait pas entrer.
+         Le script `06-code-porte-prestataire.sql` ouvre cette lecture ; en
+         attendant, ou si le propriétaire n'a rien saisi, on **dit lequel des
+         deux cas c'est** au lieu d'un tiret muet (D-86, règle D-74). */
       '<div class="access-card">' +
         '<div class="access-item"><div class="k">Entrée / clés</div><div class="v num">' + esc(inf.code || '—') + '</div></div>' +
         '<div class="access-item"><div class="k">Wi-Fi</div><div class="v num">' + esc(inf.wifi || '—') + '</div></div>' +
       '</div>' +
+      (!inf.code && !inf.wifi
+        ? '<div style="background:var(--terra-bg2);border-radius:16px;padding:13px 15px;font:600 12.5px/1.5 Figtree,sans-serif;color:var(--terra-dd)">' +
+            (m.status === 'prise' || m.status === 'encours'
+              ? 'Le code d’accès et le Wi-Fi ne s’affichent pas. Préviens le propriétaire : soit il ne les a pas encore ' +
+                'renseignés sur la fiche du logement, soit le cahier partagé ne t’autorise pas encore à les lire ' +
+                '(script « 06-code-porte-prestataire.sql »).'
+              : 'Le code d’accès apparaîtra ici une fois que tu auras pris cette mission.') +
+          '</div>'
+        : '') +
       (urgentNote ? '<div style="background:var(--terra-bg2);border-radius:16px;padding:13px 15px;font:600 13px/1.45 Figtree,sans-serif;color:var(--terra-dd)">' + esc(urgentNote) + '</div>' : '') +
       guest +
       '<div>' +
@@ -6016,7 +6114,15 @@ function viewSejour() {
       '</div></section>', 'Lien introuvable');
   }
 
-  if (state.auth === 'owner') { location.replace('#/livret/' + f.pid); return ''; }
+  /* Le propriétaire clique le lien qu'il vient de copier : il doit voir
+     **exactement** ce que ce voyageur-là verra, dates comprises — et non la
+     somme de tout ce que le logement contient (session 17, D-85). */
+  if (state.auth === 'owner') {
+    state.apercuSejour = f.r.id;
+    location.replace('#/livret/' + f.pid);
+    return '';
+  }
+  state.apercuSejour = null;
 
   /* Le formulaire n'est proposé qu'une fois : au premier passage. Ensuite le
      lien mène droit au livret — un voyageur qui rouvre son lien tous les
@@ -6047,8 +6153,20 @@ function viewBienvenue() {
 /** Bandeau de retour, visible seulement quand le propriétaire regarde l'aperçu. */
 function lvBack(path, label) {
   if (state.auth !== 'owner') return '';
+
+  // Aperçu d'un lien personnel : on dit de qui, et ce que ses dates changent
+  // (session 17, D-85). Sans cela, le propriétaire croit que le voyageur voit
+  // le code d'accès alors qu'il ne le verra qu'à partir de son arrivée.
+  var f = state.apercuSejour ? resaById(state.apercuSejour) : null;
+  var note = f
+    ? 'Aperçu du lien ' + de(f.r.guest) + ' — ' + fmtDate(f.r.start) + ' → ' + fmtDate(f.r.end) + '. ' +
+      (dansLesDates(f.r)
+        ? 'Son séjour est en cours : il voit le code d’accès et le Wi-Fi.'
+        : 'Hors de ses dates : le code d’accès et le Wi-Fi lui restent cachés.')
+    : 'Aperçu général — vous voyez tout. Pour savoir ce qu’un voyageur voit vraiment, ouvrez son lien personnel depuis sa réservation.';
+
   return '<div class="lv-back"><button type="button"' + act('nav', { path: path }) + '>← ' + label + '</button>' +
-    '<span>Aperçu — c\'est ce que verra le voyageur.</span></div>';
+    '<span>' + esc(note) + '</span></div>';
 }
 
 function lvVide() {

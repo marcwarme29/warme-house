@@ -94,11 +94,35 @@ var DB = (function () {
      « Confirm email », voir 04-invitations.sql), aucune session n'est ouverte
      et on le dit clairement plutôt que de laisser la personne devant un écran
      qui ne fait rien. */
+  /* Création du compte depuis le lien d'invitation.
+
+     SESSION 17 — le compte peut déjà exister. C'est arrivé pour de vrai : le
+     propriétaire avait créé le compte de sa prestataire à la main dans
+     Supabase avant de comprendre que le lien d'invitation le faisait
+     lui-même. `signUp` répondait alors « User already registered » et
+     l'invitation restait bloquée pour toujours — le lien devenait inutile
+     alors que tout était presque en place.
+     On retombe donc sur une **connexion** avec le mot de passe saisi : si
+     c'est le bon, la personne récupère ses droits par le même chemin. Si ce
+     n'est pas le bon, le message le dit, et c'est la bonne réponse. */
   function inscription(email, motDePasse) {
     if (!dispo) return Promise.reject(new Error(derniereErreur || 'Connexion indisponible.'));
     return client.auth.signUp({ email: email, password: motDePasse })
       .then(function (r) {
-        if (r.error) throw r.error;
+        if (r.error) {
+          if (/User already registered|already been registered/i.test(r.error.message || '')) {
+            return client.auth.signInWithPassword({ email: email, password: motDePasse })
+              .then(function (c) {
+                if (c.error) {
+                  throw new Error('Un compte existe déjà avec cette adresse. Le mot de passe que tu ' +
+                    'viens de saisir n\'est pas le sien : entre celui que le propriétaire t\'a donné, ' +
+                    'ou demande-lui de supprimer le compte pour repartir de ce lien.');
+                }
+                return relireProfil();
+              });
+          }
+          throw r.error;
+        }
         if (!r.data || !r.data.session) {
           throw new Error('Le compte est créé, mais Supabase attend une confirmation par e-mail. ' +
             'Le propriétaire doit décocher « Confirm email » dans Supabase (Authentication → Sign In / Providers → Email).');
