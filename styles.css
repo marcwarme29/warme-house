@@ -1801,3 +1801,30 @@ textarea.inp { min-height: 90px; resize: vertical; line-height: 1.5; }
   font: 600 13.5px/1.45 Figtree, sans-serif; cursor: pointer; min-height: 44px;
 }
 .presta-msg-x { margin-left: auto; font-size: 15px; opacity: .6; }
+
+/* --------------------------------------------------------------------------
+   Une photo ouverte en grand (session 16)
+   Une vignette de 54 pixels ne permet pas de juger un ménage : la revue du
+   propriétaire et les signalements ouvrent la photo par-dessus l'écran.
+   -------------------------------------------------------------------------- */
+.photo-plein {
+  position: fixed; inset: 0; z-index: 200;
+  background: rgba(20, 16, 13, .88);
+  display: flex; align-items: center; justify-content: center;
+  padding: 24px;
+  cursor: zoom-out;
+}
+.photo-plein img {
+  max-width: 100%; max-height: 100%;
+  border-radius: 14px;
+  display: block;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, .5);
+}
+.photo-plein-x {
+  position: absolute; top: 16px; right: 16px;
+  width: 44px; height: 44px; border-radius: 999px;
+  background: rgba(255, 255, 255, .92); color: var(--ink);
+  font: 700 17px Figtree, sans-serif;
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer;
+}

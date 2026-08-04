@@ -525,6 +525,11 @@ function initialState() {
     done: [],
     reports: {},                      // { missionId: compte rendu figé d'une mission terminée }
     payouts: {},                      // { 'Sofia:2026-07': true } — versement effectué
+    /* Problèmes signalés par un prestataire pendant sa mission (session 16).
+       Chacun porte : { id, kind, texte, photo, agent, mission, prop, date,
+       at, statut } — `photo` est une image gardée sur l'appareil, `statut`
+       vaut 'ouvert' ou 'traite'. Les entrées d'avant la session 16 n'avaient
+       ni identifiant ni commentaire : `upgrade()` les complète. */
     problems: [],
     lastDone: null,
     extraFeeds: {},
@@ -546,7 +551,9 @@ function initialState() {
     newRoom: '',
     newFeed: '',
     problemKind: null,
-    problemPhoto: false,
+    problemTexte: '',                 // le commentaire en cours d'écriture (session 16)
+    problemPhoto: '',                 // la photo en cours, gardée sur l'appareil (session 16)
+    photoPlein: null,                 // 'missionId:etapeId' affiché en grand, ou 'probleme:id'
 
     // Formulaires de création ajoutés en session 7
     showNewBien: false,
@@ -556,7 +563,9 @@ function initialState() {
     showNewArticle: false,
     nar: { label: '', unit: 'unités', par: 4, seuil: 2, group: 'Salle de bain' },
     showNewResa: false,
-    nr: { plat: 'Airbnb', guest: '', guests: 2, start: '', end: '', montant: '' },
+    // `pid` sert au formulaire ouvert depuis le calendrier, qui n'est pas
+    // déjà posé sur un logement (session 16) : il faut donc le choisir.
+    nr: { plat: 'Airbnb', guest: '', guests: 2, start: '', end: '', montant: '', pid: '' },
 
     // Porte d'entrée du livret (session 11) — voir D-46 à D-48.
     acces: [],                        // demandes à confirmer : [{ id, pid, resa, nom, date, at, statut }]
@@ -639,6 +648,7 @@ function load() {
   state.migEnCours = false;
   state.mMsg = '';
   state.migMsg = '';
+  state.photoPlein = null;            // une photo ouverte en grand n'est pas une donnée
   if (state.inv) state.inv.enCours = false;
 
   // Appelé aussi sur un navigateur neuf : c'est upgrade() qui pose les valeurs
@@ -665,6 +675,34 @@ function upgrade() {
   Object.keys(state.photosEnvoi).forEach(function (k) {
     if (state.photosEnvoi[k] === 'encours') state.photosEnvoi[k] = 'erreur';
   });
+
+  /* Session 16 — les signalements de problème deviennent de vraies fiches.
+     Avant, on n'enregistrait qu'un type ({ kind, agent, mission }) : ni
+     commentaire, ni photo, ni identifiant, et le propriétaire ne pouvait donc
+     rien en faire. On complète les anciennes lignes sans en perdre une. */
+  if (!Array.isArray(state.problems)) state.problems = [];
+  state.problems = state.problems.map(function (p, i) {
+    var m = p.mission ? state.missions.find(function (x) { return x.id === p.mission; }) : null;
+    return {
+      id: p.id || ('pb_anc_' + i),
+      kind: p.kind || 'casse',
+      texte: p.texte || '',
+      photo: p.photo || '',
+      agent: p.agent || '',
+      mission: p.mission || '',
+      prop: p.prop || (m ? m.prop : ''),
+      date: p.date || (m ? m.date : TODAY),
+      at: p.at || '',
+      statut: p.statut === 'traite' ? 'traite' : 'ouvert'
+    };
+  });
+  if (typeof state.problemTexte !== 'string') state.problemTexte = '';
+  // `problemPhoto` valait un booléen dans la maquette : c'est une image, désormais.
+  if (typeof state.problemPhoto !== 'string') state.problemPhoto = '';
+
+  // Session 16 — le formulaire de séjour s'ouvre aussi depuis le calendrier,
+  // où aucun logement n'est encore choisi.
+  if (state.nr && typeof state.nr.pid !== 'string') state.nr.pid = '';
 
   // Session 14 — les invitations, et la fin de la connexion de démonstration.
   if (!Array.isArray(state.invits)) state.invits = [];
@@ -904,7 +942,26 @@ function moisLabel(mois) {
    montant (null = calculé au prix par nuit) et statut.
    -------------------------------------------------------------------------- */
 
-function slugResa(pid, r) { return 'r_' + pid + '_' + r.start + '_' + Math.random().toString(36).slice(2, 6); }
+/* L'identifiant d'un séjour sert aussi d'adresse au **lien personnel** envoyé
+   au voyageur (session 16, D-80) : il ne doit donc pas être devinable. Les
+   quatre caractères tirés au hasard de la session 10 ne suffisaient plus —
+   on en met douze, tirés par le générateur du navigateur quand il existe.
+   Les séjours plus anciens gardent leur identifiant court : le code d'accès
+   et le Wi-Fi restent, eux, protégés par les dates du séjour (D-51). */
+function jeton(n) {
+  var alpha = 'abcdefghijklmnopqrstuvwxyz0123456789';
+  var out = '';
+  if (window.crypto && window.crypto.getRandomValues) {
+    var a = new Uint8Array(n);
+    window.crypto.getRandomValues(a);
+    for (var i = 0; i < n; i++) out += alpha[a[i] % alpha.length];
+    return out;
+  }
+  while (out.length < n) out += Math.random().toString(36).slice(2);
+  return out.slice(0, n);
+}
+
+function slugResa(pid, r) { return 'r_' + pid + '_' + r.start + '_' + jeton(12); }
 
 /** Toutes les réservations, à plat, avec leur logement, dans l'ordre du temps. */
 function allResas() {
@@ -1021,9 +1078,21 @@ function ajouterResa(pid, resa) {
 function retirerResa(pid, resa) {
   state.resas[pid] = resasOf(pid).filter(function (x) { return x !== resa; });
   var cle = resaKey(pid, resa);
+  var missionsRetirees = state.missions.filter(function (m) {
+    return m.fromResa === cle && m.status === 'dispo';
+  }).map(function (m) { return m.id; });
   state.missions = state.missions.filter(function (m) {
     return !(m.fromResa === cle && m.status === 'dispo');
   });
+
+  /* LE CAHIER PARTAGÉ DOIT L'APPRENDRE (session 16).
+     `pousser()` ne sait qu'ajouter et modifier : sans cette suppression
+     explicite, le séjour effacé revenait à la première relecture, et rien de
+     ce qu'on supprimait ne tenait. */
+  if (typeof DB !== 'undefined' && DB.estDispo() && DB.profil()) {
+    missionsRetirees.forEach(function (id) { DB.supprimerMission(id); });
+    DB.supprimerResa(resa.id);
+  }
 
   // Plus personne n'arrive ce jour-là : la mission de la veille n'est plus
   // un turnover, et ne doit plus annoncer un voyageur qui ne viendra pas.
@@ -1503,13 +1572,21 @@ function validerAcces(id) {
   if (state.guestPass && state.guestPass.demande === id) state.guestPass.niveau = 'complet';
 }
 
-/** Les 4 chiffres correspondent : accès complet, et on propose le formulaire. */
-function ouvrirSejour(f) {
+/* Le séjour est établi : on pose le souvenir dans le navigateur du voyageur et
+   on prépare le formulaire. Séparé de `ouvrirSejour()` depuis la session 16 :
+   le lien personnel a besoin de poser le souvenir **pendant** un dessin
+   d'écran, où un `render()` de plus se rappellerait lui-même sans fin. */
+function poserSejour(f) {
   state.guestPass = { resa: f.r.id, pid: f.pid, niveau: 'complet', at: nowHM(), demande: '' };
   f.r.guestOk = true;
   prefillGform(f, '');
   state.bienvenue.etape = 'form';
   state.bienvenue.erreur = '';
+}
+
+/** Les 4 chiffres correspondent : accès complet, et on propose le formulaire. */
+function ouvrirSejour(f) {
+  poserSejour(f);
   save();
   render();
 }
@@ -1652,6 +1729,38 @@ function fmtNote(n) { return String(n).replace('.', ','); }
 /** Adresse publique de l'application, sans la partie après le # . */
 function appUrl() {
   return location.origin + location.pathname;
+}
+
+/* LE LIEN PERSONNEL D'UN SÉJOUR (session 16 — D-80)
+
+   Jusqu'ici il n'existait qu'une seule adresse pour tous les voyageurs,
+   `#/bienvenue`, où chacun devait se reconnaître lui-même (date d'arrivée +
+   4 chiffres de son téléphone). C'était la seule solution tant que rien ne
+   distinguait un séjour d'un autre dans une adresse.
+
+   Désormais chaque réservation a la sienne : `#/sejour/<identifiant>`. Le
+   voyageur qui l'ouvre est reconnu **sans rien taper**. Le lien unique reste
+   en place — il sert de repli quand un voyageur a perdu le sien.
+
+   Ce que ce lien ne fait PAS : il n'ouvre pas le code d'accès en dehors des
+   dates du séjour (D-51 : `dansLesDates` reste le garde-fou). Un lien
+   transféré à un tiers, ou retrouvé un an plus tard, ne donne donc pas la
+   clé du logement. */
+function lienSejour(rid) {
+  return appUrl() + '#/sejour/' + rid;
+}
+
+/** Le message tout prêt à envoyer au voyageur avec son lien personnel. */
+function texteSejour(pid, r) {
+  var p = prop(pid), inf = state.info[pid] || {};
+  return 'Bonjour ' + r.guest + ',\n\n' +
+    'Voici votre livret d’accueil personnel pour ' + p.name + ' :\n' +
+    lienSejour(r.id) + '\n\n' +
+    'Vous y trouverez l’adresse, les horaires, le code d’accès et le Wi-Fi ' +
+    'pendant votre séjour, ainsi que nos conseils sur place.\n\n' +
+    'Arrivée le ' + fmtDate(r.start) + ' à partir de ' + (inf.checkin || '16:00') + ' · ' +
+    'départ le ' + fmtDate(r.end) + ' avant ' + (inf.checkout || '11:00') + '.\n\n' +
+    'À très bientôt !';
 }
 
 /* Copie dans le presse-papiers, avec repli quand le navigateur refuse
@@ -1803,6 +1912,10 @@ function parseRoute() {
   // toutes plateformes et tous logements confondus (D-46). Page publique.
   if (seg[0] === 'bienvenue') return { name: 'bienvenue', id: null, sec: null };
 
+  // Lien PERSONNEL d'un séjour (session 16 — D-80). Page publique : le
+  // voyageur est reconnu par l'adresse elle-même, il n'a rien à taper.
+  if (seg[0] === 'sejour' && seg[1]) return { name: 'sejour', id: seg[1], sec: null };
+
   // Le lien d'invitation d'un prestataire (§19.8). Page publique : celui qui
   // l'ouvre n'a pas encore de compte — c'est justement ce qu'il vient créer.
   if (seg[0] === 'invitation') return { name: 'invitation', id: seg[1] || null, sec: null };
@@ -1863,6 +1976,7 @@ function guard() {
   // Le livret et sa porte d'entrée s'ouvrent sans connexion : ce sont les
   // pages du voyageur.
   if (r.name === 'bienvenue') return r;
+  if (r.name === 'sejour') return r;
   if (r.name === 'invitation') return r;
   if (r.name === 'livret') return r;
   if (r.name === 'livret-sec') {
@@ -2411,36 +2525,84 @@ function viewPrestaFin() {
 
 /* --- Signalement de problème -------------------------------------------- */
 
+/* Refait en session 16. Il manquait deux choses essentielles : la photo
+   n'était qu'un interrupteur de maquette — appuyer allumait le mot
+   « PHOTO AJOUTÉE » sans rien photographier — et il n'y avait aucun endroit
+   pour écrire ce qui s'était passé. Un type de problème tout seul
+   (« quelque chose est cassé ») n'apprend rien au propriétaire. */
 function viewPrestaIncident() {
   var m = mission(route.id);
-  var kinds = [
-    ['casse', 'Quelque chose est cassé', C.terracotta],
-    ['degat', 'Dégât ou tache importante', '#B04A26'],
-    ['manque', 'Il manque du matériel', C.ambre],
-    ['acces', 'Problème d’accès au logement', C.bleu]
-  ];
+  var kinds = ['casse', 'degat', 'manque', 'acces'];
+  var dejas = problemesDe(m.id);
+  var pret = !!state.problemKind;
 
   var body =
     '<button type="button" class="btn-back"' + act('nav', { path: '#/app/missions/' + m.id + '/checklist' }) + '>← Retour</button>' +
     '<h1 style="font:700 24px/1.2 Figtree,sans-serif;margin:4px 0 0">Signaler un problème</h1>' +
-    '<p class="sec-note" style="margin:5px 0 0">Le propriétaire est prévenu tout de suite.</p>' +
+    '<p class="sec-note" style="margin:5px 0 0">Le propriétaire le verra dans cette mission, ' +
+      'avec ta photo et ton commentaire.</p>' +
+
+    (state.mMsg ? '<div class="alert alert--amber" style="margin-top:14px"><div class="det">' +
+      esc(state.mMsg) + '</div></div>' : '') +
+
     '<div class="stack" style="gap:10px;margin-top:18px">' + kinds.map(function (k) {
-      var on = state.problemKind === k[0];
+      var ty = typeProbleme(k);
+      var on = state.problemKind === k;
       return '<button type="button" style="background:' + (on ? '#FFF7F0' : '#fff') +
         ';border:1.5px solid ' + (on ? C.terracotta : 'rgba(36,30,26,.1)') +
         ';border-radius:18px;min-height:54px;padding:14px 16px;display:flex;align-items:center;gap:12px;width:100%"' +
-        act('problem-kind', { k: k[0] }) + '>' +
-        '<span class="dot" style="width:10px;height:10px;background:' + k[2] + '"></span>' +
-        '<span style="font:600 15px Figtree,sans-serif">' + esc(k[1]) + '</span></button>';
+        act('problem-kind', { k: k }) + '>' +
+        '<span class="dot" style="width:10px;height:10px;background:' + ty[1] + '"></span>' +
+        '<span style="font:600 15px Figtree,sans-serif">' + esc(ty[0]) + '</span></button>';
     }).join('') + '</div>' +
+
     '<div class="card" style="margin-top:18px;border-radius:18px;padding:15px">' +
-      '<div style="font:600 12px Figtree,sans-serif;color:var(--muted)">Photo du problème</div>' +
-      '<button type="button" class="stripe" style="margin-top:10px;height:100px;width:100%;border-radius:14px;display:flex;align-items:center;justify-content:center;font:600 10px ui-monospace,Menlo,monospace;color:var(--muted)"' +
-        act('problem-photo') + '>' + (state.problemPhoto ? 'PHOTO AJOUTÉE' : 'TOUCHER POUR PHOTOGRAPHIER') + '</button>' +
+      '<label class="lab" for="pb-txt" style="font:600 12px Figtree,sans-serif;color:var(--muted)">' +
+        'Ce que tu as constaté</label>' +
+      '<textarea class="inp" id="pb-txt" rows="3" style="margin-top:8px" ' +
+        'placeholder="Ex. Le pied gauche du canapé est cassé, je l’ai calé avec un livre."' +
+        ' data-fid="pb-txt" data-in="problem-texte">' + esc(state.problemTexte || '') + '</textarea>' +
     '</div>' +
-    '<button type="button" class="btn ' + (state.problemKind ? 'btn--primary' : 'btn--muted') + '" style="margin-top:20px"' +
-      (state.problemKind ? act('send-problem', { id: m.id }) : '') + '>' +
-      (state.problemKind ? 'Envoyer au propriétaire' : 'Choisis un type de problème') + '</button>';
+
+    '<div class="card" style="margin-top:14px;border-radius:18px;padding:15px">' +
+      '<div style="font:600 12px Figtree,sans-serif;color:var(--muted)">Photo du problème (facultative)</div>' +
+      (state.problemPhoto
+        ? '<div style="margin-top:10px;display:flex;gap:10px;align-items:flex-start">' +
+            '<img src="' + esc(state.problemPhoto) + '" alt="Photo du problème" ' +
+              'style="width:120px;height:96px;object-fit:cover;border-radius:14px;display:block;flex:none">' +
+            '<div class="grow" style="display:flex;flex-direction:column;gap:8px">' +
+              '<button type="button" class="btn btn--xs" style="background:var(--cream);color:var(--ink-soft)"' +
+                act('problem-photo') + '>Reprendre la photo</button>' +
+              '<button type="button" class="btn-danger-xs" style="align-self:flex-start"' +
+                act('problem-photo-off') + '>Retirer la photo</button>' +
+            '</div>' +
+          '</div>'
+        : '<button type="button" class="stripe" style="margin-top:10px;height:100px;width:100%;border-radius:14px;display:flex;align-items:center;justify-content:center;font:600 10px ui-monospace,Menlo,monospace;color:var(--muted)"' +
+            act('problem-photo') + '>TOUCHER POUR PHOTOGRAPHIER</button>') +
+    '</div>' +
+
+    '<button type="button" class="btn ' + (pret ? 'btn--primary' : 'btn--muted') + '" style="margin-top:20px"' +
+      (pret ? act('send-problem', { id: m.id }) : '') + '>' +
+      (pret ? 'Envoyer au propriétaire' : 'Choisis un type de problème') + '</button>' +
+
+    /* Ce qui a déjà été signalé sur cette mission : sans ce rappel, on ne
+       sait pas si l'envoi est parti, et on signale deux fois. */
+    (!dejas.length ? '' :
+      '<h2 class="sec-title" style="margin:26px 0 10px;font-size:15px">Déjà signalé sur cette mission</h2>' +
+      '<div class="stack" style="gap:10px">' + dejas.map(function (p) {
+        var ty = typeProbleme(p.kind);
+        return '<div class="card" style="border-radius:16px;padding:13px 14px">' +
+          '<div style="display:flex;align-items:center;gap:9px">' +
+            '<span class="dot" style="width:9px;height:9px;background:' + ty[1] + '"></span>' +
+            '<span style="font:600 14px Figtree,sans-serif;flex:1;min-width:0">' + esc(ty[0]) + '</span>' +
+            '<span class="num" style="font:500 11.5px Figtree,sans-serif;color:var(--muted2)">' + esc(p.at || '') + '</span>' +
+          '</div>' +
+          (p.texte ? '<p style="font:500 13px/1.45 Figtree,sans-serif;margin:8px 0 0;white-space:pre-wrap">' +
+            esc(p.texte) + '</p>' : '') +
+          (p.photo ? '<img src="' + esc(p.photo) + '" alt="Photo du problème" ' +
+            'style="margin-top:9px;width:110px;height:84px;object-fit:cover;border-radius:12px;display:block">' : '') +
+          '</div>';
+      }).join('') + '</div>');
 
   return prestaShell('', body, '', { noTabs: true });
 }
@@ -2837,9 +2999,17 @@ function viewOwnerDash() {
     det: lowByProp.filter(function (x) { return x.lows.length; })
       .map(function (x) { return x.p.short + ' (' + x.lows.length + ')'; }).join(' · ') || 'Rien à signaler' });
 
+  /* Les signalements ouverts, avec de quoi savoir où aller (session 16).
+     L'alerte se contentait d'un décompte, et rien nulle part ne permettait
+     de LIRE le problème : c'est corrigé dans la fiche de la mission. */
+  var pbOuverts = state.problems.filter(function (p) { return p.statut !== 'traite'; });
   alerts.push({ cls: 'alert--blue', dot: C.bleu, kind: 'Signalement',
-    title: state.problems.length ? state.problems.length + ' problème(s) signalé(s)' : 'Aucun problème signalé',
-    det: state.problems.length ? 'Envoyé pendant une mission, photo jointe.' : 'Rien à traiter pour le moment.' });
+    title: pbOuverts.length ? pbOuverts.length + ' problème(s) à traiter' : 'Aucun problème signalé',
+    det: pbOuverts.length
+      ? pbOuverts.slice(0, 3).map(function (p) {
+          return prop(p.prop).short + ' · ' + typeProbleme(p.kind)[0].toLowerCase();
+        }).join(' · ') + '. Ouvre la mission concernée pour voir la photo et le commentaire.'
+      : 'Rien à traiter pour le moment.' });
 
   /* Départs signalés par les voyageurs eux-mêmes, depuis leur livret d'accueil. */
   var libres = state.props.map(function (p) {
@@ -3406,6 +3576,90 @@ function photosDeLaMission(mid, rep) {
   return null;
 }
 
+/* LA PHOTO GARDÉE SUR L'APPAREIL (session 16)
+
+   Le casier partagé n'est pas le seul endroit où vit une photo : elle est
+   d'abord enregistrée dans le navigateur qui l'a prise. Tant que le
+   propriétaire et le prestataire travaillent sur le **même** appareil — la
+   mise au point, la recette, le propriétaire qui fait lui-même un ménage —
+   la photo est là, sous la main, et la revue affichait pourtant
+   « photo restée sur le téléphone ». C'était le principal reproche fait aux
+   photos : elles marchaient, mais on ne les voyait jamais.
+
+   On regarde donc les deux endroits, le casier d'abord. */
+function photoLocale(mid, sid) {
+  var v = (state.photos[mid] || {})[sid];
+  return typeof v === 'string' && v.indexOf('data:') === 0 ? v : null;
+}
+
+/* Une photo ouverte en grand, par-dessus l'écran. Une vignette de 44 pixels
+   n'apprend rien : il faut pouvoir regarder. */
+function vueGrandePhoto() {
+  if (!state.photoPlein) return '';
+  var p = state.photoPlein;
+  var url = '';
+  if (p.indexOf('probleme:') === 0) {
+    var pb = state.problems.find(function (x) { return x.id === p.slice(9); });
+    url = pb ? pb.photo : '';
+  } else {
+    var c = p.split(':');
+    url = (photosParMission[c[0]] || {})[c[1]] || photoLocale(c[0], c[1]) || '';
+  }
+  if (!url) return '';
+  return '<div class="photo-plein"' + act('photo-fermer') + '>' +
+    '<img src="' + esc(url) + '" alt="Photo en grand">' +
+    '<button type="button" class="photo-plein-x" aria-label="Fermer"' + act('photo-fermer') + '>✕</button>' +
+    '</div>';
+}
+
+/* LES PROBLÈMES SIGNALÉS, ET COMMENT ILS VOYAGENT (session 16 — D-79)
+
+   Ils vivaient dans `state.problems`, c'est-à-dire dans le navigateur de
+   celui qui les avait écrits. Un prestataire qui signalait une casse depuis
+   son téléphone était donc le seul à la voir : rien ne remontait chez le
+   propriétaire.
+
+   La table `missions` ne connaît pas les signalements, et on ne veut pas
+   demander un script SQL de plus. On les range donc dans le **compte rendu**
+   de la mission (`report`), qui est un champ libre déjà transporté par le
+   cahier partagé et que le prestataire a le droit d'écrire sur ses propres
+   missions. Le compte rendu peut ainsi exister avant la fin de la mission :
+   il ne contient alors que `problemes`, et la revue doit le supporter. */
+function problemesDe(mid) {
+  var vus = {};
+  var out = [];
+  state.problems.forEach(function (p) {
+    if (p.mission !== mid) return;
+    vus[p.id] = true;
+    out.push(p);
+  });
+  var rep = state.reports[mid];
+  ((rep && rep.problemes) || []).forEach(function (p) {
+    if (p && p.id && !vus[p.id]) { vus[p.id] = true; out.push(p); }
+  });
+  return out.sort(function (a, b) { return (a.at || '') < (b.at || '') ? -1 : 1; });
+}
+
+/** Recopie les signalements d'une mission dans son compte rendu, pour qu'ils
+    partent dans le cahier partagé avec elle. */
+function verserProblemes(mid) {
+  var pbs = state.problems.filter(function (p) { return p.mission === mid; });
+  if (!pbs.length) return;
+  var rep = state.reports[mid] || (state.reports[mid] = {});
+  rep.problemes = pbs.map(function (p) { return p; });
+}
+
+/** Le libellé d'un type de problème, avec sa couleur. */
+var TYPES_PROBLEME = {
+  casse: ['Quelque chose est cassé', C.terracotta],
+  degat: ['Dégât ou tache importante', '#B04A26'],
+  manque: ['Il manque du matériel', C.ambre],
+  acces: ['Problème d’accès au logement', C.bleu],
+  autre: ['Autre', C.bleu]
+};
+
+function typeProbleme(k) { return TYPES_PROBLEME[k] || TYPES_PROBLEME.autre; }
+
 function viewOwnerMission() {
   var m = mission(route.id), d = decorate(m);
   var rep = state.reports[m.id];
@@ -3418,8 +3672,11 @@ function viewOwnerMission() {
 
   // Comptes lus dans le compte rendu figé, et non dans la checklist actuelle
   // du bien, qui a pu être modifiée depuis.
+  // Un compte rendu peut n'être qu'un porteur de signalements, sur une mission
+  // encore en cours (session 16) : il n'a alors ni pièces ni étapes.
+  var repComplet = rep && Array.isArray(rep.rooms) ? rep : null;
   var repDone = 0, repTotal = 0;
-  if (rep) rep.rooms.forEach(function (r) {
+  if (repComplet) repComplet.rooms.forEach(function (r) {
     repTotal += r.steps.length;
     repDone += r.steps.filter(function (s) { return s.done; }).length;
   });
@@ -3427,10 +3684,10 @@ function viewOwnerMission() {
   /* Colonne de gauche : la checklist telle qu'elle a été exécutée. */
   var checklist = !fini
     ? '<div class="card"><p class="empty">La checklist s\'affichera ici une fois la mission terminée.</p></div>'
-    : !rep
+    : !repComplet
     ? '<div class="card"><p class="empty">Le détail de cette mission n\'a pas été conservé : ' +
         'elle a été terminée avant la mise en place de la revue.</p></div>'
-    : rep.rooms.map(function (r) {
+    : repComplet.rooms.map(function (r) {
         var dn = r.steps.filter(function (s) { return s.done; }).length;
         return '<div class="card" style="padding:18px 20px">' +
           '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">' +
@@ -3445,11 +3702,14 @@ function viewOwnerMission() {
                une panne : l'image est là ; elle est en cours de récupération ;
                ou elle n'a jamais été déposée — comptes rendus d'avant la
                session 15, ou mission faite sans réseau. */
-            var url = s.id ? photosMission[s.id] : null;
+            var duCasier = s.id ? photosMission[s.id] : null;
+            var surLAppareil = s.id ? photoLocale(m.id, s.id) : null;
+            var url = duCasier || surLAppareil;
             var thumb = url
-              ? '<span class="revue-thumb" style="padding:0;overflow:hidden">' +
+              ? '<button type="button" class="revue-thumb" style="padding:0;overflow:hidden;cursor:zoom-in"' +
+                  act('photo-plein', { p: m.id + ':' + s.id }) + ' aria-label="Voir en grand la photo · ' + esc(s.label) + '">' +
                   '<img src="' + esc(url) + '" alt="Photo · ' + esc(s.label) + '" ' +
-                  'style="width:100%;height:100%;object-fit:cover;display:block"></span>'
+                  'style="width:100%;height:100%;object-fit:cover;display:block"></button>'
               : s.photo && s.done
                 ? '<span class="revue-thumb stripe">' + (photosEnCours ? '…' : 'PHOTO') + '</span>'
                 : '<span class="revue-thumb revue-thumb--none">' + (s.done ? '✓' : '—') + '</span>';
@@ -3459,9 +3719,10 @@ function viewOwnerMission() {
                 '<div style="font:500 11.5px Figtree,sans-serif;color:var(--muted2);margin-top:3px">' +
                   (!s.done ? 'Non validé'
                     : !s.photo ? 'Validé sans photo'
-                      : url ? 'Photo reçue'
-                        : photosEnCours ? 'Photo en cours de chargement…'
-                          : 'Validée · photo restée sur le téléphone') + '</div>' +
+                      : duCasier ? 'Photo reçue'
+                        : surLAppareil ? 'Photo prise · gardée sur cet appareil'
+                          : photosEnCours ? 'Photo en cours de chargement…'
+                            : 'Validée · photo restée sur le téléphone') + '</div>' +
               '</div></div>';
           }).join('') + '</div>' +
           '</div>';
@@ -3476,9 +3737,9 @@ function viewOwnerMission() {
       '<div style="font:500 12.5px Figtree,sans-serif;color:var(--muted)">' + esc(ag.role) + '</div></div>' +
       '</div>' : '<p class="sec-note">Prestataire inconnu.</p>') +
     '<div style="margin-top:14px;padding-top:12px;border-top:1px solid rgba(36,30,26,.07)">' +
-      [['Étapes validées', rep ? repDone + ' / ' + repTotal : '—'],
-       ['Photos envoyées', rep ? String(rep.photos) : '—'],
-       ['Articles sous le seuil', rep ? String(rep.lows.length) : '—'],
+      [['Étapes validées', repComplet ? repDone + ' / ' + repTotal : '—'],
+       ['Photos envoyées', repComplet ? String(repComplet.photos) : '—'],
+       ['Articles sous le seuil', repComplet ? String(repComplet.lows.length) : '—'],
        ['Rémunération', d.priceLabel]].map(function (r) {
         return '<div class="kv"><span class="k">' + r[0] + '</span><span class="v num" style="font-weight:700">' + esc(r[1]) + '</span></div>';
       }).join('') +
@@ -3498,6 +3759,42 @@ function viewOwnerMission() {
         '<button type="button" class="btn btn--quiet btn--sm" style="width:100%;margin-top:10px"' +
           act('ask-redo', { id: m.id }) + '>Demander une reprise</button>' +
       '</div>';
+
+  /* LES PROBLÈMES SIGNALÉS (session 16).
+     Le prestataire pouvait les envoyer depuis sa mission ; ils n'étaient
+     affichés nulle part côté propriétaire, sinon par un décompte sur le
+     tableau de bord. Ils sont désormais lisibles là où on les cherche :
+     dans la mission qui les a fait remonter. */
+  var pbs = problemesDe(m.id);
+  var problemesCard = !pbs.length ? '' : '<div class="card" style="padding:20px">' +
+    '<h2 style="font:700 16px Figtree,sans-serif;margin:0 0 4px">Problème signalé (' + pbs.length + ')</h2>' +
+    '<p class="sec-note" style="margin:0 0 12px">Envoyé par le prestataire pendant la mission.</p>' +
+    '<div class="stack" style="gap:12px">' + pbs.map(function (p) {
+      var ty = typeProbleme(p.kind);
+      return '<div style="border:1.5px solid rgba(36,30,26,.09);border-radius:16px;padding:13px 14px' +
+        (p.statut === 'traite' ? ';opacity:.62' : '') + '">' +
+        '<div style="display:flex;align-items:center;gap:9px;flex-wrap:wrap">' +
+          '<span class="dot" style="width:9px;height:9px;background:' + ty[1] + '"></span>' +
+          '<span style="font:700 14px Figtree,sans-serif;flex:1;min-width:0">' + esc(ty[0]) + '</span>' +
+          '<span class="badge ' + (p.statut === 'traite' ? 'badge--green' : 'badge--terra') + '">' +
+            (p.statut === 'traite' ? 'Traité' : 'À traiter') + '</span>' +
+        '</div>' +
+        '<div class="num" style="font:500 11.5px Figtree,sans-serif;color:var(--muted2);margin-top:4px">' +
+          esc((p.agent ? agent(p.agent).name + ' · ' : '') + fmtDate(p.date) + (p.at ? ' à ' + p.at : '')) + '</div>' +
+        (p.texte ? '<p style="font:500 13.5px/1.5 Figtree,sans-serif;margin:9px 0 0;white-space:pre-wrap">' +
+          esc(p.texte) + '</p>' : '<p class="sec-note" style="margin:9px 0 0">Sans commentaire.</p>') +
+        (p.photo
+          ? '<button type="button" style="margin-top:10px;width:120px;height:90px;border-radius:12px;overflow:hidden;padding:0;cursor:zoom-in;background:var(--fill)"' +
+              act('photo-plein', { p: 'probleme:' + p.id }) + ' aria-label="Voir la photo du problème en grand">' +
+              '<img src="' + esc(p.photo) + '" alt="Photo du problème" style="width:100%;height:100%;object-fit:cover;display:block"></button>'
+          : '<p class="sec-note" style="margin-top:8px">Aucune photo jointe.</p>') +
+        '<div style="margin-top:10px">' +
+          '<button type="button" class="btn btn--xs" style="background:var(--cream);color:var(--ink-soft)"' +
+            act('probleme-statut', { id: p.id }) + '>' +
+            (p.statut === 'traite' ? 'Rouvrir' : 'Marquer comme traité') + '</button>' +
+        '</div>' +
+        '</div>';
+    }).join('') + '</div></div>';
 
   /* Note libre, visible par le prestataire dans le détail de sa mission. */
   var noteCard = '<div class="card" style="padding:20px">' +
@@ -3521,13 +3818,13 @@ function viewOwnerMission() {
   '</div>';
 
   /* Bas de page : le relevé de stock envoyé avec la mission. */
-  var releve = !rep ? '' :
+  var releve = !repComplet ? '' :
     '<h2 class="sec-title" style="margin:30px 0 12px">Relevé de stock envoyé</h2>' +
     '<div class="grid-cards">' + grouped().map(function (g) {
       return '<div class="card">' +
         '<div style="font:700 15px Figtree,sans-serif">' + esc(g[0]) + '</div>' +
         '<div class="list" style="margin-top:8px">' + g[1].map(function (a) {
-          var qty = rep.qty[a.key] || 0, low = rep.lows.indexOf(a.key) >= 0;
+          var qty = repComplet.qty[a.key] || 0, low = repComplet.lows.indexOf(a.key) >= 0;
           var cls = qty === 0 ? 'cell-q--zero' : low ? 'cell-q--low' : 'cell-q--ok';
           return '<div class="list-row" style="padding:9px 0">' +
             '<span class="grow" style="font:500 13.5px Figtree,sans-serif;color:' + (low ? 'var(--terra-d)' : 'var(--ink)') + '">' +
@@ -3552,9 +3849,12 @@ function viewOwnerMission() {
         '<h2 class="sec-title" style="margin:0">Checklist exécutée</h2>' + checklist +
       '</section>' +
       '<section style="flex:1;min-width:min(100%,280px);display:flex;flex-direction:column;gap:14px">' +
-        noteCard + suivi + recap + decision +
+        problemesCard + noteCard + suivi + recap + decision +
+        (state.migMsg ? '<p class="sec-note">' + esc(state.migMsg) + '</p>' : '') +
+        '<button type="button" class="btn-danger-xs" style="align-self:flex-start"' +
+          act('remove-mission', { id: m.id }) + '>Supprimer cette mission</button>' +
       '</section>' +
-    '</div>' + releve);
+    '</div>' + releve + vueGrandePhoto());
 }
 
 /* --- Prestataires -------------------------------------------------------- */
@@ -3652,8 +3952,23 @@ function viewOwnerCal() {
           act('plan-today') + '>Aujourd’hui</button>' +
         '<button type="button" class="btn btn--xs" style="background:var(--cream);color:var(--ink-soft)"' +
           act('plan-move', { j: '7' }) + '>7 jours →</button>' +
+        /* Créer un séjour depuis le calendrier (session 16). Il fallait
+           jusqu'ici passer par « Biens & connexions », ouvrir le logement,
+           puis son onglet « Réservations » : trois écrans pour saisir une
+           réservation directe, alors que le calendrier est justement l'endroit
+           où l'on voit qu'une date est libre. */
+        '<button type="button" class="btn btn--xs" style="' +
+          (state.showNewResa ? 'background:var(--cream);color:var(--ink-soft)' : 'background:var(--terra);color:#fff') +
+          '"' + act('toggle-new-resa') + '>' +
+          (state.showNewResa ? 'Fermer le formulaire' : '+ Nouvelle réservation') + '</button>' +
       '</div>' +
     '</div>' +
+
+    (state.showNewResa
+      ? (state.props.length
+          ? formNewResa(null)
+          : '<p class="empty" style="margin-top:14px">Créez d’abord un logement dans « Biens &amp; connexions ».</p>')
+      : '') +
 
     '<div class="chiprow" style="margin-top:18px">' +
       '<span class="perm-label">Logements :</span>' +
@@ -3807,10 +4122,23 @@ function viewOwnerResa() {
             (avisSej.texte ? '<p class="avis-txt">« ' + esc(avisSej.texte) + ' »</p>' : '') + '</div></div>' : '') +
 
         '<div class="card" style="padding:22px">' +
-          '<h2 style="font:700 16px Figtree,sans-serif;margin:0 0 10px">Livret d’accueil</h2>' +
-          '<p class="sec-note" style="margin-bottom:10px">La page que voit le voyageur pour ce logement.</p>' +
-          '<button type="button" class="btn btn--sm" style="background:var(--cream);color:var(--ink-soft);width:100%"' +
-            act('nav', { path: '#/livret/' + pid }) + '>Ouvrir le livret</button>' +
+          '<h2 style="font:700 16px Figtree,sans-serif;margin:0 0 6px">Lien personnel de ' + esc(r.guest) + '</h2>' +
+          '<p class="sec-note" style="margin:0 0 10px">Ce lien n’appartient qu’à ce séjour : ' +
+            'le voyageur qui l’ouvre est reconnu sans rien taper. Le code d’accès et le Wi-Fi ' +
+            'ne s’affichent que pendant ses dates.</p>' +
+          '<input class="inp num" style="font-size:12.5px" readonly value="' + esc(lienSejour(r.id)) +
+            '" data-fid="lien-sejour-' + esc(r.id) + '">' +
+          '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">' +
+            '<button type="button" class="btn btn--xs" style="background:var(--terra);color:#fff"' +
+              act('copier-lien', { url: lienSejour(r.id) }) + '>Copier le lien</button>' +
+            '<button type="button" class="btn btn--xs" style="background:var(--cream);color:var(--ink-soft)"' +
+              act('copier-message-sejour', { rid: r.id }) + '>Copier le message tout prêt</button>' +
+          '</div>' +
+          '<div style="margin-top:14px;padding-top:12px;border-top:1px solid rgba(36,30,26,.08)">' +
+            '<button type="button" class="btn btn--sm" style="background:var(--cream);color:var(--ink-soft);width:100%"' +
+              act('nav', { path: '#/livret/' + pid }) + '>Voir le livret de ce logement</button>' +
+          '</div>' +
+          (state.migMsg ? '<p class="sec-note" style="margin-top:10px">' + esc(state.migMsg) + '</p>' : '') +
         '</div>' +
 
         '<button type="button" class="btn-danger-xs" style="align-self:flex-start"' +
@@ -3936,6 +4264,7 @@ var VARIABLES = [
   ['{heure_arrivee}', 'heure d’arrivée'], ['{heure_depart}', 'heure de départ'],
   ['{nuits}', 'nombre de nuits'], ['{voyageurs}', 'nombre de voyageurs'],
   ['{code}', 'code d’accès'], ['{wifi}', 'Wi-Fi'], ['{livret}', 'lien du livret d’accueil'],
+  ['{lien}', 'lien personnel de CE voyageur (il n’a rien à taper)'],
   ['{bienvenue}', 'lien d’accueil unique (le voyageur s’identifie)']
 ];
 
@@ -3946,12 +4275,12 @@ var MODELES_AUTO = [
     nom: 'Bienvenue et confirmation', quand: 'reservation', decalage: 0, heure: '10:00',
     texte: 'Bonjour {voyageur},\n\nMerci pour votre réservation au {logement} du {arrivee} au {depart} ({nuits} nuits).\n\n' +
       'L’arrivée se fait à partir de {heure_arrivee} et le départ avant {heure_depart}.\n\n' +
-      'Vous trouverez toutes les informations pratiques dans le livret d’accueil : {livret}\n\nÀ bientôt !'
+      'Vous trouverez toutes les informations pratiques dans votre livret d’accueil : {lien}\n\nÀ bientôt !'
   },
   {
     nom: 'La veille de l’arrivée', quand: 'avant_arrivee', decalage: 1, heure: '17:00',
     texte: 'Bonjour {voyageur},\n\nNous vous attendons demain au {logement} à partir de {heure_arrivee}.\n\n' +
-      'Accès : {code}\nWi-Fi : {wifi}\n\nTout est détaillé ici : {livret}\n\nBon voyage !'
+      'Accès : {code}\nWi-Fi : {wifi}\n\nTout est détaillé ici : {lien}\n\nBon voyage !'
   },
   {
     nom: 'Merci après le départ', quand: 'apres_depart', decalage: 1, heure: '11:00',
@@ -3974,6 +4303,9 @@ function remplirVars(txt, pid, r) {
     '{nuits}': nights(r.start, r.end), '{voyageurs}': r.guests,
     '{code}': inf.code || '—', '{wifi}': inf.wifi || '—',
     '{livret}': appUrl() + '#/livret/' + pid,
+    // Le lien PERSONNEL de ce voyageur-là : il est reconnu sans rien taper
+    // (session 16, D-80). C'est celui à préférer dans un message programmé.
+    '{lien}': lienSejour(r.id),
     // Le lien unique, identique pour tous les logements (D-46) : c'est celui
     // qu'on colle dans les messages types des plateformes.
     '{bienvenue}': appUrl() + '#/bienvenue'
@@ -5261,11 +5593,22 @@ function avisSejour(pid) {
 
 /* Formulaire de réservation manuelle. À l'enregistrement, une mission de ménage
    est créée automatiquement le jour du départ (même règle que l'iCal — D-06). */
+/* `pid` null : le formulaire choisit lui-même son logement. C'est le cas
+   quand on crée une réservation depuis le calendrier (session 16), où l'on
+   voit les quatre logements côte à côte. */
 function formNewResa(pid) {
   var r = state.nr;
   var premier = state.services[0];
+  var bien = pid || r.pid || (state.props[0] ? state.props[0].id : '');
   return '<div class="pop" style="margin-top:14px;padding:16px;background:var(--sand);border-radius:16px">' +
     '<div class="cols" style="gap:12px">' +
+      (pid ? '' :
+        '<div style="flex:1;min-width:min(100%,180px)"><label class="lab" for="nr-pid">Logement</label>' +
+          '<select class="inp" id="nr-pid" data-fid="nr-pid" data-ch="nr-pid">' +
+            (r.pid ? '' : '<option value="">— à choisir —</option>') +
+            state.props.map(function (p) {
+              return '<option value="' + esc(p.id) + '"' + (r.pid === p.id ? ' selected' : '') + '>' + esc(p.name) + '</option>';
+            }).join('') + '</select></div>') +
       '<div style="flex:1;min-width:min(100%,150px)"><label class="lab" for="nr-plat">Plateforme</label>' +
         '<select class="inp" id="nr-plat" data-fid="nr-plat" data-ch="nr-plat">' + Object.keys(PLATS).map(function (k) {
           return '<option value="' + esc(k) + '"' + (r.plat === k ? ' selected' : '') + '>' + esc(k) + '</option>';
@@ -5280,11 +5623,11 @@ function formNewResa(pid) {
         '<input class="inp num" id="nr-end" type="date" value="' + esc(r.end) + '" data-fid="nr-end" data-ch="nr-end"></div>' +
       '<div style="flex:1;min-width:min(100%,150px)"><label class="lab" for="nr-montant">Montant (€)</label>' +
         '<input class="inp num" id="nr-montant" type="number" min="0" placeholder="' +
-          (parseInt((state.info[pid] || {}).prixNuit, 10) || 0) + ' € / nuit" value="' + esc(r.montant) +
+          (parseInt((state.info[bien] || {}).prixNuit, 10) || 0) + ' € / nuit" value="' + esc(r.montant) +
           '" data-fid="nr-montant" data-in="nr-montant"></div>' +
     '</div>' +
     '<div style="display:flex;gap:10px;align-items:center;margin-top:14px;flex-wrap:wrap">' +
-      '<button type="button" class="btn btn--primary btn--sm"' + act('create-resa', { pid: pid }) + '>Enregistrer la réservation</button>' +
+      '<button type="button" class="btn btn--primary btn--sm"' + act('create-resa', { pid: pid || '' }) + '>Enregistrer la réservation</button>' +
       '<span class="sec-note">Une mission « ' + esc(premier ? premier.label : 'ménage') + ' » sera créée automatiquement le jour du départ.</span>' +
     '</div>' +
   '</div>';
@@ -5642,6 +5985,48 @@ function bvFormulaire() {
           esc(t('bvPlusTard')) + '</button>' +
       '</div>' +
     '</section>', t('bvSousTrouve'));
+}
+
+/* LE LIEN PERSONNEL (session 16 — D-80)
+
+   Le voyageur ouvre `#/sejour/<identifiant>` : on sait déjà qui il est, quel
+   logement, quelles dates. On lui pose son souvenir dans le navigateur —
+   exactement comme le faisait `ouvrirSejour()` après vérification des quatre
+   chiffres — puis on l'emmène au formulaire, qui n'a plus qu'à être complété.
+
+   Le propriétaire, lui, ne doit pas se voir attribuer un séjour de voyageur
+   en cliquant sur le lien depuis son écran : il file directement au livret,
+   en aperçu.
+
+   Quand l'identifiant ne correspond à rien — lien tronqué dans un SMS,
+   séjour supprimé depuis — on le DIT et on renvoie sur le lien unique, plutôt
+   que d'afficher une page vide (règle D-74). */
+function viewSejour() {
+  var f = resaById(route.id);
+
+  if (!f) {
+    return bvCoque(
+      '<section class="lv-section"><div class="bv-card">' +
+        '<h2 class="bv-h">Ce lien n’est plus valable</h2>' +
+        '<p class="bv-p">Le séjour auquel il renvoie n’existe plus, ou le lien a été coupé ' +
+          'en chemin. Vous pouvez retrouver votre livret avec votre date d’arrivée et les ' +
+          '4 derniers chiffres de votre téléphone.</p>' +
+        '<button type="button" class="btn btn--primary bv-go"' +
+          act('nav', { path: '#/bienvenue' }) + '>Retrouver mon livret</button>' +
+      '</div></section>', 'Lien introuvable');
+  }
+
+  if (state.auth === 'owner') { location.replace('#/livret/' + f.pid); return ''; }
+
+  /* Le formulaire n'est proposé qu'une fois : au premier passage. Ensuite le
+     lien mène droit au livret — un voyageur qui rouvre son lien tous les
+     jours n'a pas à repasser par un questionnaire. */
+  var g = state.guestPass;
+  var dejaVu = g && g.resa === f.r.id;
+  if (dejaVu && state.bienvenue.etape !== 'form') { location.replace('#/livret/' + f.pid); return ''; }
+
+  if (!dejaVu) { poserSejour(f); save(); }
+  return bvFormulaire();
 }
 
 function viewBienvenue() {
@@ -6314,40 +6699,101 @@ function dataUrlEnImage(url) {
 }
 
 /** Ouvre l'appareil photo (ou la galerie) et enregistre le cliché sur l'étape. */
-function prendrePhoto(mid, sid) {
+/* OUVRE L'APPAREIL PHOTO, OU LA GALERIE (session 16)
+
+   Deux changements par rapport à la session 15 :
+
+   1. `capture="environment"` est retiré. Sur un iPhone, cet attribut
+      **impose** l'appareil photo : impossible de reprendre une photo déjà
+      prise, impossible de finir une mission depuis un ordinateur, et rien ne
+      se passe du tout quand le navigateur refuse la caméra. Sans lui, le
+      téléphone propose les deux — « Prendre une photo » ou « Photothèque » —
+      ce qui est plus permissif, jamais moins.
+   2. Le champ n'est retiré du document qu'après lecture du fichier, et un
+      `change` sans fichier (l'utilisateur a annulé) efface le message
+      d'attente au lieu de le laisser tourner indéfiniment.
+
+   Rend `{ url, image }` : `url` s'affiche et s'enregistre sur l'appareil,
+   `image` se dépose dans le casier partagé. */
+function choisirPhoto(quand) {
   var champ = document.createElement('input');
   champ.type = 'file';
   champ.accept = 'image/*';
-  champ.setAttribute('capture', 'environment');   // appareil arrière du téléphone
   champ.style.cssText = 'position:fixed;left:-9999px;top:0';
   document.body.appendChild(champ);
 
-  champ.addEventListener('change', function () {
-    var f = champ.files && champ.files[0];
+  var fini = false;
+  var nettoyer = function () {
     if (champ.parentNode) champ.parentNode.removeChild(champ);
-    if (!f) return;
+  };
+
+  champ.addEventListener('change', function () {
+    if (fini) return;
+    fini = true;
+    var f = champ.files && champ.files[0];
+    nettoyer();
+    if (!f) { state.mMsg = ''; render(); return; }
     state.mMsg = 'Enregistrement de la photo…';
     render();
-    reduirePhoto(f, function (res, err) {
-      if (err) { state.mMsg = err; render(); return; }
-      var ph = state.photos[mid] || {};
-      ph[sid] = res.url;
-      state.photos[mid] = ph;
-      flash = mid + sid;
-      if (save()) {
-        state.mMsg = '';
-        envoiPhoto(mid, sid, res.image);      // dépôt dans le casier, en arrière-plan
-      } else {
-        delete ph[sid];
-        state.mMsg = 'La mémoire de ce téléphone est pleine : la photo n\'a pas pu être gardée. ' +
-          'Termine cette mission, ou supprime une photo déjà prise.';
-      }
-      render();
-      setTimeout(function () { flash = null; }, 700);
-    });
+    reduirePhoto(f, quand);
+  });
+
+  // Annulation : aucun `change` n'est envoyé par certains navigateurs.
+  champ.addEventListener('cancel', function () {
+    if (fini) return;
+    fini = true;
+    nettoyer();
+    state.mMsg = '';
+    render();
   });
 
   champ.click();
+}
+
+/* La mémoire du navigateur est petite (environ 5 Mo) et les photos la
+   remplissent. Plutôt que de perdre la photo qu'on vient de prendre, on fait
+   d'abord de la place : les photos des missions **déjà validées** par le
+   propriétaire ne servent plus à rien sur le téléphone du prestataire.
+   Rend le nombre de missions libérées. */
+function libererPlace(missionEnCours) {
+  var n = 0;
+  Object.keys(state.photos).forEach(function (mid) {
+    if (mid === missionEnCours) return;
+    var m = state.missions.find(function (x) { return x.id === mid; });
+    // Mission disparue, ou terminée et validée : ses photos ont fait leur travail.
+    if (m && !(m.status === 'termine' && m.review === 'valide')) return;
+    delete state.photos[mid];
+    Object.keys(state.photosEnvoi).forEach(function (k) {
+      if (k.indexOf(mid + ':') === 0) delete state.photosEnvoi[k];
+    });
+    n++;
+  });
+  return n;
+}
+
+function prendrePhoto(mid, sid) {
+  choisirPhoto(function (res, err) {
+    if (err) { state.mMsg = err; render(); return; }
+    var ph = state.photos[mid] || {};
+    ph[sid] = res.url;
+    state.photos[mid] = ph;
+    flash = mid + sid;
+
+    var ecrit = save();
+    // Mémoire pleine : on fait de la place et on retente, une fois.
+    if (!ecrit && libererPlace(mid)) ecrit = save();
+
+    if (ecrit) {
+      state.mMsg = '';
+      envoiPhoto(mid, sid, res.image);      // dépôt dans le casier, en arrière-plan
+    } else {
+      delete ph[sid];
+      state.mMsg = 'La mémoire de ce téléphone est pleine : la photo n\'a pas pu être gardée. ' +
+        'Supprime une photo déjà prise sur cette mission, puis réessaie.';
+    }
+    render();
+    setTimeout(function () { flash = null; }, 700);
+  });
 }
 
 function shoot(mid, sid) {
@@ -6424,6 +6870,9 @@ function finish(id) {
     qty: Object.assign({}, d.qty),
     lows: lowKeys
   };
+  // Les signalements faits pendant la mission voyagent avec son compte rendu
+  // (session 16) : les écraser ici les ferait disparaître chez le propriétaire.
+  verserProblemes(id);
 
   state.stock[d.prop] = Object.assign({}, d.qty);
   m.status = 'termine';
@@ -6623,6 +7072,26 @@ var actions = {
       dit('Le lien est affiché ci-dessus : sélectionne-le et copie-le à la main.');
     }
   },
+  /* Le message tout prêt à envoyer au voyageur avec son lien personnel
+     (session 16). Même repli que « Copier le lien ». */
+  'copier-message-sejour': function (el) {
+    var f = resaById(el.dataset.rid);
+    if (!f) return;
+    var texte = texteSejour(f.pid, f.r);
+    var dit = function (m) { state.migMsg = m; render(); };
+    var replier = function () {
+      dit('Le presse-papiers a été refusé : le message s\'affiche, copie-le à la main.');
+      prompt('Sélectionne ce message et copie-le :', texte);
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(texte).then(function () {
+        dit('✅ Message copié, lien personnel compris. Colle-le dans un SMS, un WhatsApp ou un mail.');
+      }, replier);
+    } else {
+      replier();
+    }
+  },
+
   /* Le message d'accompagnement, lien compris. Même repli que « Copier le
      lien » : si le navigateur refuse le presse-papiers, on montre le texte
      plutôt que de laisser le bouton sans effet (leçon de la session 8). */
@@ -6777,17 +7246,121 @@ var actions = {
     save(); render();
   },
   'problem-kind': function (el) { state.problemKind = el.dataset.k; save(); render(); },
-  'problem-photo': function () { state.problemPhoto = !state.problemPhoto; save(); render(); },
-  'send-problem': function (el) {
-    state.problems.push({ kind: state.problemKind, agent: state.me, mission: el.dataset.id });
-    state.problemKind = null;
-    state.problemPhoto = false;
-    save();
-    go('#/app/missions/' + el.dataset.id + '/checklist');
+
+  /* Une VRAIE photo, comme celles de la checklist (session 16) : l'appui
+     ouvre l'appareil photo au lieu d'allumer un mot. */
+  'problem-photo': function () {
+    choisirPhoto(function (res, err) {
+      if (err) { state.mMsg = err; render(); return; }
+      var avant = state.problemPhoto;
+      state.problemPhoto = res.url;
+      if (save()) { state.mMsg = ''; }
+      else {
+        state.problemPhoto = avant;
+        state.mMsg = 'La mémoire de ce téléphone est pleine : la photo n\'a pas pu être gardée. ' +
+          'Envoie ton commentaire sans photo, ou termine une mission déjà faite.';
+      }
+      render();
+    });
   },
+  'problem-photo-off': function () { state.problemPhoto = ''; state.mMsg = ''; save(); render(); },
+
+  'send-problem': function (el) {
+    var m = mission(el.dataset.id);
+    if (!m) return;
+    state.problems.push({
+      id: 'pb_' + Date.now().toString(36) + jeton(4),
+      kind: state.problemKind,
+      texte: (state.problemTexte || '').trim(),
+      photo: state.problemPhoto || '',
+      agent: state.me,
+      mission: m.id,
+      prop: m.prop,
+      date: m.date,
+      at: nowHM(),
+      statut: 'ouvert'
+    });
+    state.problemKind = null;
+    state.problemTexte = '';
+    state.problemPhoto = '';
+    state.mMsg = '';
+    if (!save()) {
+      state.mMsg = 'La mémoire de ce téléphone est pleine : le signalement n\'a pas pu être ' +
+        'enregistré. Retire la photo et réessaie.';
+      render();
+      return;
+    }
+    /* Le signalement voyage avec le compte rendu de la mission : c'est lui
+       que le propriétaire relit. On pousse donc la mission dans la foulée. */
+    verserProblemes(m.id);
+    save();
+    if (typeof DB !== 'undefined' && DB.estDispo() && DB.profil()) DB.majMission(m);
+    go('#/app/missions/' + m.id + '/checklist');
+  },
+
+  /* Une photo en grand, par-dessus l'écran (session 16). Ce n'est pas une
+     donnée : elle n'est pas enregistrée, et `load()` la referme. */
+  'photo-plein': function (el) { state.photoPlein = el.dataset.p; render(); },
+  'photo-fermer': function () { state.photoPlein = null; render(); },
 
   /* Propriétaire --------------------------------------------------------- */
   'mission-filter': function (el) { state.missionFilter = el.dataset.f; save(); render(); },
+  'probleme-statut': function (el) {
+    var p = state.problems.find(function (x) { return x.id === el.dataset.id; });
+    if (!p) return;
+    p.statut = p.statut === 'traite' ? 'ouvert' : 'traite';
+    save(); render();
+  },
+
+  /* SUPPRIMER UNE MISSION (session 16).
+     Elle manquait tout simplement : une mission créée par erreur, ou dont le
+     séjour est annulé, ne pouvait plus être retirée. On prévient de ce qu'on
+     emporte avec elle — le compte rendu, les photos, la ligne de paie — et
+     on le dit au cahier partagé, sans quoi elle reviendrait à la première
+     relecture. */
+  'remove-mission': function (el) {
+    var m = mission(el.dataset.id);
+    if (!m) return;
+    var d = decorate(m);
+    var paye = state.done.some(function (x) { return x.mid === m.id; });
+
+    var avertir = 'Supprimer la mission « ' + service(m.type).label + ' » du ' + d.dateLabel +
+      ' à ' + prop(m.prop).name + ' ?\n\n';
+    if (m.status === 'prise' || m.status === 'encours') {
+      avertir += '⚠️ ' + agent(m.taker).name + ' l\'a prise : elle disparaîtra de son téléphone.\n\n';
+    }
+    if (m.status === 'termine') {
+      avertir += '⚠️ Elle est terminée : son compte rendu, ses photos' +
+        (paye ? ' et sa ligne de rémunération' : '') + ' seront effacés.\n\n';
+    }
+    avertir += 'Cette suppression est définitive.';
+    if (!confirm(avertir)) return;
+
+    state.missions = state.missions.filter(function (x) { return x.id !== m.id; });
+    delete state.reports[m.id];
+    delete state.photos[m.id];
+    Object.keys(state.photosEnvoi).forEach(function (k) {
+      if (k.indexOf(m.id + ':') === 0) delete state.photosEnvoi[k];
+    });
+    // La ligne de paie suit la mission : la garder ferait payer un travail
+    // dont il ne reste aucune trace.
+    state.done = state.done.filter(function (x) { return x.mid !== m.id; });
+    state.problems = state.problems.filter(function (p) { return p.mission !== m.id; });
+    if (state.draft && state.draft.id === m.id) state.draft = null;
+    if (state.ready[m.prop] && state.ready[m.prop].mid === m.id) delete state.ready[m.prop];
+    save();
+
+    if (typeof DB !== 'undefined' && DB.estDispo() && DB.profil()) {
+      DB.supprimerMission(m.id).then(function (ok) {
+        if (!ok) {
+          state.migMsg = '⚠️ La mission est retirée de cet ordinateur, mais le cahier partagé l\'a ' +
+            'refusée : ' + (DB.erreur() || 'raison inconnue') + '. Elle risque de revenir.';
+          render();
+        }
+      });
+    }
+    go('#/admin/missions');
+  },
   'toggle-new': function () { state.showNew = !state.showNew; save(); render(); },
   'create-mission': function () {
     var nm = state.nm;
@@ -6976,7 +7549,21 @@ var actions = {
       state.coursesProps = state.coursesProps.filter(function (x) { return x !== pid; });
     }
     if (state.nm.prop === pid) state.nm.prop = state.props.length ? state.props[0].id : '';
+    if (state.nr.pid === pid) state.nr.pid = '';
     save();
+
+    /* Le cahier partagé aussi (session 16) : sans cela le logement revenait à
+       la première relecture, avec ses séjours et ses missions (que la base
+       efface d'elle-même, `on delete cascade`). */
+    if (typeof DB !== 'undefined' && DB.estDispo() && DB.profil()) {
+      DB.supprimerBien(pid).then(function (ok) {
+        if (!ok) {
+          state.migMsg = '⚠️ Le logement est retiré de cet ordinateur, mais le cahier partagé l\'a ' +
+            'refusé : ' + (DB.erreur() || 'raison inconnue') + '. Il risque de revenir.';
+          render();
+        }
+      });
+    }
     go('#/admin/biens');
   },
 
@@ -7006,7 +7593,17 @@ var actions = {
   },
 
   /* Réservations manuelles ------------------------------------------------ */
-  'toggle-new-resa': function () { state.showNewResa = !state.showNewResa; save(); render(); },
+  'toggle-new-resa': function () {
+    state.showNewResa = !state.showNewResa;
+    // Ouvert depuis le calendrier, le formulaire part du premier logement
+    // affiché et du premier jour montré : on corrige plutôt qu'on ne saisit.
+    if (state.showNewResa && !state.nr.pid) {
+      var vus = planPropIds();
+      state.nr.pid = vus[0] || (state.props[0] ? state.props[0].id : '');
+    }
+    if (state.showNewResa && !state.nr.start) state.nr.start = TODAY;
+    save(); render();
+  },
   /* Calendrier, réservations, messages, statistiques ---------------------- */
   'plan-move': function (el) {
     state.planStart = jourPlus(state.planStart, parseInt(el.dataset.j, 10) || 0);
@@ -7552,19 +8149,37 @@ var actions = {
 /* Enregistre une réservation saisie à la main et crée, comme le ferait l'iCal,
    la mission de ménage du jour du départ (D-06). Le nom et le nombre de
    voyageurs sont recopiés sur la mission : le prestataire les voit. */
+/* `pid` vaut null quand la saisie vient du calendrier, où aucun logement
+   n'est encore choisi (session 16) : c'est alors le formulaire qui le porte.
+   Le séjour créé est ouvert aussitôt, pour que le lien personnel du voyageur
+   soit sous la main sans avoir à le chercher. */
 function createResa(pid) {
   var r = state.nr;
+  var bien = pid || r.pid;
+  if (!bien) { alert('Choisissez le logement.'); return; }
+  if (!prop(bien) || prop(bien).gone) { alert('Ce logement n\'existe plus.'); return; }
+
   var nom = (r.guest || '').trim();
   if (!nom) { alert('Indiquez le nom du voyageur.'); return; }
   if (!r.start || !r.end) { alert('Indiquez les dates d\'arrivée et de départ.'); return; }
   if (r.end <= r.start) { alert('Le départ doit être après l\'arrivée.'); return; }
 
-  // Même chemin que les futures synchronisations : on normalise, puis on ajoute.
-  ajouterResa(pid, normaliserResa(r, 'manuel', pid));
+  /* Un séjour qui en chevauche un autre est presque toujours une erreur de
+     saisie : on le dit, mais on laisse passer si c'est voulu (une chambre
+     louée deux fois, un séjour annulé qu'on remplace). */
+  var chevauche = resasOf(bien).filter(function (x) {
+    return x.statut !== 'annule' && x.start < r.end && r.start < x.end;
+  });
+  if (chevauche.length && !confirm('Attention : ' + chevauche[0].guest + ' occupe déjà ce logement du ' +
+    fmtDate(chevauche[0].start) + ' au ' + fmtDate(chevauche[0].end) + '.\n\nEnregistrer quand même ?')) return;
 
-  state.nr = { plat: r.plat, guest: '', guests: 2, start: '', end: '', montant: '' };
+  // Même chemin que les futures synchronisations : on normalise, puis on ajoute.
+  var resa = ajouterResa(bien, normaliserResa(r, 'manuel', bien));
+
+  state.nr = { plat: r.plat, guest: '', guests: 2, start: '', end: '', montant: '', pid: bien };
   state.showNewResa = false;
-  save(); render();
+  save();
+  go('#/admin/reservations/' + resa.id);
 }
 
 /* Saisies silencieuses : mettent l'état à jour sans redessiner l'écran,
@@ -7592,6 +8207,9 @@ var inputs = {
   'new-room': function (el) { state.newRoom = el.value; },
   'new-feed': function (el) { state.newFeed = el.value; },
   'nr-montant': function (el) { state.nr.montant = el.value; },
+  // Le commentaire du signalement (session 16). Saisie silencieuse : un
+  // redessin à chaque touche ferait sauter le curseur.
+  'problem-texte': function (el) { state.problemTexte = el.value; },
 
   /* Montant réel d'un séjour : vide = calculé au prix par nuit du logement. */
   'resa-montant': function (el) {
@@ -7702,6 +8320,7 @@ var changes = {
 
   // Les champs d'heure et de date redessinent l'écran : le livret les reprend.
   'bien-field': function (el) { setBienField(el); render(); },
+  'nr-pid': function (el) { state.nr.pid = el.value; save(); render(); },
   'nr-plat': function (el) { state.nr.plat = el.value; save(); },
   'nr-start': function (el) { state.nr.start = el.value; save(); },
   'nr-end': function (el) { state.nr.end = el.value; save(); },
@@ -7727,6 +8346,7 @@ var VIEWS = {
   'invitation': viewInvitation,
   'p-attente': viewPrestaAttente,
   'bienvenue': viewBienvenue,
+  'sejour': viewSejour,
   'livret': viewLivret,
   'livret-sec': viewLivretSection,
   'p-missions': viewPrestaMissions,

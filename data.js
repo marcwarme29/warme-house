@@ -724,6 +724,30 @@ var DB = (function () {
     return !!(dispo && profil && profil.role === 'provider');
   }
 
+  /* ---- SUPPRIMER POUR DE BON (session 16) --------------------------------
+     `pousser()` ne sait qu'ajouter et modifier. Une ligne effacée dans
+     l'application restait donc dans le cahier partagé, et **revenait à la
+     première relecture** : missions, séjours et logements semblaient
+     impossibles à supprimer. Il faut donc le dire au cahier, explicitement.
+
+     La suppression n'est pas silencieuse : si la base refuse, on renseigne
+     `derniereErreur` et on rend `false`, pour que l'écran puisse le dire
+     (règle D-72 : une écriture refusée doit se voir). */
+  function supprimerLigne(table, id) {
+    if (!dispo || !profil || !id) return Promise.resolve(true);
+    return client.from(table).delete().eq('id', id).then(function (r) {
+      if (r && r.error) { derniereErreur = messageClair(r.error); return false; }
+      return true;
+    }).catch(function (e) {
+      derniereErreur = messageClair(e);
+      return false;
+    });
+  }
+
+  function supprimerMission(id) { return supprimerLigne('missions', id); }
+  function supprimerResa(id) { return supprimerLigne('reservations', id); }
+  function supprimerBien(id) { return supprimerLigne('properties', id); }
+
   /* ---- LES PHOTOS DE CHECKLIST (lot 2) -----------------------------------
      Un cahier range du texte ; les images vont dans un **casier** à part
      (Supabase Storage), et le cahier ne garde que l'étiquette qui dit où les
@@ -1056,6 +1080,9 @@ var DB = (function () {
     majComptesLies: majComptesLies,
     prendreMission: prendreMission,
     majMission: majMission,
+    supprimerMission: supprimerMission,
+    supprimerResa: supprimerResa,
+    supprimerBien: supprimerBien,
     estPrestataireRelie: estPrestataireRelie,
     envoyerPhoto: envoyerPhoto,
     supprimerPhoto: supprimerPhoto,
