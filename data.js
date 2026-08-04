@@ -229,9 +229,16 @@ var DB = (function () {
     if (/Failed to fetch|NetworkError|network/i.test(m)) return 'Pas de connexion internet, ou le projet Supabase ne répond pas.';
     if (/row-level security/i.test(m)) return 'Ce compte n\'a pas le droit d\'écrire ici.';
     if (/JWT|token/i.test(m)) return 'La session a expiré : reconnecte-toi.';
+    /* « Cette fonction n'existe pas » veut toujours dire : un script n'a pas
+       été collé. On nomme LEQUEL — il y en a plusieurs depuis le lot 3, et un
+       message qui désigne le mauvais fait perdre du temps (session 18). */
     if (/schema cache|Could not find the (function|table)/i.test(m)) {
+      var script = /sejour_par_lien|chercher_sejour|enregistrer_voyageur|signaler_depart|nom_simple/i.test(m)
+        ? '« 07-livret-voyageur.sql »'
+        : /invitation/i.test(m) ? '« 04-invitations.sql »'
+          : 'celui qui manque (voir le dossier supabase/)';
       return 'Le cahier partagé n\'est pas encore à jour : le propriétaire doit coller le script ' +
-        '« 04-invitations.sql » dans Supabase (SQL Editor → New query → Run).';
+        script + ' dans Supabase (SQL Editor → New query → Run).';
     }
     if (/User already registered/i.test(m)) return 'Un compte existe déjà avec cette adresse e-mail : utilise « Se connecter ».';
     if (/Password should be at least/i.test(m)) return 'Le mot de passe est trop court : il faut au moins 6 caractères.';
@@ -316,27 +323,48 @@ var DB = (function () {
 
   /* --- les réservations --- */
 
+  /* CE QUE LE PROPRIÉTAIRE ÉCRIT, ET CE QU'IL NE DOIT PAS ÉCRASER (session 18).
+
+     Depuis le lot 3, six colonnes appartiennent au **voyageur** : son
+     téléphone, son e-mail, son heure d'arrivée, son nombre de personnes, son
+     accord de démarchage et son départ signalé. Il les écrit lui-même, depuis
+     son livret, par la fonction `enregistrer_voyageur`.
+
+     Or `pousser()` est un **upsert** : il remplace les colonnes qu'il envoie.
+     Si le propriétaire renvoyait ces six-là à vide — ce qui est leur valeur
+     sur son écran tant qu'il n'a pas relu le cahier — il effacerait ce que le
+     voyageur vient de saisir, quelques secondes plus tôt. Même famille de
+     faute que D-75.
+
+     Règle : une colonne du voyageur n'est envoyée que si on a **vraiment**
+     quelque chose à y mettre. Un upsert n'écrit que les colonnes fournies :
+     ce qui est omis reste tel quel dans le cahier. */
   function resaVersBase(r, pid) {
-    return {
+    var ligne = {
       id: r.id,
       property_id: pid,
       uid: r.uid || null,
       source: r.source || 'manuel',
       plat: r.plat || '',
       guest: r.guest || '',
-      guests: r.guests || null,
       start_date: r.start,
       end_date: r.end,
       montant: (r.montant === null || r.montant === undefined) ? null : r.montant,
-      statut: r.statut || 'confirme',
-      tel4: r.tel4 || null,
-      tel: r.tel || null,
-      mail: r.mail || null,
-      arrivee_prevue: r.arriveePrevue || null,
-      guest_ok: !!r.guestOk,
-      demarchable: !!r.demarchable,
-      depart_at: departSignale(pid, r)
+      statut: r.statut || 'confirme'
     };
+
+    // Les colonnes du voyageur : silence plutôt qu'un vide destructeur.
+    if (r.guests) ligne.guests = r.guests;
+    if (r.tel4) ligne.tel4 = r.tel4;
+    if (r.tel) ligne.tel = r.tel;
+    if (r.mail) ligne.mail = r.mail;
+    if (r.arriveePrevue) ligne.arrivee_prevue = r.arriveePrevue;
+    if (r.guestOk) ligne.guest_ok = true;
+    if (r.demarchable) ligne.demarchable = true;
+    var parti = departSignale(pid, r);
+    if (parti) ligne.depart_at = parti;
+
+    return ligne;
   }
 
   function compterResas() {
@@ -830,6 +858,70 @@ var DB = (function () {
       });
   }
 
+  /* ---- LE LIVRET DU VOYAGEUR (lot 3) -------------------------------------
+
+     Le voyageur n'a **pas de compte**, et n'en aura jamais. Le cahier partagé
+     ne lui ouvre donc rien : c'est la règle « par défaut, personne ne voit
+     rien » du script 01. Jusqu'à la session 18, le livret vivait dans le
+     navigateur du propriétaire, et un voyageur qui ouvrait son lien depuis
+     son propre téléphone tombait sur une page vide.
+
+     Les quatre fonctions de `supabase/07-livret-voyageur.sql` sont des
+     **portes étroites** : elles s'exécutent avec les droits de leur auteur
+     mais ne font que ce qui est écrit dedans. On ne peut ni lister les
+     séjours, ni lire une table ; on peut demander « le séjour dont voici le
+     lien », et c'est tout. Le code d'accès et le Wi-Fi n'en sortent que
+     pendant les dates du séjour (D-51).
+     ---------------------------------------------------------------------- */
+
+  /** Le séjour désigné par un lien personnel. Rend null si le lien ne
+      correspond à rien — jamais une erreur : un voyageur n'a pas à lire un
+      message technique parce qu'un SMS a coupé son lien. */
+  function sejourParLien(jeton) {
+    if (!dispo || !jeton) return Promise.resolve(null);
+    return client.rpc('sejour_par_lien', { jeton: jeton }).then(function (r) {
+      if (r.error) throw new Error(messageClair(r.error));
+      return (r.data || [])[0] || null;
+    });
+  }
+
+  /** Retrouver un séjour par le nom du voyageur et sa date d'arrivée. */
+  function chercherSejour(nom, jour) {
+    if (!dispo) return Promise.resolve([]);
+    return client.rpc('chercher_sejour', { nom: nom || '', jour: jour }).then(function (r) {
+      if (r.error) throw new Error(messageClair(r.error));
+      return r.data || [];
+    });
+  }
+
+  /* Le voyageur laisse ses coordonnées. La fonction met aussi à jour les
+     missions concernées : c'est ainsi que la prestataire apprend qui arrive
+     derrière et à quelle heure. */
+  function enregistrerVoyageur(jeton, d) {
+    if (!dispo || !jeton) return Promise.reject(new Error('Lien inconnu.'));
+    return client.rpc('enregistrer_voyageur', {
+      jeton: jeton,
+      p_nom: d.nom || null,
+      p_tel: d.tel || null,
+      p_mail: d.mail || null,
+      p_guests: d.guests ? parseInt(d.guests, 10) : null,
+      p_arrivee: d.arrivee || null,
+      p_optin: typeof d.optin === 'boolean' ? d.optin : null
+    }).then(function (r) {
+      if (r.error) throw new Error(messageClair(r.error));
+      return r.data === true;
+    });
+  }
+
+  /** « J'ai quitté le logement ». */
+  function signalerDepart(jeton, heure) {
+    if (!dispo || !jeton) return Promise.resolve(false);
+    return client.rpc('signaler_depart', { jeton: jeton, heure: heure || '' }).then(function (r) {
+      if (r.error) throw new Error(messageClair(r.error));
+      return r.data === true;
+    });
+  }
+
   /* --- rapprochement fiche ↔ compte, depuis l'écran Prestataires --- */
 
   function lierCompte(uid, fiche) {
@@ -1111,6 +1203,11 @@ var DB = (function () {
     envoyerPhoto: envoyerPhoto,
     supprimerPhoto: supprimerPhoto,
     urlsPhotos: urlsPhotos,
+    // Le livret du voyageur (lot 3) — appelable sans compte.
+    sejourParLien: sejourParLien,
+    chercherSejour: chercherSejour,
+    enregistrerVoyageur: enregistrerVoyageur,
+    signalerDepart: signalerDepart,
     pousser: pousser,
     pousserMaintenant: pousserMaintenant,
     ecouter: ecouter,

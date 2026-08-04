@@ -311,16 +311,19 @@ var T = {
   // Porte d'entrée
   bvSous:       ['Vous arrivez dans un logement MAISON WARME', 'You are arriving at a MAISON WARME property'],
   bvTitre:      ['Retrouvez votre séjour', 'Find your booking'],
-  bvP:          ['Deux informations suffisent. Les 4 chiffres sont ceux du numéro de téléphone que vous avez donné à la plateforme au moment de réserver.',
-                 'Two details are enough. The 4 digits are from the phone number you gave the booking platform.'],
+  bvP:          ['Deux informations suffisent : votre nom, tel que vous l’avez donné au moment de réserver, et la date de votre arrivée.',
+                 'Two details are enough: your name, as given when you booked, and your arrival date.'],
   bvDate:       ['Date de votre arrivée', 'Your arrival date'],
+  bvNomTitre:   ['Votre nom', 'Your name'],
+  bvErrNomCourt: ['Indiquez votre nom (au moins 3 lettres).', 'Please enter your name (at least 3 letters).'],
+  bvCherche:    ['Recherche…', 'Searching…'],
   bvTel:        ['4 derniers chiffres de votre téléphone', 'Last 4 digits of your phone number'],
   bvContinuer:  ['Continuer', 'Continue'],
   bvSaisPas:    ['Je ne sais pas quoi mettre →', 'I don’t know what to enter →'],
   bvErrDate:    ['Indiquez d’abord la date de votre arrivée.', 'Please enter your arrival date first.'],
   bvErrTel:     ['Il faut les 4 derniers chiffres de votre téléphone.', 'We need the last 4 digits of your phone number.'],
-  bvErrRien:    ['Aucun séjour ne correspond. Vérifiez la date, ou passez par « Je ne sais pas quoi mettre ».',
-                 'No booking matches. Check the date, or use “I don’t know what to enter”.'],
+  bvErrRien:    ['Aucun séjour ne correspond. Vérifiez l’orthographe de votre nom et la date, ou passez par « Je ne sais pas quoi mettre ».',
+                 'No booking matches. Check the spelling of your name and the date, or use “I don’t know what to enter”.'],
   bvChoixT:     ['Lequel est le vôtre ?', 'Which one is yours?'],
   bvChoixP:     ['Plusieurs séjours correspondent. Choisissez votre logement.',
                  'Several bookings match. Please choose your property.'],
@@ -555,6 +558,7 @@ function initialState() {
     problemPhoto: '',                 // la photo en cours, gardée sur l'appareil (session 16)
     photoPlein: null,                 // 'missionId:etapeId' affiché en grand, ou 'probleme:id'
     apercuSejour: null,               // le propriétaire regarde le lien personnel de ce séjour (session 17)
+    sejourNet: null,                  // { rid, etat, msg } — séjour demandé au cahier partagé (lot 3)
 
     // Formulaires de création ajoutés en session 7
     showNewBien: false,
@@ -571,7 +575,7 @@ function initialState() {
     // Porte d'entrée du livret (session 11) — voir D-46 à D-48.
     acces: [],                        // demandes à confirmer : [{ id, pid, resa, nom, date, at, statut }]
     guestPass: null,                  // souvenir posé dans le navigateur du VOYAGEUR : { resa, pid, niveau, at }
-    bienvenue: { date: '', tel4: '', pid: '', nom: '', etape: 'recherche', erreur: '', choix: null },
+    bienvenue: { date: '', tel4: '', pid: '', nom: '', etape: 'recherche', erreur: '', choix: null, enCours: false },
     gform: { nom: '', tel: '', mail: '', guests: '', arrivee: '', optin: false },
     repFiltre: 'tous',                // filtre du répertoire voyageurs (session 12)
     lvLang: 'fr',                     // langue du livret côté voyageur (session 12)
@@ -651,6 +655,8 @@ function load() {
   state.migMsg = '';
   state.photoPlein = null;            // une photo ouverte en grand n'est pas une donnée
   state.apercuSejour = null;          // un aperçu n'est pas une donnée non plus
+  state.sejourNet = null;             // une demande en cours ne survit pas à la page
+  if (state.bienvenue) state.bienvenue.enCours = false;
   if (state.inv) state.inv.enCours = false;
 
   // Appelé aussi sur un navigateur neuf : c'est upgrade() qui pose les valeurs
@@ -1013,6 +1019,15 @@ function normaliserResa(brut, source, pid) {
   };
   if (!r.id) r.id = slugResa(pid, r);
   return r;
+}
+
+/** Un nom comparable : sans accents, sans majuscules, sans ponctuation.
+    « Émilie DUPONT », « emilie dupont » et « Emilie  Dupont » sont le même
+    nom (session 18). Même règle que `nom_simple()` côté base. */
+function nomSimple(t) {
+  return String(t || '').toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, ' ').trim();
 }
 
 /** Les 4 derniers chiffres d'un numéro, quelle que soit sa mise en forme
@@ -1623,6 +1638,74 @@ function poserSejour(f) {
   prefillGform(f, '');
   state.bienvenue.etape = 'form';
   state.bienvenue.erreur = '';
+}
+
+/* LE LIVRET VENU DU CAHIER PARTAGÉ (lot 3 — session 18, D-89)
+
+   Le voyageur n'a pas de compte, et son téléphone ne contient rien de ce
+   projet. Le cahier partagé lui répond quand même, par une **porte étroite** :
+   `sejour_par_lien()` rend le logement, son livret, les dates du séjour, et —
+   seulement pendant ces dates — le code d'accès et le Wi-Fi.
+
+   Plutôt que d'inventer un deuxième chemin d'affichage, on **installe** ce que
+   le serveur renvoie dans `state`, exactement à la place où les écrans le
+   cherchent déjà. Tous les écrans du livret fonctionnent alors sans une ligne
+   de changement, et le voyageur retrouve sa page même hors réseau la fois
+   suivante. On n'efface jamais rien au passage (règle D-63). */
+function installerSejour(l) {
+  var pid = l.property_id;
+
+  if (!state.props.some(function (p) { return p.id === pid; })) {
+    state.props.push({
+      id: pid, name: l.property_name || 'Logement',
+      short: (l.property_name || 'Logement').split(' ')[0],
+      city: l.city || '', address: l.address || '',
+      color: l.color || C.terracotta, tint: l.tint || '#F6E9E1'
+    });
+  }
+
+  // Le code et le Wi-Fi ne sont renseignés que si la base a bien voulu les
+  // rendre — c'est-à-dire pendant le séjour. Hors dates, ils valent vide, et
+  // c'est le comportement voulu, pas une donnée manquante.
+  state.info[pid] = Object.assign({}, l.info || {}, { code: l.code || '', wifi: l.wifi || '' });
+  state.livret[pid] = l.livret || lvVide();
+
+  var r = normaliserResa({
+    id: l.reservation_id, plat: 'Direct', guest: l.guest, guests: l.guests,
+    start: l.start_date, end: l.end_date, tel: l.tel, mail: l.mail,
+    arriveePrevue: l.arrivee_prevue, guestOk: true
+  }, 'manuel', pid);
+  r.demarchable = !!l.demarchable;
+
+  var liste = (state.resas[pid] || []).filter(function (x) { return x.id !== r.id; });
+  liste.push(r);
+  state.resas[pid] = liste.sort(function (a, b) { return a.start < b.start ? -1 : 1; });
+
+  if (l.depart_at) state.departs[resaKey(pid, r)] = l.depart_at;
+
+  return { pid: pid, r: r };
+}
+
+/** Demande au cahier partagé le séjour d'un lien personnel, puis l'installe. */
+function chargerSejourEnLigne(rid) {
+  if (typeof DB === 'undefined' || !DB.estDispo()) {
+    state.sejourNet = { rid: rid, etat: 'absent' };
+    render();
+    return;
+  }
+  DB.sejourParLien(rid)
+    .then(function (l) {
+      if (!l) { state.sejourNet = { rid: rid, etat: 'absent' }; render(); return; }
+      var f = installerSejour(l);
+      poserSejour(f);
+      state.sejourNet = { rid: rid, etat: 'ok' };
+      save();
+      render();
+    })
+    .catch(function (e) {
+      state.sejourNet = { rid: rid, etat: 'erreur', msg: DB.messageClair(e) };
+      render();
+    });
 }
 
 /** Les 4 chiffres correspondent : accès complet, et on propose le formulaire. */
@@ -4232,7 +4315,15 @@ function viewOwnerResa() {
             '<button type="button" class="btn btn--xs" style="background:var(--cream);color:var(--ink-soft)"' +
               act('copier-message-sejour', { rid: r.id }) + '>Copier le message tout prêt</button>' +
           '</div>' +
-          '<div style="margin-top:14px;padding-top:12px;border-top:1px solid rgba(36,30,26,.08)">' +
+          /* Le bouton qui manquait (session 18) : il n'existait aucun moyen de
+             VOIR la page de ce voyageur depuis l'application. Il fallait
+             copier le lien et le recoller dans la barre d'adresse — ce que le
+             propriétaire a fait, en concluant à juste titre que l'aperçu ne
+             marchait pas. Le premier bouton ouvre la page du voyageur, le
+             second le livret du logement tel qu'il est écrit. */
+          '<div style="margin-top:14px;padding-top:12px;border-top:1px solid rgba(36,30,26,.08);display:flex;flex-direction:column;gap:8px">' +
+            '<button type="button" class="btn btn--sm" style="background:var(--ink);color:#fff;width:100%"' +
+              act('nav', { path: '#/sejour/' + r.id }) + '>👁 Voir la page ' + esc(de(r.guest)) + '</button>' +
             '<button type="button" class="btn btn--sm" style="background:var(--cream);color:var(--ink-soft);width:100%"' +
               act('nav', { path: '#/livret/' + pid }) + '>Voir le livret de ce logement</button>' +
           '</div>' +
@@ -5942,14 +6033,20 @@ function bvRecherche() {
         '<input class="inp" id="bv-date" type="date" value="' + esc(b.date) + '" ' +
           'data-fid="bv-date" data-ch="bv-date">' +
 
-        '<label class="lab" style="margin-top:14px" for="bv-tel">' + esc(t('bvTel')) + '</label>' +
-        '<input class="inp num bv-code" id="bv-tel" type="text" inputmode="numeric" maxlength="4" ' +
-          'placeholder="••••" value="' + esc(b.tel4) + '" data-fid="bv-tel" data-in="bv-tel">' +
+        /* LE NOM, ET NON PLUS LES 4 CHIFFRES DU TÉLÉPHONE (session 18, D-90).
+           Ces 4 chiffres, presque aucune plateforme ne les transmet : personne
+           ne pouvait donc se retrouver, et le propriétaire a constaté à juste
+           titre qu'« on ne lui demande aucune info ». Le nom, lui, figure
+           toujours sur la réservation. */
+        '<label class="lab" style="margin-top:14px" for="bv-nom">' + esc(t('bvNomTitre')) + '</label>' +
+        '<input class="inp" id="bv-nom" type="text" autocomplete="name" ' +
+          'placeholder="' + esc(t('bvNomPh')) + '" value="' + esc(b.nom) + '" data-fid="bv-nom" data-in="bv-nom">' +
 
         (b.erreur ? '<p class="bv-err">' + esc(b.erreur) + '</p>' : '') +
 
-        '<button type="button" class="btn btn--primary bv-go"' + act('bv-chercher') + '>' +
-          esc(t('bvContinuer')) + '</button>' +
+        '<button type="button" class="btn btn--primary bv-go"' +
+          (b.enCours ? ' disabled' : '') + act('bv-chercher') + '>' +
+          esc(b.enCours ? t('bvCherche') : t('bvContinuer')) + '</button>' +
 
         '<button type="button" class="bv-lien"' + act('bv-voieb') + '>' +
           esc(t('bvSaisPas')) + '</button>' +
@@ -6102,13 +6199,41 @@ function bvFormulaire() {
 function viewSejour() {
   var f = resaById(route.id);
 
+  /* SÉJOUR INCONNU SUR CET APPAREIL — c'est le cas NORMAL du voyageur (lot 3,
+     session 18). Son téléphone ne contient rien de ce projet : on demande le
+     séjour au cahier partagé, et on l'installe. Avant la session 18, on lui
+     répondait « ce lien n'est plus valable », ce qui était faux. */
+  if (!f && state.auth !== 'owner') {
+    var net = state.sejourNet;
+    if (!net || net.rid !== route.id) {
+      state.sejourNet = { rid: route.id, etat: 'chargement' };
+      setTimeout(function () { chargerSejourEnLigne(route.id); }, 0);
+      net = state.sejourNet;
+    }
+    if (net.etat === 'chargement') {
+      return bvCoque('<section class="lv-section"><div class="bv-card">' +
+        '<h2 class="bv-h">' + esc(t('bvCherche')) + '</h2>' +
+        '<p class="bv-p">Nous ouvrons votre livret d’accueil.</p>' +
+        '</div></section>', t('bvSous'));
+    }
+    if (net.etat === 'erreur') {
+      return bvCoque('<section class="lv-section"><div class="bv-card">' +
+        '<h2 class="bv-h">Impossible d’ouvrir votre livret</h2>' +
+        '<p class="bv-p">' + esc(net.msg || '') + '</p>' +
+        '<button type="button" class="btn btn--primary bv-go"' +
+          act('sejour-reessayer') + '>Réessayer</button>' +
+        '</div></section>', t('bvSous'));
+    }
+    // 'ok' sans réservation lisible ne devrait pas arriver ; 'absent' si.
+  }
+
   if (!f) {
     return bvCoque(
       '<section class="lv-section"><div class="bv-card">' +
         '<h2 class="bv-h">Ce lien n’est plus valable</h2>' +
         '<p class="bv-p">Le séjour auquel il renvoie n’existe plus, ou le lien a été coupé ' +
-          'en chemin. Vous pouvez retrouver votre livret avec votre date d’arrivée et les ' +
-          '4 derniers chiffres de votre téléphone.</p>' +
+          'en chemin. Vous pouvez retrouver votre livret avec votre nom et la date de votre ' +
+          'arrivée.</p>' +
         '<button type="button" class="btn btn--primary bv-go"' +
           act('nav', { path: '#/bienvenue' }) + '>Retrouver mon livret</button>' +
       '</div></section>', 'Lien introuvable');
@@ -6161,8 +6286,8 @@ function lvBack(path, label) {
   var note = f
     ? 'Aperçu du lien ' + de(f.r.guest) + ' — ' + fmtDate(f.r.start) + ' → ' + fmtDate(f.r.end) + '. ' +
       (dansLesDates(f.r)
-        ? 'Son séjour est en cours : il voit le code d’accès et le Wi-Fi.'
-        : 'Hors de ses dates : le code d’accès et le Wi-Fi lui restent cachés.')
+        ? 'Séjour en cours : le code d’accès et le Wi-Fi sont visibles.'
+        : 'Hors des dates du séjour : le code d’accès et le Wi-Fi restent cachés.')
     : 'Aperçu général — vous voyez tout. Pour savoir ce qu’un voyageur voit vraiment, ouvrez son lien personnel depuis sa réservation.';
 
   return '<div class="lv-back"><button type="button"' + act('nav', { path: path }) + '>← ' + label + '</button>' +
@@ -7931,31 +8056,87 @@ var actions = {
   /* Porte d'entrée du livret (session 11) ---------------------------------- */
 
   /* Étape 1 : on cherche le séjour à partir de la date et des 4 chiffres. */
+  /* RETROUVER SON SÉJOUR PAR SON NOM ET SA DATE (session 18, D-90).
+     On demande d'abord au cahier partagé — c'est lui qui a les vraies
+     réservations, quel que soit l'appareil. On retombe sur ce que contient le
+     navigateur si le réseau manque, ou si le script 07 n'est pas encore collé. */
   'bv-chercher': function () {
     var b = state.bienvenue;
     if (!b.date) { b.erreur = t('bvErrDate'); save(); render(); return; }
-    if (quatreChiffres(b.tel4).length !== 4) {
-      b.erreur = t('bvErrTel'); save(); render(); return;
-    }
+    if ((b.nom || '').trim().length < 3) { b.erreur = t('bvErrNomCourt'); save(); render(); return; }
+    b.erreur = '';
 
-    var trouves = trouverSejour(b.date, b.tel4);
+    var localement = function () {
+      // Repli : les séjours déjà présents sur cet appareil. Le nom d'abord,
+      // les 4 chiffres ensuite pour ne pas perdre l'ancien parcours.
+      var n = nomSimple(b.nom);
+      var parNom = allResas().filter(function (x) {
+        var r = x.r;
+        if (r.statut === 'annule' || r.end < TODAY) return false;
+        if (nomSimple(r.guest).indexOf(n) < 0) return false;
+        return r.start === b.date || (r.start <= b.date && b.date < r.end);
+      });
+      return parNom.length ? parNom : trouverSejour(b.date, b.tel4);
+    };
 
-    if (!trouves.length) {
-      b.erreur = t('bvErrRien');
-      save(); render(); return;
-    }
-    if (trouves.length > 1) {
-      b.choix = trouves.map(function (x) { return { rid: x.r.id, pid: x.pid, start: x.r.start }; });
-      b.etape = 'choix'; b.erreur = '';
-      save(); render(); return;
-    }
-    ouvrirSejour(trouves[0]);
+    var suite = function (trouves) {
+      b.enCours = false;
+      if (!trouves.length) { b.erreur = t('bvErrRien'); save(); render(); return; }
+      if (trouves.length > 1) {
+        b.choix = trouves.map(function (x) { return { rid: x.r.id, pid: x.pid, start: x.r.start }; });
+        b.etape = 'choix'; b.erreur = '';
+        save(); render(); return;
+      }
+      ouvrirSejour(trouves[0]);
+    };
+
+    if (typeof DB === 'undefined' || !DB.estDispo()) { suite(localement()); return; }
+
+    b.enCours = true;
+    render();
+    DB.chercherSejour(b.nom, b.date)
+      .then(function (lignes) {
+        if (!lignes.length) { suite(localement()); return; }
+        // Un seul séjour : on l'installe et on ouvre. Plusieurs : on fait choisir.
+        var faits = lignes.map(function (l) {
+          return { pid: l.property_id, r: { id: l.reservation_id, start: l.start_date } };
+        });
+        if (faits.length > 1) {
+          b.enCours = false;
+          b.choix = faits.map(function (x) { return { rid: x.r.id, pid: x.pid, start: x.r.start }; });
+          b.etape = 'choix'; b.erreur = '';
+          // Le nom du logement n'est pas encore dans `state` : on le pose pour l'écran de choix.
+          lignes.forEach(function (l) {
+            if (!state.props.some(function (p) { return p.id === l.property_id; })) {
+              state.props.push({ id: l.property_id, name: l.property_name, short: l.property_name,
+                city: '', address: '', color: C.terracotta, tint: '#F6E9E1' });
+            }
+          });
+          save(); render(); return;
+        }
+        b.enCours = false;
+        b.etape = 'recherche';
+        save();
+        go('#/sejour/' + faits[0].r.id);
+      })
+      .catch(function () { suite(localement()); });
   },
 
-  /* Plusieurs séjours correspondaient : celui-ci est le bon. */
+  /* Plusieurs séjours correspondaient : celui-ci est le bon. Quand il ne vit
+     pas encore sur cet appareil — cas normal du voyageur — on passe par son
+     lien personnel, qui sait aller le chercher (session 18). */
   'bv-prendre': function (el) {
     var f = resaById(el.dataset.rid);
-    if (f) ouvrirSejour(f);
+    state.bienvenue.etape = 'recherche';
+    state.bienvenue.choix = null;
+    save();
+    if (f) ouvrirSejour(f); else go('#/sejour/' + el.dataset.rid);
+  },
+
+  /* Le cahier partagé n'a pas répondu : on retente, sans changer de page. */
+  'sejour-reessayer': function () {
+    state.sejourNet = null;
+    render();
   },
 
   /* Bascule Français / English du livret et de la porte d'entrée (D-57).
@@ -8009,6 +8190,21 @@ var actions = {
 
     state.bienvenue.etape = 'recherche';
     save();
+
+    /* LE RETOUR VERS LE CAHIER PARTAGÉ (lot 3, session 18, D-89).
+       C'est ce qui manquait complètement : le voyageur saisissait ses
+       coordonnées, elles restaient sur son téléphone, et le propriétaire
+       constatait à juste titre qu'« aucune info ne remonte ». La fonction
+       `enregistrer_voyageur` met aussi à jour les missions concernées : c'est
+       ainsi que la prestataire apprend qui arrive derrière, et à quelle heure.
+       On n'attend pas la réponse : le voyageur a fini, il va au livret. */
+    if (typeof DB !== 'undefined' && DB.estDispo()) {
+      DB.enregistrerVoyageur(r.id, {
+        nom: g.nom, tel: g.tel, mail: g.mail,
+        guests: g.guests, arrivee: g.arrivee, optin: !!g.optin
+      }).catch(function () { /* le livret s'ouvre quand même : rien n'est perdu localement */ });
+    }
+
     go('#/livret/' + f.pid);
   },
   'gf-optin': function () { state.gform.optin = !state.gform.optin; save(); render(); },
@@ -8090,6 +8286,10 @@ var actions = {
     if (!r) return;
     state.departs[resaKey(pid, r)] = nowHM();
     save(); render();
+    /* Et surtout : le dire au cahier partagé (lot 3, session 18). Sans cela
+       l'information restait sur le téléphone du voyageur, et la prestataire
+       ne savait jamais que le logement était libre plus tôt. */
+    if (typeof DB !== 'undefined' && DB.estDispo()) DB.signalerDepart(r.id, nowHM());
   },
 
   /* Choix du nombre d'étoiles, avant l'envoi. */
