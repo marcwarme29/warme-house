@@ -25,6 +25,9 @@ var DB = (function () {
   var profil = null;          // la fiche du compte connecté (table profiles)
   var dispo = false;          // la bibliothèque et la configuration sont-elles là ?
   var derniereErreur = null;
+  /* Le résultat de la dernière écriture vers le cahier partagé, pour que
+     l'écran du propriétaire puisse le DIRE (session 19). */
+  var dernierEnvoi = null;
 
   function demarrer() {
     if (typeof supabase === 'undefined' || !supabase.createClient) {
@@ -235,8 +238,10 @@ var DB = (function () {
     if (/schema cache|Could not find the (function|table)/i.test(m)) {
       var script = /sejour_par_lien|chercher_sejour|enregistrer_voyageur|signaler_depart|nom_simple/i.test(m)
         ? '« 07-livret-voyageur.sql »'
-        : /invitation/i.test(m) ? '« 04-invitations.sql »'
-          : 'celui qui manque (voir le dossier supabase/)';
+        : /deposer_avis|\bavis\b/i.test(m) ? '« 08-avis.sql »'
+          : /demander_acces|menage_fini|prestataires|stocks|reglages|acces/i.test(m) ? '« 09-lot4.sql »'
+            : /invitation/i.test(m) ? '« 04-invitations.sql »'
+              : 'celui qui manque (voir le dossier supabase/)';
       return 'Le cahier partagé n\'est pas encore à jour : le propriétaire doit coller le script ' +
         script + ' dans Supabase (SQL Editor → New query → Run).';
     }
@@ -537,6 +542,281 @@ var DB = (function () {
     }).concat(enAttente);
 
     state.missions.sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : 0; });
+  }
+
+  /* --- les avis des voyageurs (script 08, session 19) ---------------------
+
+     Quatrième donnée qui ne voyageait pas — après les photos, le code de la
+     porte et le registre de paie. Le voyageur note la propreté trouvée en
+     arrivant, cette note reste sur l'appareil où elle a été saisie, et la
+     prestataire lit « pas encore de note » alors qu'elle en a. Règle 14.
+
+     L'IDENTIFIANT EST CALCULÉ, PAS TIRÉ AU HASARD. `av_<séjour>_<type>` :
+     le voyageur qui dépose depuis son téléphone et le propriétaire qui envoie
+     son historique fabriquent alors **la même ligne**, et l'un ne crée pas le
+     doublon de l'autre. C'est aussi ce qui rend l'index unique du script 08
+     inoffensif. Sans séjour identifié — un avis d'avant la session 16 —, on
+     garde l'identifiant local. */
+  function idAvis(v, rid) {
+    return rid ? 'av_' + rid + '_' + v.kind : v.id;
+  }
+
+  function avisVersBase(v) {
+    var rid = idDuSejour(v.resa);
+    return {
+      id: idAvis(v, rid),
+      property_id: v.pid,
+      reservation_id: rid,
+      mission_id: v.mid || null,
+      kind: v.kind === 'sejour' ? 'sejour' : 'menage',
+      stars: v.stars,
+      texte: v.texte || '',
+      provider_id: uuidDuPrestataire(v.agent),
+      taker_legacy: v.agent || null,
+      guest: v.guest || '',
+      date_label: v.dateLabel || ''
+    };
+  }
+
+  function avisDepuisBase(lignes) {
+    var connus = {};
+    lignes.forEach(function (l) { connus[l.id] = true; });
+    // Même règle de fusion que partout ailleurs : un avis déposé il y a deux
+    // secondes ne doit pas disparaître avant d'être parti.
+    var enAttente = (state.avis || []).filter(function (v) {
+      return !connus[idAvis(v, idDuSejour(v.resa))];
+    });
+
+    state.avis = lignes.map(function (l) {
+      return {
+        id: l.id,
+        pid: l.property_id,
+        resa: cleDuSejour(l.reservation_id),
+        mid: l.mission_id || null,
+        kind: l.kind,
+        stars: Number(l.stars) || 0,
+        texte: l.texte || '',
+        guest: l.guest || '',
+        // Le prénom d'abord, comme pour les missions : c'est lui que
+        // `agentRating()` compare à l'identifiant de la fiche.
+        agent: l.taker_legacy || prenomDuCompte(l.provider_id) || null,
+        dateLabel: l.date_label || ''
+      };
+    }).concat(enAttente);
+  }
+
+  /* Le voyageur dépose sa note sans avoir de compte : porte étroite du
+     script 08. Il ne fournit que son jeton de séjour ; c'est la base qui
+     retrouve elle-même le logement et la personne qui a fait le ménage. */
+  function deposerAvis(jeton, kind, stars, texte) {
+    if (!dispo) return Promise.resolve(false);
+    return client.rpc('deposer_avis', {
+      jeton: jeton, p_kind: kind, p_stars: stars, p_texte: texte || ''
+    }).then(function (r) {
+      if (r.error) throw new Error(messageClair(r.error));
+      return r.data === true;
+    });
+  }
+
+  /* --- LOT 4 : ce qui restait dans le navigateur (script 09, session 19) ---
+
+     Quatre familles de données découvertes par l'audit de stockage. Elles
+     avaient toutes le même symptôme : ça marche, tant qu'on reste sur le même
+     appareil. Sur un ordinateur neuf, le propriétaire retrouvait les
+     prestataires, les articles et les prestations de la DÉMONSTRATION.
+
+     Toutes suivent la règle de fusion de D-75 : la lecture met à jour, elle
+     ne remplace pas. Ce qui n'est pas encore parti dans le cahier reste, et
+     partira au prochain envoi. */
+
+  /* --- les fiches des prestataires --- */
+
+  function prestataireVersBase(a, moi) {
+    return {
+      id: a.id,
+      owner_id: moi,
+      name: a.name || '',
+      init: a.init || '',
+      kind: a.kind === 'cles' ? 'cles' : 'menage',
+      role: a.role || '',
+      since: a.since || '',
+      email: a.email || '',
+      iban: a.iban || '',
+      note: a.note || '',
+      avatar_bg: a.avatarBg || '',
+      avatar_fg: a.avatarFg || '',
+      role_bg: a.roleBg || '',
+      role_fg: a.roleFg || '',
+      props: a.props || [],
+      services: a.services || null
+    };
+  }
+
+  function prestatairesDepuisBase(lignes) {
+    if (!lignes.length) return;                  // rien écrit encore : on garde le local
+    var parId = {};
+    (state.agents || []).forEach(function (a) { parId[a.id] = a; });
+
+    lignes.forEach(function (l) {
+      var a = parId[l.id];
+      if (!a) {
+        a = { id: l.id };
+        if (!Array.isArray(state.agents)) state.agents = [];
+        state.agents.push(a);
+        parId[l.id] = a;
+      }
+      a.name = l.name || a.name || '';
+      a.init = l.init || a.init || '?';
+      a.kind = l.kind || a.kind || 'menage';
+      a.role = l.role || a.role || '';
+      a.since = l.since || a.since || '';
+      a.email = l.email || a.email || '';
+      a.iban = l.iban || a.iban || '';
+      a.note = l.note || a.note || '—';
+      a.avatarBg = l.avatar_bg || a.avatarBg || '#EFEAE2';
+      a.avatarFg = l.avatar_fg || a.avatarFg || '#8A7D72';
+      a.roleBg = l.role_bg || a.roleBg || '#EFEAE2';
+      a.roleFg = l.role_fg || a.roleFg || '#8A7D72';
+
+      /* LES DROITS NE SE RELISENT PAS ICI. Sur l'appareil du propriétaire
+         c'est la fiche qui fait foi (règle 10) et il vient peut-être de
+         cocher une case ; sur celui du prestataire, c'est son COMPTE, et
+         `comptesDepuisBase()` s'en charge juste après. Les recopier depuis
+         cette table écraserait l'un ou l'autre. On ne les prend que pour une
+         fiche qu'on découvre — un ordinateur neuf. */
+      if (!Array.isArray(a.props)) a.props = l.props || [];
+      if (a.services === undefined) a.services = l.services || null;
+    });
+  }
+
+  /* --- les stocks --- */
+
+  function stocksVersBase() {
+    var out = [];
+    Object.keys(state.stock || {}).forEach(function (pid) {
+      if (!bienExiste(pid)) return;
+      Object.keys(state.stock[pid] || {}).forEach(function (k) {
+        out.push({ property_id: pid, article: k, qty: state.stock[pid][k] || 0 });
+      });
+    });
+    return out;
+  }
+
+  function stocksDepuisBase(lignes) {
+    if (!lignes.length) return;                  // rien écrit encore : on garde le local
+    lignes.forEach(function (l) {
+      if (!state.stock) state.stock = {};
+      if (!state.stock[l.property_id]) state.stock[l.property_id] = {};
+      state.stock[l.property_id][l.article] = Number(l.qty) || 0;
+    });
+  }
+
+  /* Le relevé du prestataire. `pousser()` est réservé au propriétaire : c'est
+     donc `finish()` qui appelle ceci, sur le téléphone de la personne qui a
+     compté. Sans quoi l'inventaire n'était mis à jour que chez elle. */
+  function enregistrerStock(pid, qty) {
+    if (!dispo || !profil || !pid || !qty) return Promise.resolve(false);
+    var lignes = Object.keys(qty).map(function (k) {
+      return { property_id: pid, article: k, qty: qty[k] || 0 };
+    });
+    if (!lignes.length) return Promise.resolve(false);
+    return client.from('stocks').upsert(lignes).then(function (r) {
+      if (r && r.error) {
+        if (tableAbsente(r.error)) tablesAbsentes.stocks = true;
+        derniereErreur = messageClair(r.error) + ' (en enregistrant le relevé de stock)';
+        return false;
+      }
+      return true;
+    }, function () { return false; });
+  }
+
+  /* --- les réglages partagés --- */
+
+  /* Ce qui vit dans `reglages`, et sous quelle clé. Une seule liste, pour que
+     l'aller et le retour ne puissent pas diverger. */
+  var CLES_REGLAGES = ['services', 'articles', 'seuils', 'payouts', 'autoMsgs', 'beds24', 'extraFeeds'];
+
+  /* Deux clés ne doivent JAMAIS être remplacées par une liste vide : sans
+     prestation ni article, l'application n'a plus rien à afficher et
+     `state.services[0]` devient `undefined` — l'écran de création de mission
+     tombe. Un vide côté cahier veut dire « pas encore écrit », pas « effacé ».
+     Même famille de garde-fou que la règle de fusion de D-75. */
+  var REGLAGES_NON_VIDES = { services: true, articles: true };
+
+  function reglagesVersBase(moi) {
+    return CLES_REGLAGES.map(function (cle) {
+      return { owner_id: moi, cle: cle, valeur: state[cle] === undefined ? null : state[cle] };
+    }).filter(function (l) { return l.valeur !== null; });
+  }
+
+  function reglagesDepuisBase(lignes) {
+    lignes.forEach(function (l) {
+      if (CLES_REGLAGES.indexOf(l.cle) < 0) return;
+      var v = l.valeur;
+      if (v === null || v === undefined) return;
+      if (REGLAGES_NON_VIDES[l.cle] && (!Array.isArray(v) || !v.length)) return;
+      state[l.cle] = v;
+    });
+  }
+
+  /* --- les demandes d'accès du voyageur --- */
+
+  function accesVersBase(d) {
+    return {
+      id: d.id,
+      property_id: d.pid,
+      reservation_id: d.resa || null,
+      nom: d.nom || '',
+      jour: d.date || null,
+      at: d.at || '',
+      statut: d.statut || 'attente'
+    };
+  }
+
+  function accesDepuisBase(lignes) {
+    var connus = {};
+    lignes.forEach(function (l) { connus[l.id] = true; });
+    var enAttente = (state.acces || []).filter(function (d) { return !connus[d.id]; });
+
+    state.acces = lignes.map(function (l) {
+      return {
+        id: l.id, pid: l.property_id, resa: l.reservation_id || '',
+        nom: l.nom || 'Voyageur', date: l.jour || '', at: l.at || '',
+        statut: l.statut || 'attente'
+      };
+    }).concat(enAttente);
+  }
+
+  /* Un article supprimé laisse une ligne de stock par logement. `pousser()`
+     ne sait qu'ajouter et modifier : sans ce `delete`, l'article réapparaît
+     dans le relevé à la première relecture (règle 12, D-81). */
+  function supprimerStock(article) {
+    if (!dispo || !profil) return Promise.resolve(false);
+    return client.from('stocks').delete().eq('article', article).then(function (r) {
+      if (r && r.error) { derniereErreur = messageClair(r.error); return false; }
+      return true;
+    }, function () { return false; });
+  }
+
+  /* Le voyageur dépose sa demande sans avoir de compte (porte étroite du
+     script 09). Il ne peut ni relire, ni valider : c'est le propriétaire qui
+     confirme, depuis son écran. */
+  function demanderAcces(pid, jour, nom) {
+    if (!dispo) return Promise.resolve(null);
+    return client.rpc('demander_acces', { bien: pid, jour: jour, p_nom: nom || '' })
+      .then(function (r) { return r.error ? null : r.data; }, function () { return null; });
+  }
+
+  /* L'heure de fin du ménage qui a préparé CE séjour, pour l'arrivée
+     anticipée. Le voyageur n'a pas le droit de lire les missions : ce guichet
+     ne lui rend qu'une date et une heure. */
+  function menageFini(jeton) {
+    if (!dispo || !jeton) return Promise.resolve(null);
+    return client.rpc('menage_fini', { jeton: jeton }).then(function (r) {
+      if (r.error) return null;
+      var l = Array.isArray(r.data) ? r.data[0] : r.data;
+      return l && l.a ? { date: l.le, at: l.a } : null;
+    }, function () { return null; });
   }
 
   /* Le séjour d'une mission, s'il est lisible par le compte connecté. */
@@ -961,7 +1241,15 @@ var DB = (function () {
      prestataire voit sur son téléphone.
      Les erreurs étaient avalées en silence : elles sont désormais retenues,
      car c'est exactement le genre d'échec invisible qui fait dire « j'ai
-     pourtant confié un bien, et il ne voit toujours rien ». */
+     pourtant confié un bien, et il ne voit toujours rien ».
+
+     UNE ÉCRITURE QUI NE TOUCHE AUCUNE LIGNE N'EST PAS UNE RÉUSSITE
+     (session 19). `update(...).eq('id', uid)` ne rend AUCUNE erreur quand
+     l'identifiant ne désigne rien — compte détaché entre-temps, fiche qui
+     garde le souvenir d'un ancien compte. On annonçait alors « ✅ Droits
+     renvoyés » sans que rien n'ait bougé, et le prestataire continuait de ne
+     rien voir. On redemande donc la ligne écrite (`select`) et on vérifie
+     qu'elle existe. Même famille de faute que la règle 4 du §6. */
   function majComptesLies() {
     if (!dispo || !profil || profil.role !== 'owner') return Promise.resolve(false);
     var lies = (state.agents || []).filter(function (a) { return a.uid; });
@@ -975,9 +1263,15 @@ var DB = (function () {
           legacy_id: a.id,
           full_name: a.name || '',
           job_label: a.role || ''
-        }).eq('id', a.uid).then(function (r) {
+        }).eq('id', a.uid).select('id').then(function (r) {
           if (r && r.error) {
             derniereErreur = messageClair(r.error) + ' (en ouvrant les droits de ' + (a.name || a.id) + ')';
+            return false;
+          }
+          if (!r || !r.data || !r.data.length) {
+            derniereErreur = 'Le compte de ' + (a.name || a.id) + ' n\'a pas été retrouvé dans le ' +
+              'cahier partagé : ses droits n\'ont donc pas bougé. Détache le compte de sa fiche, ' +
+              'puis relie-le à nouveau.';
             return false;
           }
           return ok;
@@ -997,6 +1291,51 @@ var DB = (function () {
      Seul le déménagement, qui est un geste volontaire, passe outre. */
   var premiereLectureFaite = false;
 
+  /* UNE TABLE QUI N'EXISTE PAS ENCORE NE DOIT RIEN CASSER (session 19).
+
+     `avis` n'apparaît qu'avec le script 08, et les quatre tables du lot 4
+     qu'avec le script 09. Tant qu'ils ne sont pas collés, les demander rend
+     une erreur — et si cette erreur remontait avec les autres, l'application
+     entière cesserait de lire le cahier : plus de logements, plus de missions,
+     plus rien. **Une table facultative absente casserait donc tout le reste.**
+     Pour celles-là on préfère revenir les mains vides, et `null` (« la table
+     n'existe pas ») n'est surtout pas confondu avec `[]` (« il n'y a rien
+     dedans ») : la règle D-74 s'applique aussi aux tables.
+
+     Les scripts manquants se disent ailleurs, calmement, par `manquantes()`. */
+  var tablesAbsentes = {};
+
+  /* « La table n'existe pas » et « tu n'as pas le droit » sont deux réponses
+     très différentes, et les confondre ferait dire au propriétaire de coller
+     un script déjà collé. Seul le premier cas compte ici : PostgREST rend
+     `PGRST205` (table inconnue du cache de schéma) ou le code Postgres
+     `42P01`, avec un message parlant de « schema cache ». */
+  function tableAbsente(err) {
+    if (!err) return false;
+    var code = err.code || '';
+    var m = err.message || '';
+    return code === 'PGRST205' || code === '42P01' ||
+      /schema cache|Could not find the table|does not exist/i.test(m);
+  }
+
+  function lireFacultative(table) {
+    return client.from(table).select('*').then(function (r) {
+      if (r.error && tableAbsente(r.error)) tablesAbsentes[table] = true;
+      else if (!r.error) tablesAbsentes[table] = false;
+      return r.error ? null : (r.data || []);
+    }, function () { return null; });
+  }
+
+  /* Les scripts qui manquent, nommés — pour que l'écran puisse le dire au
+     lieu d'afficher un vide qui ressemble à une panne. */
+  function manquantes() {
+    var out = [];
+    if (tablesAbsentes.avis) out.push('08-avis.sql');
+    if (tablesAbsentes.prestataires || tablesAbsentes.stocks ||
+        tablesAbsentes.reglages || tablesAbsentes.acces) out.push('09-lot4.sql');
+    return out;
+  }
+
   function charger() {
     if (!dispo || !profil) return Promise.resolve(false);
     return Promise.all([
@@ -1004,10 +1343,28 @@ var DB = (function () {
       client.from('property_secrets').select('*'),
       client.from('reservations').select('*').order('start_date'),
       client.from('missions').select('*').order('date'),
-      client.from('profiles').select('*')
+      client.from('profiles').select('*'),
+      lireFacultative('avis'),
+      lireFacultative('prestataires'),
+      lireFacultative('stocks'),
+      lireFacultative('reglages'),
+      lireFacultative('acces')
     ]).then(function (r) {
-      var erreur = r.filter(function (x) { return x.error; })[0];
+      var erreur = r.slice(0, 5).filter(function (x) { return x.error; })[0];
       if (erreur) throw erreur.error;
+
+      /* AVANT LES COMPTES : les FICHES (lot 4, session 19).
+         `comptesDepuisBase()` rapproche chaque compte de sa fiche par
+         `legacy_id` — encore faut-il que les fiches soient là. Sur un
+         ordinateur neuf, elles n'existaient nulle part : le propriétaire
+         retrouvait les prestataires de la démonstration. */
+      if (r[6]) prestatairesDepuisBase(r[6]);
+
+      /* Les réglages partagés : prestations, articles, seuils, et le reste.
+         Avant `upgrade()`, qui complète les stocks et les tarifs à partir de
+         la liste des articles et des prestations — s'il les complétait
+         d'après la liste de démonstration, il figerait celle-ci. */
+      if (r[8]) reglagesDepuisBase(r[8]);
 
       // TOUJOURS EN PREMIER : c'est ce qui reconstitue la fiche du compte
       // connecté sur son propre appareil. Le faire plus bas serait un piège —
@@ -1043,11 +1400,28 @@ var DB = (function () {
       if (resas.length || !localResas) resasDepuisBase(resas);
       if (missions.length || !(state.missions || []).length) missionsDepuisBase(missions);
 
+      /* Les avis suivent la même règle de sûreté — à une nuance près, qui
+         compte : `null` veut dire « la table n'existe pas encore », et non
+         « il n'y a aucun avis ». On ne touche alors à rien. */
+      var avis = r[5];
+      if (avis && (avis.length || !(state.avis || []).length)) avisDepuisBase(avis);
+
+      // Les stocks et les demandes d'accès ont besoin des logements : ils
+      // viennent donc après `biensDepuisBase()`.
+      if (r[7]) stocksDepuisBase(r[7]);
+      if (r[9] && (r[9].length || !(state.acces || []).length)) accesDepuisBase(r[9]);
+
       if (typeof upgrade === 'function') upgrade();
       premiereLectureFaite = true;
 
-      // Ce que le cahier n'avait pas, on le lui rend.
-      if ((!resas.length && localResas) || (!missions.length && (state.missions || []).length)) {
+      /* Ce que le cahier n'avait pas, on le lui rend — mais SEULEMENT si on
+         est le propriétaire (précisé en session 19). Sur le téléphone d'un
+         prestataire, cet envoi partait aussi et se faisait refuser ligne à
+         ligne par les règles de lecture : du bruit, et de fausses conclusions
+         sur les scripts manquants. Un prestataire n'écrit que ses missions et
+         ses relevés, par des chemins qui lui sont propres. */
+      if (profil.role === 'owner' &&
+          ((!resas.length && localResas) || (!missions.length && (state.missions || []).length))) {
         setTimeout(pousserMaintenant, 0);
       }
       return true;
@@ -1087,16 +1461,39 @@ var DB = (function () {
     var missions = (state.missions || [])
       .filter(function (m) { return m.id && m.date && bienExiste(m.prop); })
       .map(missionVersBase);
+    var avis = (state.avis || [])
+      .filter(function (v) { return v.id && v.stars && bienExiste(v.pid); })
+      .map(avisVersBase);
+    var fiches = (state.agents || [])
+      .filter(function (a) { return a.id && !a.gone; })
+      .map(function (a) { return prestataireVersBase(a, moi); });
+    var stocks = stocksVersBase();
+    var reglages = reglagesVersBase(moi);
+    var acces = (state.acces || [])
+      .filter(function (d) { return d.id && bienExiste(d.pid); })
+      .map(accesVersBase);
 
     // Chaque étape est vérifiée : Supabase ne « rejette » pas une écriture
     // refusée, il rend un objet { error }. Sans ce contrôle, une erreur sur
     // les biens passerait inaperçue et on croirait le déménagement réussi.
     // L'ordre compte : les réservations et les missions renvoient aux biens.
+    //
+    // `facultative` : une étape dont l'échec ne doit pas emporter le reste.
+    // Les avis en sont une tant que le script 08 n'est pas collé — il serait
+    // absurde qu'une table absente empêche les missions de partir. C'est
+    // exactement la faute évitée : un seul refus faisait tomber tout un lot.
     var etapes = [
       { nom: 'les logements', table: 'properties', lignes: biens },
       { nom: 'les codes d\'accès', table: 'property_secrets', lignes: secrets },
       { nom: 'les réservations', table: 'reservations', lignes: resas },
-      { nom: 'les missions', table: 'missions', lignes: missions }
+      { nom: 'les missions', table: 'missions', lignes: missions },
+      { nom: 'les avis des voyageurs', table: 'avis', lignes: avis, facultative: true },
+      // Le lot 4 (script 09). Facultatives pour la même raison que les avis :
+      // tant que le script n'est pas collé, rien d'autre ne doit en souffrir.
+      { nom: 'les fiches des prestataires', table: 'prestataires', lignes: fiches, facultative: true },
+      { nom: 'les stocks', table: 'stocks', lignes: stocks, facultative: true },
+      { nom: 'les réglages', table: 'reglages', lignes: reglages, facultative: true },
+      { nom: 'les demandes d\'accès', table: 'acces', lignes: acces, facultative: true }
     ];
 
     return etapes.reduce(function (chaine, e) {
@@ -1104,6 +1501,10 @@ var DB = (function () {
         if (!e.lignes.length) return null;
         return client.from(e.table).upsert(e.lignes).then(function (r) {
           if (r && r.error) {
+            if (e.facultative) {
+              if (tableAbsente(r.error)) tablesAbsentes[e.table] = true;
+              return null;
+            }
             var err = new Error(messageClair(r.error) + ' (en écrivant ' + e.nom + ')');
             err.detail = r.error;
             throw err;
@@ -1117,6 +1518,18 @@ var DB = (function () {
       return { ok: false, erreur: e.message || messageClair(e) };
     }).then(function (bilan) {
       derniereErreur = bilan.ok ? null : bilan.erreur;
+      /* CE QUI S'EST RÉELLEMENT PASSÉ À LA DERNIÈRE ÉCRITURE (session 19).
+         Jusqu'ici, personne ne le lisait : `pousser()` part sans qu'on
+         l'attende, et l'échec ne s'affichait NULLE PART. Un refus du cahier
+         — une seule ligne mal formée suffit à faire tomber tout un lot — se
+         traduisait par « j'ai créé mes séjours, la prestataire ne voit rien »,
+         sans le moindre indice. On retient donc le résultat, l'écran du
+         propriétaire l'affiche (règle 4 du §6). */
+      dernierEnvoi = {
+        ok: bilan.ok, erreur: bilan.erreur || null,
+        quand: Date.now(),
+        missions: bilan.missions || 0, resas: bilan.resas || 0, biens: bilan.biens || 0
+      };
       /* LES DROITS PARTENT DANS TOUS LES CAS (session 15, après incident).
          Ils étaient jusqu'ici accrochés à la fin de la chaîne ci-dessus : la
          moindre écriture refusée — une mission, un séjour — et les logements
@@ -1137,12 +1550,64 @@ var DB = (function () {
 
   var canal = null;
 
+  /* CE QU'IL FAUT ÉCOUTER, ET POURQUOI (corrigé en session 19)
+
+     Le canal n'écoutait que `missions` et `reservations`. Or le temps réel
+     n'apporte QUE les lignes que le compte a déjà le droit de voir. Quand le
+     propriétaire confie un nouveau logement à une prestataire, les missions de
+     ce logement lui étaient invisibles **avant** l'attribution : aucune ne
+     changeait à ses yeux, donc aucun événement n'arrivait, donc son téléphone
+     ne relisait jamais rien. Sur son écran : « aucune mission », alors que
+     tout était coché de l'autre côté. Deuxième variante de la règle 14.
+
+     On ajoute donc `profiles` — la table qui porte justement les droits — et
+     `properties`, pour qu'un logement tout neuf apparaisse sans recharger. */
   function ecouter(quandCaChange) {
-    if (!dispo || !profil || canal) return;
+    if (!dispo || !profil) return;
+    surveillerRetour(quandCaChange);
+    if (canal) return;
     canal = client.channel('maison-warme')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'missions' }, quandCaChange)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'reservations' }, quandCaChange)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'properties' }, quandCaChange)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'profiles' }, quandCaChange)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'avis' }, quandCaChange)
+      // Le lot 4 : un relevé de stock, une fiche ou un réglage modifié depuis
+      // un autre appareil doit se voir sans rien faire (session 19).
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'stocks' }, quandCaChange)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'prestataires' }, quandCaChange)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'reglages' }, quandCaChange)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'acces' }, quandCaChange)
       .subscribe();
+  }
+
+  /* LE FILET DE SÉCURITÉ (session 19)
+
+     Le temps réel ne suffit pas et ne suffira jamais : un téléphone posé sur
+     une table coupe ses connexions, un réseau de chantier laisse tomber le
+     canal sans prévenir. On relit donc aussi le cahier **chaque fois que
+     l'application revient au premier plan** — c'est le geste naturel de
+     quelqu'un qui reprend son téléphone en main, et c'est le moment exact où
+     il s'attend à voir du neuf.
+
+     `relireProfil()` d'abord : les droits vivent dans le profil, et c'est
+     précisément ce qui a changé quand le propriétaire coche un logement. */
+  function rafraichir() {
+    if (!dispo) return Promise.resolve(false);
+    return relireProfil()
+      .then(function (p) { return p ? charger() : false; })
+      .catch(function () { return false; });
+  }
+
+  var surveille = false;
+
+  function surveillerRetour(quandCaChange) {
+    if (typeof document === 'undefined' || surveille) return;
+    surveille = true;
+    document.addEventListener('visibilitychange', function () {
+      if (document.visibilityState !== 'visible') return;
+      rafraichir().then(function (ok) { if (ok && quandCaChange) quandCaChange(); });
+    });
   }
 
   function taire() {
@@ -1173,6 +1638,9 @@ var DB = (function () {
     estDispo: function () { return dispo; },
     profil: function () { return profil; },
     erreur: function () { return derniereErreur; },
+    /* Le bilan de la dernière écriture : l'écran du propriétaire s'en sert
+       pour dire « ce que tu vois n'est pas encore parti » (session 19). */
+    dernierEnvoi: function () { return dernierEnvoi; },
     messageClair: messageClair,
     relireProfil: relireProfil,
     sessionLocale: sessionLocale,
@@ -1210,6 +1678,25 @@ var DB = (function () {
     signalerDepart: signalerDepart,
     pousser: pousser,
     pousserMaintenant: pousserMaintenant,
+    /* Relire le cahier de bout en bout, droits compris. C'est ce que fait le
+       bouton « Actualiser » du prestataire, et ce que l'application fait
+       toute seule quand elle revient au premier plan (session 19). */
+    rafraichir: rafraichir,
+    // Les avis (script 08, session 19).
+    deposerAvis: deposerAvis,
+    /* Vrai tant que le script 08 n'a pas été collé : l'écran le DIT plutôt
+       que d'afficher « pas encore de note » et de laisser croire à un oubli
+       des voyageurs (règle 5 du §6). */
+    avisIndisponibles: function () { return !!tablesAbsentes.avis; },
+    /* Les scripts SQL qui manquent, nommés. Un écran vide doit pouvoir dire
+       pourquoi il est vide (session 19). */
+    scriptsManquants: manquantes,
+    // Le lot 4 (script 09, session 19).
+    enregistrerStock: enregistrerStock,
+    supprimerStock: supprimerStock,
+    demanderAcces: demanderAcces,
+    menageFini: menageFini,
+    supprimerFiche: function (id) { return supprimerLigne('prestataires', id); },
     ecouter: ecouter,
     taire: taire,
     demenager: demenager

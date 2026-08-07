@@ -481,6 +481,20 @@ textarea.inp { min-height: 90px; resize: vertical; line-height: 1.5; }
 .presta-kicker { font: 600 11.5px Figtree, sans-serif; color: var(--terra); letter-spacing: .07em; text-transform: uppercase; }
 .presta-title  { font: 700 28px/1.15 Figtree, sans-serif; letter-spacing: -.02em; margin-top: 3px; }
 
+/* « Actualiser » — un téléphone n'a pas de touche F5 (session 19). La cible
+   fait 44 px comme toutes les autres, même si le rond n'en fait que 38. */
+.presta-maj {
+  flex: none;
+  width: 44px; height: 44px;
+  margin-left: auto;
+  border-radius: 999px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 19px; line-height: 1;
+  color: var(--ink-soft);
+  background: rgba(36, 30, 26, .05);
+}
+.presta-maj[disabled] { opacity: .45; }
+
 .avatar {
   width: 44px; height: 44px;
   border-radius: 999px;
@@ -729,6 +743,19 @@ textarea.inp { min-height: 90px; resize: vertical; line-height: 1.5; }
   padding: 22px 16px calc(40px + var(--safe-bottom));
 }
 
+/* Le cahier partagé a refusé une écriture : impossible de ne pas le voir.
+   Ce bandeau est affiché sur toutes les pages du propriétaire (session 19). */
+.alerte-envoi {
+  background: var(--terra-bg);
+  color: var(--terra-d);
+  border-left: 4px solid var(--terra);
+  border-radius: 14px;
+  padding: 16px 18px;
+  margin-bottom: 18px;
+  font: 500 14px/1.5 Figtree, sans-serif;
+}
+.alerte-envoi strong { font-weight: 700; }
+
 .page-head { display: flex; justify-content: space-between; align-items: flex-end; gap: 16px; flex-wrap: wrap; }
 .page-title { font: 700 30px/1.15 Figtree, sans-serif; letter-spacing: -.02em; }
 .page-sub   { font: 500 14px/1.45 Figtree, sans-serif; color: var(--muted); margin-top: 4px; }
@@ -919,6 +946,30 @@ textarea.inp { min-height: 90px; resize: vertical; line-height: 1.5; }
   background: var(--terra-bg2);
   border: 1px solid #F3D3C6;
   box-shadow: none;
+}
+
+/* Fiche prestataire allégée (session 19) : un chiffre qu'on lit d'un coup
+   d'œil — la note moyenne — et une barre de boutons qui replie le reste. */
+.ag-chiffre {
+  flex: none;
+  text-align: right;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 3px;
+  min-height: 44px;
+  justify-content: center;
+  padding-right: 4px;
+}
+.ag-chiffre-v { font-size: 28px; line-height: 1; }
+.ag-chiffre-l { font: 600 11.5px Figtree, sans-serif; color: var(--muted); }
+
+.ag-barre {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 0 22px 18px;
 }
 
 .perm-row {

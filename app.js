@@ -481,6 +481,7 @@ function initialState() {
     loginEnCours: false,
     migMsg: '',
     migEnCours: false,
+    majEnCours: false,     // relecture demandée par le bouton « ⟳ » du prestataire
     mMsg: '',              // message affiché sur l'écran prestataire
     priseEnCours: null,    // mission dont la prise est en cours d'arbitrage
     comptes: [],           // les comptes existants dans le cahier partagé
@@ -545,6 +546,7 @@ function initialState() {
     mStockGroup: 'Tous',
     ownerMonth: CURRENT_MONTH,
     openAgent: null,
+    openReglages: null,    // fiche prestataire dont les réglages sont dépliés
     openGainMonth: null,
     bienTab: 'infos',
     calMonth: CURRENT_MONTH,
@@ -651,6 +653,7 @@ function load() {
   state.priseEnCours = null;
   state.loginEnCours = false;
   state.migEnCours = false;
+  state.majEnCours = false;           // le bouton « ⟳ » du prestataire (session 19)
   state.mMsg = '';
   state.migMsg = '';
   state.photoPlein = null;            // une photo ouverte en grand n'est pas une donnée
@@ -845,6 +848,35 @@ function upgrade() {
   if (Array.isArray(state.coursesProps)) {
     state.coursesProps = state.coursesProps.filter(function (pid) { return !prop(pid).gone; });
   }
+
+  reconstruireReady();
+}
+
+/* L'HEURE DE FIN DE MÉNAGE N'EST PAS UNE DONNÉE À PART (session 19)
+
+   `state.ready` décide de l'arrivée anticipée du voyageur suivant. Il était
+   écrit par `finish()`, donc **sur le téléphone du prestataire uniquement** :
+   ni le propriétaire ni le voyageur ne l'ont jamais vu. Plutôt que de créer
+   une table pour une information entièrement déductible, on la reconstruit
+   depuis les missions terminées — qui voyagent, elles — en lisant l'heure
+   posée dans leur compte rendu (`report.fini`).
+
+   On ne reconstruit que ce qu'on sait : une mission d'avant la session 19 n'a
+   pas d'heure de fin, et laisse alors la valeur locale en place plutôt que de
+   l'effacer (règle D-75, la relecture met à jour, elle ne remplace pas). */
+function reconstruireReady() {
+  if (!state.ready) state.ready = {};
+  (state.missions || []).forEach(function (m) {
+    if (m.status !== 'termine') return;
+    var rep = state.reports[m.id];
+    var at = rep && rep.fini;
+    if (!at) return;
+    var actuel = state.ready[m.prop];
+    // Le ménage le plus récent gagne : c'est lui qui décrit l'état du logement.
+    if (actuel && actuel.date > m.date) return;
+    if (actuel && actuel.date === m.date && actuel.at >= at) return;
+    state.ready[m.prop] = { date: m.date, at: at, mid: m.id, agent: m.taker || (rep && rep.agent) || null };
+  });
 }
 
 /** Cette fiche de prestataire existe-t-elle encore ? */
@@ -1611,6 +1643,22 @@ function demanderAcces(pid, date, nom) {
   };
   state.acces.push(d);
   state.guestPass = { resa: r ? r.id : '', pid: pid, niveau: 'partiel', at: nowHM(), demande: d.id };
+
+  /* ET SURTOUT : ON LE DIT AU PROPRIÉTAIRE (session 19, audit du stockage).
+     La demande restait sur le téléphone du voyageur — celui qui la dépose est
+     précisément celui qui ne peut rien en faire. Le propriétaire ne l'a donc
+     jamais vue, et le voyageur attendait une confirmation qui ne pouvait pas
+     venir. Porte étroite `demander_acces()` du script 09.
+     On garde l'identifiant rendu par la base : c'est lui qui fera foi quand
+     le propriétaire validera, depuis son écran. */
+  if (typeof DB !== 'undefined' && DB.estDispo()) {
+    DB.demanderAcces(pid, date, d.nom).then(function (id) {
+      if (!id) return;
+      if (state.guestPass && state.guestPass.demande === d.id) state.guestPass.demande = id;
+      d.id = id;
+      save();
+    });
+  }
   return d;
 }
 
@@ -1701,6 +1749,17 @@ function chargerSejourEnLigne(rid) {
       state.sejourNet = { rid: rid, etat: 'ok' };
       save();
       render();
+
+      /* L'ARRIVÉE ANTICIPÉE (session 19). Le voyageur n'a pas le droit de lire
+         les missions : sans ce second guichet, il ne pouvait pas savoir que le
+         ménage était déjà fait, et l'écran lui annonçait l'heure officielle.
+         La réponse arrive après coup, sans faire attendre le livret. */
+      DB.menageFini(rid).then(function (mf) {
+        if (!mf) return;
+        state.ready[f.pid] = { date: mf.date, at: mf.at, mid: null, agent: null };
+        save();
+        render();
+      });
     })
     .catch(function (e) {
       state.sejourNet = { rid: rid, etat: 'erreur', msg: DB.messageClair(e) };
@@ -2296,11 +2355,26 @@ function routeTab() {
   return 'missions';
 }
 
+/* LE BOUTON QUI MANQUAIT (session 19)
+
+   Un téléphone n'a pas de touche F5 : on ne « recharge » pas une application
+   ajoutée à l'écran d'accueil. Quand le propriétaire confiait un nouveau
+   logement, la prestataire n'avait donc aucun geste à sa disposition pour
+   aller chercher la nouveauté — et l'écran restait désespérément vide.
+   Le geste existe désormais, et il est écrit en toutes lettres. */
+function boutonActualiser() {
+  if (typeof DB === 'undefined' || !DB.estDispo()) return '';
+  return '<button type="button" class="presta-maj" aria-label="Actualiser"' +
+    (state.majEnCours ? ' disabled' : '') + act('presta-actualiser') + '>' +
+    (state.majEnCours ? '…' : '⟳') + '</button>';
+}
+
 function prestaHeader(kicker, title) {
   var me = agent(state.me);
   return '<header class="presta-head">' +
     '<div><div class="presta-kicker">' + esc(kicker) + '</div>' +
     '<h1 class="presta-title">' + esc(title) + '</h1></div>' +
+    boutonActualiser() +
     '<div class="avatar" style="background:' + me.avatarBg + ';color:' + me.avatarFg + '">' + me.init + '</div>' +
     '</header>';
 }
@@ -2845,8 +2919,16 @@ function viewPrestaNotes() {
           'Moyenne sur ' + r.n + ' avis de voyageurs</div>'
       : '<div style="font-size:34px;line-height:1">⭐</div>' +
         '<h2 style="font:700 17px Figtree,sans-serif;margin:12px 0 0">Pas encore de note</h2>' +
-        '<p class="sec-note" style="margin-top:6px">Après chaque séjour, le voyageur note la propreté ' +
-          'depuis son livret d\'accueil. Ses étoiles et son commentaire arrivent ici.</p>') +
+        /* NE JAMAIS LAISSER CROIRE À UN OUBLI DES VOYAGEURS (règle 5 du §6).
+           Tant que le script 08 n'est pas collé, l'écran affichait « pas
+           encore de note » alors que les notes existaient — elles n'avaient
+           simplement nulle part où voyager. On dit lequel des deux c'est. */
+        (typeof DB !== 'undefined' && DB.estDispo() && DB.avisIndisponibles()
+          ? '<p class="sec-note" style="margin-top:6px;color:var(--terra)">Les notes des voyageurs ne ' +
+            'sont pas encore partagées : le propriétaire a une mise en service à terminer de son côté. ' +
+            'Signale-le-lui — ce n\'est pas que personne ne t\'a notée.</p>'
+          : '<p class="sec-note" style="margin-top:6px">Après chaque séjour, le voyageur note la propreté ' +
+            'depuis son livret d\'accueil. Ses étoiles et son commentaire arrivent ici.</p>')) +
     '</article>';
 
   /* Répartition : combien de 5 étoiles, de 4… Utile pour situer une note isolée. */
@@ -3094,6 +3176,49 @@ function compteConnecte() {
   return p && p.email ? 'Connecté : ' + p.email : 'Connecté';
 }
 
+/* L'ALARME QUI MANQUAIT (session 19, règle 4 du §6)
+
+   `pousser()` part sans qu'on l'attende : c'est voulu, l'écran ne doit jamais
+   figer parce que le réseau est lent. Mais quand le cahier REFUSE l'écriture,
+   personne ne le disait. Le propriétaire saisissait ses séjours, voyait ses
+   missions apparaître sur son écran — et elles n'étaient jamais parties. Sur
+   le téléphone de la prestataire : rien, sans la moindre explication.
+
+   Ce bandeau est volontairement gros et rouge : il annonce que **ce qui est
+   à l'écran n'existe que sur cet ordinateur**. */
+function alerteEnvoi() {
+  if (typeof DB === 'undefined' || !DB.estDispo()) return '';
+  var e = DB.dernierEnvoi();
+  if (!e || e.ok) return '';
+  return '<div class="alerte-envoi" role="alert">' +
+    '<strong>Le cahier partagé a refusé le dernier enregistrement.</strong> ' +
+    'Ce que tu vois ici n’est encore parti nulle part : tes prestataires et tes ' +
+    'voyageurs ne le voient pas. Raison donnée : « ' + esc(e.erreur || 'inconnue') + ' ».' +
+    '<button type="button" class="btn btn--xs" style="background:var(--ink);color:#fff;margin-top:10px"' +
+      act('reessayer-envoi') + '>Réessayer maintenant</button>' +
+    '</div>';
+}
+
+/* LES SCRIPTS QUI MANQUENT, NOMMÉS (session 19)
+
+   Une table absente ne casse plus rien (D-97) — mais alors les données qui
+   devaient y aller restent dans ce navigateur, sans que rien ne le dise. Un
+   silence de ce genre a déjà coûté deux sessions. On l'écrit donc, une fois,
+   en haut de chaque page, et on nomme le fichier à coller. */
+function alerteScripts() {
+  if (typeof DB === 'undefined' || !DB.estDispo() || !DB.scriptsManquants) return '';
+  var m = DB.scriptsManquants();
+  if (!m.length) return '';
+  return '<div class="alerte-envoi" style="border-left-color:var(--amber-t);color:var(--amber-t);' +
+    'background:var(--amber-bg)" role="status">' +
+    '<strong>Il reste ' + (m.length > 1 ? m.length + ' scripts' : 'un script') + ' à coller dans Supabase : ' +
+    esc(m.join(' et ')) + '.</strong> ' +
+    'Tant que ce n’est pas fait, une partie de ce que tu saisis reste sur <em>cet ordinateur</em> ' +
+    'et n’est visible ni par tes prestataires, ni sur un autre appareil. ' +
+    'Le mode d’emploi est au point 2 de la liste du document d’état.' +
+    '</div>';
+}
+
 function ownerShell(page, content) {
   var openCount = state.missions.filter(function (m) { return m.status === 'dispo'; }).length;
 
@@ -3121,7 +3246,7 @@ function ownerShell(page, content) {
         '</div>' +
       '</div>' +
     '</aside>' +
-    '<main class="owner-main">' + content + '</main>' +
+    '<main class="owner-main">' + alerteEnvoi() + alerteScripts() + content + '</main>' +
     '</div>';
 }
 
@@ -3183,7 +3308,7 @@ function viewOwnerDash() {
   /* Les signalements ouverts, avec de quoi savoir où aller (session 16).
      L'alerte se contentait d'un décompte, et rien nulle part ne permettait
      de LIRE le problème : c'est corrigé dans la fiche de la mission. */
-  var pbOuverts = state.problems.filter(function (p) { return p.statut !== 'traite'; });
+  var pbOuverts = tousLesProblemes().filter(function (p) { return p.statut !== 'traite'; });
   alerts.push({ cls: 'alert--blue', dot: C.bleu, kind: 'Signalement',
     title: pbOuverts.length ? pbOuverts.length + ' problème(s) à traiter' : 'Aucun problème signalé',
     det: pbOuverts.length
@@ -3806,6 +3931,29 @@ function vueGrandePhoto() {
    cahier partagé et que le prestataire a le droit d'écrire sur ses propres
    missions. Le compte rendu peut ainsi exister avant la fin de la mission :
    il ne contient alors que `problemes`, et la revue doit le supporter. */
+/* TOUS LES SIGNALEMENTS, D'OÙ QU'ILS VIENNENT (session 19, audit du stockage)
+
+   `state.problems` est la liste locale du prestataire qui les a saisis. Sur
+   l'appareil du PROPRIÉTAIRE elle est vide : les signalements lui arrivent
+   dans le compte rendu de la mission (`report.problemes`), qui voyage, lui.
+   Le tableau de bord ne regardait que `state.problems` : l'alerte « problème
+   à traiter » ne s'est donc **jamais** allumée chez le propriétaire, quel que
+   soit le nombre de casses signalées. Encore la règle 14. */
+function tousLesProblemes() {
+  var vus = {};
+  var out = [];
+  (state.problems || []).forEach(function (p) {
+    if (p && p.id) vus[p.id] = true;
+    out.push(p);
+  });
+  Object.keys(state.reports || {}).forEach(function (mid) {
+    ((state.reports[mid] || {}).problemes || []).forEach(function (p) {
+      if (p && p.id && !vus[p.id]) { vus[p.id] = true; out.push(p); }
+    });
+  });
+  return out;
+}
+
 function problemesDe(mid) {
   var vus = {};
   var out = [];
@@ -4196,6 +4344,7 @@ function viewOwnerResa() {
   var msgs = messagesDe(r.id);
   var parti = departAt(pid, r);
   var avisSej = avisDone(pid, r, 'sejour');
+  var avisMen = avisDone(pid, r, 'menage');
 
   var lignes = [
     ['Plateforme', r.plat],
@@ -4296,11 +4445,35 @@ function viewOwnerResa() {
             '<span class="resa-go">→</span></button>' +
         '</div>' +
 
-        (avisSej ? '<div class="card" style="padding:22px">' +
-          '<h2 style="font:700 16px Figtree,sans-serif;margin:0 0 10px">Avis sur le séjour</h2>' +
-          '<div class="avis"><div class="avis-top">' + starsRead(avisSej.stars) +
-            '<span class="avis-meta num">' + esc(avisSej.dateLabel) + '</span></div>' +
-            (avisSej.texte ? '<p class="avis-txt">« ' + esc(avisSej.texte) + ' »</p>' : '') + '</div></div>' : '') +
+        /* CE QUE CE VOYAGEUR-LÀ A ÉCRIT (session 19)
+
+           Seul l'avis « séjour » s'affichait ici, et seulement s'il existait.
+           Or il y a deux notes par séjour — la propreté trouvée à l'arrivée,
+           qui vise la prestataire, et le séjour lui-même, qui vise le
+           logement — et c'est justement en ouvrant une réservation qu'on veut
+           les relire. On montre les deux, et on dit franchement quand il n'y
+           en a pas : un cadre absent laisse croire à un écran cassé. */
+        '<div class="card" style="padding:22px">' +
+          '<h2 style="font:700 16px Figtree,sans-serif;margin:0 0 10px">Ce que ' + esc(r.guest) + ' a laissé</h2>' +
+          (avisMen || avisSej
+            ? [[avisMen, 'Propreté à l’arrivée', avisMen && avisMen.agent ? ' · ' + agent(avisMen.agent).name : ''],
+               [avisSej, 'Le séjour', '']]
+                .filter(function (x) { return x[0]; })
+                .map(function (x) {
+                  return '<div class="avis" style="margin-bottom:10px">' +
+                    '<div class="avis-top">' + starsRead(x[0].stars) +
+                      '<span class="avis-meta num">' + esc(x[1] + x[2] + ' · ' + x[0].dateLabel) + '</span></div>' +
+                    (x[0].texte
+                      ? '<p class="avis-txt">« ' + esc(x[0].texte) + ' »</p>'
+                      : '<p class="avis-txt avis-txt--none">Des étoiles, sans commentaire.</p>') +
+                    '</div>';
+                }).join('')
+            : '<p class="sec-note" style="margin:0">Aucun commentaire pour l’instant. ' +
+              (r.end < TODAY
+                ? 'Ce séjour est terminé : il n’en viendra probablement plus.'
+                : 'La propreté se note à l’arrivée, le séjour au départ — depuis le livret ' +
+                  'd’accueil, sur le téléphone du voyageur.') + '</p>') +
+        '</div>' +
 
         '<div class="card" style="padding:22px">' +
           '<h2 style="font:700 16px Figtree,sans-serif;margin:0 0 6px">Lien personnel de ' + esc(r.guest) + '</h2>' +
@@ -4845,6 +5018,21 @@ function ligneCompte(a) {
     // chose : entre les deux, il y a une écriture dans le cahier, qui peut
     // n'avoir pas encore eu lieu. On le montre plutôt que de le supposer.
     var ecart = ouverts !== coches;
+
+    /* COMBIEN DE MISSIONS L'ATTENDENT VRAIMENT (session 19)
+
+       « Elle voit 3 logements » ne suffisait pas : le propriétaire pouvait
+       avoir tout coché correctement et n'avoir créé aucune mission — ou les
+       avoir créées sans qu'elles partent. On compte donc ce que le cahier lui
+       montrera : les missions à prendre, sur les logements que SON COMPTE
+       ouvre (et non ceux cochés ici), et de son métier. C'est exactement le
+       calcul que fait son téléphone. */
+    var attendent = state.missions.filter(function (m) {
+      return m.status === 'dispo' &&
+        (c.props || []).indexOf(m.prop) >= 0 &&
+        (!Array.isArray(c.services) || c.services.indexOf(m.type) >= 0);
+    }).length;
+
     return '<div class="invite-row" style="flex-direction:column;align-items:stretch;gap:8px">' +
       '<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">' +
         '<span class="invite-state">' +
@@ -4856,6 +5044,10 @@ function ligneCompte(a) {
             ? '⚠️ Son téléphone n\'ouvre que <strong>' + ouverts + '</strong> logement(s) sur les <strong>' +
               coches + '</strong> cochés ici. Appuie sur « Renvoyer ses droits ».'
             : 'Elle voit ' + ouverts + ' logement(s) sur son téléphone — exactement ce qui est coché ci-dessus.') +
+          '<br>' + (attendent
+            ? '<strong>' + attendent + ' mission(s) à prendre</strong> l’attendent sur son téléphone.'
+            : 'Aucune mission à prendre ne l’attend : soit tout est déjà pris, soit aucun ' +
+              'séjour ne se termine sur ces logements.') +
         '</span>' +
         '<button type="button" class="btn btn--xs" style="background:' + (ecart ? 'var(--terra)' : 'var(--ink)') + ';color:#fff"' +
           act('renvoyer-droits', { ag: a.id }) + '>Renvoyer ses droits</button>' +
@@ -4939,17 +5131,41 @@ function viewOwnerAgents() {
   var monthDef = MONTHS.find(function (m) { return m.key === state.ownerMonth; }) || MONTHS[0];
   if (state.ownerMonth !== monthDef.key) state.ownerMonth = monthDef.key;
 
+  /* LA FICHE A ÉTÉ ALLÉGÉE (session 19)
+
+     Elle empilait, en permanence et pour chaque personne : deux rangées de
+     cases à cocher, le bloc du compte relié, une rangée de pastilles d'avis,
+     puis l'historique. Cinq blocs, dont quatre ne servent qu'une fois par
+     trimestre. Le propriétaire a raison : c'est chargé.
+
+     Ce qui reste visible en permanence est ce qu'on regarde tous les jours :
+     qui c'est, **sa note moyenne**, ce qu'on lui doit. Tout le reste — les
+     logements confiés, les prestations, le compte, la suppression — passe
+     derrière un bouton « Réglages ». Rien n'est retiré, tout est rangé. */
   var cards = state.agents.map(function (a) {
     var rows = monthRows(a.id, state.ownerMonth);
     var open = state.openAgent === a.id;
+    var reglages = state.openReglages === a.id;
     var paye = isPaid(a.id, state.ownerMonth);
     var rt = agentRating(a.id);
-    var noteLabel = rt ? fmtNote(rt.avg) + '/5 (' + rt.n + ' avis)' : 'pas encore noté';
 
     // La remise des clés ne prend pas de mission : ni montant, ni paie, ni note.
     // À sa place, on montre ce qui la concerne : ses prochaines remises de clés.
     var cles = a.kind === 'cles';
     var venir = cles ? keyEvents(a.id).filter(function (e) { return e.date >= TODAY; }).length : 0;
+
+    /* LA MOYENNE, EN GRAND (demandée en session 19). Elle se lisait en petit
+       gris, noyée dans « Depuis mars · 4,7/5 (3 avis) · 2 mission(s) ce
+       mois » — autant dire nulle part. Elle a maintenant sa colonne, à
+       côté de ce qu'on doit à la personne. */
+    var blocNote = cles ? '' :
+      '<button type="button" class="ag-chiffre"' + act('toggle-agent', { ag: a.id }) + '>' +
+        (rt
+          ? '<span class="serif num ag-chiffre-v" style="color:var(--amber-t)">' + fmtNote(rt.avg) + '</span>' +
+            '<span class="ag-chiffre-l">sur 5 · ' + rt.n + ' avis</span>'
+          : '<span class="serif num ag-chiffre-v" style="color:var(--muted2)">—</span>' +
+            '<span class="ag-chiffre-l">pas encore noté</span>') +
+      '</button>';
 
     return '<article class="card" style="padding:0;overflow:hidden">' +
       '<div style="display:flex;align-items:center;gap:16px;padding:20px 22px;flex-wrap:wrap">' +
@@ -4963,23 +5179,36 @@ function viewOwnerAgents() {
           '<div class="num" style="font:500 12.5px Figtree,sans-serif;color:var(--muted);margin-top:3px">Depuis ' + esc(a.since) +
             (cles
               ? ' · ' + (a.props || []).length + ' logement(s) confié(s)'
-              : ' · ' + esc(noteLabel) + ' · ' + rows.length + ' mission(s) ce mois') + '</div>' +
+              : ' · ' + (a.props || []).length + ' logement(s) · ' + rows.length + ' mission(s) ce mois') + '</div>' +
         '</div>' +
         (cles
           ? '<div style="text-align:right;flex:none">' +
               '<div class="serif num" style="font-size:28px;line-height:1">' + venir + '</div>' +
               '<div style="font:600 11.5px Figtree,sans-serif;color:var(--muted);margin-top:3px">arrivées et départs à venir</div>' +
             '</div>'
-          : '<div style="text-align:right;flex:none">' +
+          : blocNote +
+            '<div style="text-align:right;flex:none">' +
               '<div class="serif num" style="font-size:28px;line-height:1">' + rows.reduce(function (n, r) { return n + r.price; }, 0) + ' €</div>' +
               '<div style="font:600 11.5px Figtree,sans-serif;color:' + (paye ? 'var(--green-t)' : 'var(--muted)') + ';margin-top:3px">' +
                 (paye ? 'payé' : 'à verser') + '</div>' +
             '</div>' +
             '<button type="button" class="btn btn--xs" style="' + (paye ? 'background:var(--green-bg);color:var(--green-t)' : 'background:var(--amber-bg);color:var(--amber-t)') + '"' +
-              act('toggle-payout', { ag: a.id }) + '>' + (paye ? '✓ Payé' : 'Marquer payé') + '</button>' +
-            '<button type="button" class="btn btn--xs" style="background:var(--cream);color:var(--ink-soft)"' +
-              act('toggle-agent', { ag: a.id }) + '>' + (open ? 'Masquer' : 'Historique') + '</button>') +
+              act('toggle-payout', { ag: a.id }) + '>' + (paye ? '✓ Payé' : 'Marquer payé') + '</button>') +
       '</div>' +
+
+      /* Une seule rangée de boutons, toujours la même, à hauteur d'œil. */
+      '<div class="ag-barre">' +
+        (cles ? '' : '<button type="button" class="btn btn--xs" style="background:var(--cream);color:var(--ink-soft)"' +
+          act('toggle-agent', { ag: a.id }) + '>' + (open ? 'Masquer le détail' : 'Missions et avis') + '</button>') +
+        '<button type="button" class="btn btn--xs" style="background:var(--cream);color:var(--ink-soft)"' +
+          act('toggle-reglages', { ag: a.id }) + '>' +
+          (reglages ? 'Fermer les réglages' : '⚙ Réglages et accès') + '</button>' +
+        (reglages ? '' : '<span class="sec-note" style="margin-left:auto">' +
+          (cles ? 'Calendriers confiés' : 'Logements, prestations et compte') + ' — repliés</span>') +
+      '</div>' +
+
+      /* --- Réglages : tout ce qui ne se touche qu'à l'embauche ------------ */
+      (!reglages ? '' :
 
       /* Biens confiés : missions à prendre, ou calendrier à consulter. */
       '<div class="perm-row">' +
@@ -5015,16 +5244,8 @@ function viewOwnerAgents() {
          une liste et annonçait qu'aucun mot de passe n'était demandé. Ce
          parcours n'existe plus depuis la session 14 (D-65) : le message envoyait
          donc le prestataire dans le mur. Tout passe par `ligneCompte()`. */
-      ligneCompte(a) +
-      /* Ce que les voyageurs ont pensé de ses ménages. */
-      (rt ? '<div class="avis-row">' +
-        '<span class="perm-label">Avis des voyageurs :</span>' +
-        rt.list.slice().reverse().slice(0, 4).map(function (v) {
-          return '<span class="avis-chip" title="' + esc(v.texte || 'Sans commentaire') + '">' +
-            starsRead(v.stars) + '<span class="num">' + esc(prop(v.pid).short) + '</span></span>';
-        }).join('') +
-        (rt.n > 4 ? '<span class="sec-note">+ ' + (rt.n - 4) + ' autres</span>' : '') +
-        '</div>' : '') +
+      ligneCompte(a)) +
+
       (open && !cles ? '<div class="table-scroll" style="padding:0 22px 8px">' +
         '<div class="thead" style="background:transparent;padding:10px 0;border-top:1px solid rgba(36,30,26,.07);min-width:640px">' +
           '<span style="width:90px">Date</span><span style="flex:1.4">Bien</span><span style="flex:1">Type</span>' +
@@ -5150,7 +5371,18 @@ function viewOwnerAvis() {
   var mSejour = moyenne(avisOf('sejour'));
   var basses = state.avis.filter(function (v) { return v.stars <= 3; }).length;
 
-  var kpis = '<div class="cols" style="margin-top:22px;gap:12px">' +
+  /* Le script 08 n'est pas collé : les avis ne quittent pas cet ordinateur.
+     C'est exactement ce qui faisait dire « la prestataire ne voit pas ses
+     notes » — on l'écrit là où il les regarde. */
+  var horsCahier = typeof DB !== 'undefined' && DB.estDispo() && DB.avisIndisponibles()
+    ? '<div class="alerte-envoi" style="margin-top:18px;margin-bottom:0">' +
+      '<strong>Ces avis ne sortent pas de cet ordinateur.</strong> Il manque le script ' +
+      '<em>08-avis.sql</em> dans Supabase : tant qu\'il n\'est pas collé, tes prestataires lisent ' +
+      '« pas encore de note » sur leur téléphone, même quand un voyageur vient de les noter. ' +
+      'La marche à suivre est au point 2 de la liste du document d\'état.</div>'
+    : '';
+
+  var kpis = horsCahier + '<div class="cols" style="margin-top:22px;gap:12px">' +
     '<div class="kpi" style="min-width:190px"><div class="v num">' + state.avis.length + '</div>' +
       '<div class="l">avis reçus</div></div>' +
     '<div class="kpi" style="min-width:190px"><div class="v num" style="color:' + C.ambre + '">' +
@@ -5478,7 +5710,60 @@ function viewOwnerBiens() {
     '</div>' + messageCahier() + form +
     '<div class="grid-cards" style="margin-top:22px">' +
       (cards || '<p class="empty">Aucun bien. Ajoutez le premier ci-dessus.</p>') + '</div>' +
+    carteLienUnique() +
     carteConnexions());
+}
+
+/* LE LIEN QUE L'ON COLLE UNE FOIS POUR TOUTES (mis en avant en session 19)
+
+   Il existait déjà — `#/bienvenue`, D-90 — mais nulle part sur l'écran du
+   propriétaire : on ne pouvait le trouver que dans la liste des raccourcis
+   des messages programmés, écrit `{bienvenue}`. Il ne servait donc à
+   personne, alors que c'est **le** lien à mettre dans les messages
+   automatiques d'Airbnb et de Booking.
+
+   Ce qu'il fait, en une phrase : le voyageur l'ouvre, donne son nom et sa
+   date d'arrivée, et tombe sur le livret de SON logement. Son téléphone s'en
+   souvient ensuite : les fois suivantes, le livret s'ouvre directement.
+
+   Sa limite est écrite noir sur blanc, elle n'est pas cachée : qui connaît
+   le nom d'un voyageur et sa date d'arrivée peut ouvrir son livret. Le lien
+   personnel, lui, n'a pas ce défaut — c'est pourquoi on le recommande dès
+   qu'on écrit à quelqu'un en particulier. */
+function texteBienvenue() {
+  return 'Bonjour,\n\n' +
+    'Voici votre livret d’accueil :\n' +
+    appUrl() + '#/bienvenue\n\n' +
+    'Indiquez votre nom et votre date d’arrivée : vous retrouverez l’adresse, ' +
+    'les horaires, le code d’accès et le Wi-Fi pendant votre séjour, ainsi que ' +
+    'nos conseils sur place.\n\n' +
+    'À très bientôt !';
+}
+
+function carteLienUnique() {
+  var lien = appUrl() + '#/bienvenue';
+  return '<div class="card" style="margin-top:22px;padding:22px;border-left:4px solid var(--terra)">' +
+    '<h2 style="font:700 16px Figtree,sans-serif;margin:0 0 4px">Le lien à donner à tous les voyageurs</h2>' +
+    '<p class="sec-note" style="margin:0 0 12px">Un seul lien, valable pour <strong>tous</strong> les ' +
+      'logements et tous les séjours : c’est celui à coller dans les messages automatiques d’Airbnb ' +
+      'et de Booking, une fois pour toutes. Le voyageur donne son nom et sa date d’arrivée, et il ' +
+      'tombe sur le livret de son logement. Son téléphone s’en souvient : les fois suivantes, ' +
+      'le livret s’ouvre tout seul.</p>' +
+    '<input class="inp num" style="font-size:12.5px" readonly value="' + esc(lien) + '" data-fid="lien-bienvenue">' +
+    '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">' +
+      '<button type="button" class="btn btn--xs" style="background:var(--terra);color:#fff"' +
+        act('copier-lien', { url: lien }) + '>Copier le lien</button>' +
+      '<button type="button" class="btn btn--xs" style="background:var(--cream);color:var(--ink-soft)"' +
+        act('copier-message-bienvenue') + '>Copier le message tout prêt</button>' +
+      '<button type="button" class="btn btn--xs" style="background:var(--cream);color:var(--ink-soft)"' +
+        act('nav', { path: '#/bienvenue' }) + '>👁 Voir ce que le voyageur voit</button>' +
+    '</div>' +
+    '<p class="sec-note" style="margin-top:12px">À savoir, pour choisir en connaissance de cause : ' +
+      'ce lien identifie par le <strong>nom + la date d’arrivée</strong>. Quelqu’un qui connaîtrait ' +
+      'les deux pourrait ouvrir le livret de ce voyageur. Quand vous écrivez à une personne en ' +
+      'particulier, préférez le <strong>lien personnel</strong> de sa réservation — il n’a pas ce ' +
+      'défaut, et le voyageur n’a rien à taper.</p>' +
+    '</div>';
 }
 
 /* --- Connexions aux plateformes ------------------------------------------
@@ -7111,7 +7396,13 @@ function finish(id) {
       };
     }),
     qty: Object.assign({}, d.qty),
-    lows: lowKeys
+    lows: lowKeys,
+    /* L'HEURE DE FIN VOYAGE AVEC LE COMPTE RENDU (session 19, audit du
+       stockage). Elle n'était écrite que dans `state.ready`, c'est-à-dire
+       **sur ce téléphone-ci**. Ni le propriétaire ni le voyageur ne l'ont
+       donc jamais vue — et c'est elle qui décide de l'arrivée anticipée.
+       Le compte rendu part déjà dans le cahier : elle n'avait qu'à y monter. */
+    fini: nowHM()
   };
   // Les signalements faits pendant la mission voyagent avec son compte rendu
   // (session 16) : les écraser ici les ferait disparaître chez le propriétaire.
@@ -7124,7 +7415,7 @@ function finish(id) {
 
   // Logement prêt : si c'est avant l'heure d'arrivée prévue et que le bien
   // l'autorise, le voyageur suivant le verra dans son livret d'accueil.
-  state.ready[m.prop] = { date: m.date, at: nowHM(), mid: id, agent: state.me };
+  state.ready[m.prop] = { date: m.date, at: state.reports[id].fini, mid: id, agent: state.me };
   if (!m.taker) m.taker = state.me;
   state.done.push({ mid: id, agent: state.me, month: moisDePaie, prop: m.prop, type: m.type, dateLabel: quand, price: m.price });
   state.lastDone = { price: m.price, photos: photos, low: lowKeys.length };
@@ -7140,6 +7431,15 @@ function finish(id) {
     if (n) { save(); render(); }
     if (typeof DB !== 'undefined' && DB.estDispo()) DB.majMission(m);
   });
+
+  /* LE RELEVÉ DE STOCK, LUI AUSSI (session 19, audit du stockage). Il partait
+     déjà **dans le compte rendu**, et le propriétaire le lisait dans la revue
+     de la mission — mais l'inventaire courant, celui de la rubrique Stocks,
+     n'était mis à jour que sur l'appareil où la mission avait été terminée.
+     Les deux écrans divergeaient sans que rien ne le signale.
+     `pousser()` étant réservé au propriétaire, c'est ici, sur le téléphone de
+     la personne qui a compté, que l'inventaire doit partir. */
+  if (typeof DB !== 'undefined' && DB.estDispo()) DB.enregistrerStock(d.prop, d.qty);
 
   go('#/app/missions/' + id + '/fin');
 }
@@ -7244,6 +7544,41 @@ var actions = {
         render();
       });
   },
+
+  /* « ⟳ » — le même geste, mais depuis n'importe quel écran du prestataire
+     (session 19). Il relit les droits AVANT les données : c'est le compte qui
+     décide de ce que le cahier laisse voir, et c'est justement lui qui a
+     changé quand le propriétaire coche un logement. On dit toujours ce qu'on
+     a trouvé, même quand c'est « rien de neuf » : un bouton qui ne répond
+     rien passe pour un bouton en panne. */
+  'presta-actualiser': function () {
+    if (state.majEnCours) return;
+    state.majEnCours = true;
+    var avant = dispoForMe().length;
+    var avantOuverts = allowedProps(state.me).length;
+    render();
+    DB.rafraichir()
+      .then(function () {
+        state.majEnCours = false;
+        var apres = dispoForMe().length;
+        var apresOuverts = allowedProps(state.me).length;
+        state.mMsg = apresOuverts > avantOuverts
+          ? '✅ ' + (apresOuverts - avantOuverts) + ' nouveau(x) logement(s) t\'ont été confiés.'
+          : apres > avant
+            ? '✅ ' + (apres - avant) + ' nouvelle(s) mission(s).'
+            : apresOuverts
+              ? 'À jour : ' + apres + ' mission(s) à prendre sur ' + apresOuverts + ' logement(s).'
+              : 'Aucun logement ne t\'est encore confié.';
+        save();
+        location.replace(homePath());
+        render();
+      })
+      .catch(function (e) {
+        state.majEnCours = false;
+        state.mMsg = DB.messageClair(e);
+        render();
+      });
+  },
   'inv-entrer': function () {
     var p = DB.profil();
     state.loginEmail = state.inv.email;
@@ -7333,6 +7668,13 @@ var actions = {
     } else {
       replier();
     }
+  },
+
+  /* Le message tout prêt du lien unique, celui qu'on colle dans les messages
+     automatiques des plateformes (session 19). */
+  'copier-message-bienvenue': function () {
+    copier(texteBienvenue(),
+      '✅ Message copié. Colle-le dans le message automatique d\'Airbnb ou de Booking.');
   },
 
   /* Le message d'accompagnement, lien compris. Même repli que « Copier le
@@ -7476,6 +7818,20 @@ var actions = {
 
   /* Prestataire ---------------------------------------------------------- */
   'fermer-msg': function () { state.mMsg = ''; render(); },
+
+  /* Le bandeau rouge du propriétaire : renvoyer tout, et DIRE ce qui se passe.
+     C'est le seul endroit d'où l'on peut relancer une écriture refusée. */
+  'reessayer-envoi': function () {
+    state.migMsg = 'Nouvel essai en cours…';
+    render();
+    DB.pousserMaintenant().then(function (bilan) {
+      state.migMsg = bilan && bilan.ok
+        ? '✅ C\'est parti dans le cahier partagé : ' + bilan.biens + ' logement(s), ' +
+          bilan.resas + ' séjour(s), ' + bilan.missions + ' mission(s).'
+        : '⚠️ Refusé à nouveau : ' + ((bilan && bilan.erreur) || DB.erreur() || 'raison inconnue');
+      render();
+    });
+  },
   take: function (el) { take(el.dataset.id); },
   start: function (el) { start(el.dataset.id); },
   resume: function (el) { start(el.dataset.id); },
@@ -7548,11 +7904,41 @@ var actions = {
 
   /* Propriétaire --------------------------------------------------------- */
   'mission-filter': function (el) { state.missionFilter = el.dataset.f; save(); render(); },
+  /* « Marquer comme traité » — le bouton du propriétaire (corrigé en
+     session 19). Il ne cherchait que dans `state.problems`, c'est-à-dire dans
+     la liste du prestataire qui a saisi le signalement : sur l'écran du
+     propriétaire, il ne trouvait donc **jamais rien** et ne faisait
+     strictement rien. Et quand bien même : la marque serait restée sur son
+     ordinateur. On modifie maintenant la copie qui vit dans le compte rendu
+     de la mission — celle qui voyage — et on renvoie la mission. */
   'probleme-statut': function (el) {
-    var p = state.problems.find(function (x) { return x.id === el.dataset.id; });
-    if (!p) return;
-    p.statut = p.statut === 'traite' ? 'ouvert' : 'traite';
+    var id = el.dataset.id;
+    var mid = null;
+
+    /* ON RASSEMBLE AVANT DE MODIFIER. Sur le téléphone du prestataire, la
+       fiche de `state.problems` et celle du compte rendu sont **le même
+       objet** (`verserProblemes()` recopie les références) : deux boucles
+       successives inverseraient le statut deux fois, et le bouton
+       n'aurait l'air de ne rien faire. On dédoublonne par identité. */
+    var cibles = [];
+    var ajouter = function (p) { if (p && p.id === id && cibles.indexOf(p) < 0) cibles.push(p); };
+
+    (state.problems || []).forEach(ajouter);
+    Object.keys(state.reports || {}).forEach(function (k) {
+      ((state.reports[k] || {}).problemes || []).forEach(function (p) {
+        if (p && p.id === id) mid = k;
+        ajouter(p);
+      });
+    });
+
+    if (!cibles.length) return;
+    var nouveau = cibles[0].statut === 'traite' ? 'ouvert' : 'traite';
+    cibles.forEach(function (p) { p.statut = nouveau; });
+
     save(); render();
+
+    var m = mid ? mission(mid) : null;
+    if (m && typeof DB !== 'undefined' && DB.estDispo() && DB.profil()) DB.majMission(m);
   },
 
   /* SUPPRIMER UNE MISSION (session 16).
@@ -7646,6 +8032,12 @@ var actions = {
   'owner-month': function (el) { state.ownerMonth = el.dataset.m; save(); render(); },
   'toggle-agent': function (el) {
     state.openAgent = state.openAgent === el.dataset.ag ? null : el.dataset.ag;
+    save(); render();
+  },
+  /* Les réglages d'un prestataire — logements, prestations, compte relié —
+     ne se touchent qu'à l'embauche : ils sont repliés (session 19). */
+  'toggle-reglages': function (el) {
+    state.openReglages = state.openReglages === el.dataset.ag ? null : el.dataset.ag;
     save(); render();
   },
   'stock-tab': function (el) { state.stockTab = el.dataset.t; save(); render(); },
@@ -8301,7 +8693,18 @@ var actions = {
   },
 
   /* Envoi de la note. Une note de ménage est rattachée à la mission qui a
-     préparé le logement, donc au prestataire qui l'a faite. */
+     préparé le logement, donc au prestataire qui l'a faite.
+
+     ET SURTOUT : ON LE DIT AU CAHIER PARTAGÉ (session 19). Jusqu'ici la note
+     s'arrêtait là, dans le navigateur du voyageur. La prestataire ouvrait
+     « Mes notes » et lisait « pas encore de note » alors qu'on venait de la
+     noter cinq étoiles. Quatrième occurrence de la règle 14 — après les
+     photos, le code de la porte et le registre de paie.
+
+     C'est la BASE qui retrouve la personne notée (script 08), pas nous : sur
+     le téléphone du voyageur, les missions du logement ne sont pas lisibles,
+     donc `cleanerFor()` n'y rend jamais rien. Le calcul local sert seulement
+     à afficher tout de suite quelque chose de juste chez le propriétaire. */
   'avis-send': function (el) {
     var pid = el.dataset.pid, kind = el.dataset.kind, key = pid + ':' + kind;
     var d = state.avisDrafts[key] || { stars: 0, texte: '' };
@@ -8311,10 +8714,11 @@ var actions = {
     if (avisDone(pid, r, kind)) return;
 
     var m = kind === 'menage' ? cleanerFor(pid, r) : null;
+    var texte = (d.texte || '').trim();
     state.avis.push({
       id: 'av' + Date.now(),
       pid: pid, resa: resaKey(pid, r), kind: kind,
-      stars: d.stars, texte: (d.texte || '').trim(),
+      stars: d.stars, texte: texte,
       guest: r.guest,
       agent: m ? (m.taker || null) : null,
       mid: m ? m.id : null,
@@ -8322,6 +8726,14 @@ var actions = {
     });
     delete state.avisDrafts[key];
     save(); render();
+
+    if (typeof DB !== 'undefined' && DB.estDispo() && r.id) {
+      DB.deposerAvis(r.id, kind, d.stars, texte).catch(function () {
+        /* Une note perdue n'est pas une raison d'affoler un voyageur qui
+           vient de faire un geste gentil : elle reste affichée chez lui, et
+           repartira au prochain envoi du propriétaire. */
+      });
+    }
   },
 
   /* Prestataires ---------------------------------------------------------- */
@@ -8370,7 +8782,22 @@ var actions = {
     state.agents = state.agents.filter(function (x) { return x.id !== id; });
     if (state.me === id) state.me = null;
     if (state.openAgent === id) state.openAgent = null;
+    if (state.openReglages === id) state.openReglages = null;
     save(); render();
+
+    /* Une suppression doit être DITE au cahier partagé (règle 12, D-81) :
+       `pousser()` ne sait qu'ajouter et modifier. Depuis que les fiches y
+       vivent (session 19), une fiche effacée ici reviendrait à la première
+       relecture. Un refus se voit, il n'est pas avalé (règle 4). */
+    if (typeof DB !== 'undefined' && DB.estDispo() && DB.profil()) {
+      DB.supprimerFiche(id).then(function (ok) {
+        if (ok) return;
+        state.migMsg = '⚠️ ' + a.name + ' a bien été retiré de cet écran, mais le cahier ' +
+          'partagé a refusé la suppression : ' + (DB.erreur() || 'raison inconnue') +
+          '. La fiche risque de revenir.';
+        render();
+      });
+    }
   },
   'toggle-perm': function (el) {
     var a = state.agents.find(function (x) { return x.id === el.dataset.ag; });
@@ -8437,6 +8864,12 @@ var actions = {
     state.props.forEach(function (p) { if (state.stock[p.id]) delete state.stock[p.id][k]; });
     if (state.draft) delete state.draft.qty[k];
     save(); render();
+
+    /* La liste des articles et les seuils repartent en bloc dans les réglages :
+       leur suppression se propage toute seule. Les quantités, elles, sont une
+       ligne par bien et par article dans le cahier — il faut les effacer
+       explicitement, sinon elles reviennent (règle 12, D-81). */
+    if (typeof DB !== 'undefined' && DB.estDispo() && DB.profil()) DB.supprimerStock(k);
   },
 
   'courses-scope': function (el) { state.coursesScope = el.dataset.s; save(); render(); },
