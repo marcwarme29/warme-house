@@ -5055,6 +5055,159 @@ function lienInvitation(token) {
   return location.origin + location.pathname + '#/invitation/' + token;
 }
 
+/* POURQUOI NE VOIT-ELLE RIEN ? LE DIAGNOSTIC, MAILLON PAR MAILLON (session 20,
+   D-111)
+
+   Deux sessions de suite, le même échange : « elle ne voit pas les missions ».
+   Chaque fois, y répondre a demandé d'ouvrir le code et la base — et chaque
+   fois la cause était différente (D-94 le temps réel, D-109 les droits). Le
+   propriétaire, lui, n'a aucun moyen de savoir OÙ la chaîne casse : elle a
+   sept maillons, dont cinq vivent dans le cahier partagé, invisibles depuis
+   son écran.
+
+   Or tout est déjà là. `state.comptes` est la copie exacte de `profiles`,
+   c'est-à-dire **de ce que la base regarde** pour décider de ce qu'elle
+   montre. On ne devine donc rien (règle 5), on lit — et on distingue « la
+   fiche dit » de « le compte dit », qui est la confusion d'origine (règle 10).
+
+   On s'arrête au PREMIER maillon cassé : les suivants en dépendent, et six
+   lignes rouges à la fois ne disent pas par où commencer. */
+function diagnosticPresta(a) {
+  if (typeof DB === 'undefined' || !DB.estDispo()) return null;
+  var p = DB.profil();
+  if (!p || p.role !== 'owner') return null;
+
+  var ko = function (titre, detail, remede) {
+    return { ok: false, titre: titre, detail: detail, remede: remede || '' };
+  };
+
+  // 1. Un compte, d'abord. Sans lui, il n'y a rien à diagnostiquer.
+  if (!a.uid) {
+    return ko('Sa fiche n’est reliée à aucun compte',
+      'Elle ne peut pas se connecter du tout : ce que tu vois ici n’est qu’une fiche, sur ton ordinateur.',
+      'Ouvre « ⚙ Réglages et accès » → « Inviter cette personne ».');
+  }
+  /* NE PAS ACCUSER SANS SAVOIR (règle 5). `state.comptes` contient TOUS les
+     comptes, y compris celui du propriétaire connecté : une liste vide ne veut
+     pas dire « son compte a disparu », elle veut dire « on n'a pas encore lu
+     le cahier ». Confondre les deux ferait détacher un compte parfaitement
+     valide — un geste qui, lui, casse vraiment quelque chose. */
+  if (!state.comptes || !state.comptes.length) {
+    return ko('Le cahier partagé n’a pas encore répondu',
+      'Impossible de dire ce que son compte ouvre tant qu’on ne l’a pas lu. Ce n’est pas un problème ' +
+      'de droits : c’est que la lecture n’a pas encore eu lieu, ou qu’elle a échoué.',
+      'Recharge la page. Si le message revient, vérifie ta connexion internet.');
+  }
+
+  var c = (state.comptes || []).filter(function (x) { return x.uid === a.uid; })[0];
+  if (!c) {
+    return ko('Son compte a disparu du cahier partagé',
+      'Sa fiche garde le souvenir d’un compte qui n’existe plus. Rien de ce que tu coches ne peut l’atteindre.',
+      'Ouvre « ⚙ Réglages et accès » → « Détacher le compte », puis invite-la à nouveau.');
+  }
+
+  // 2. Son métier, tel qu'il est inscrit dans le COMPTE. La base refuse toute
+  //    mission à qui n'est pas 'menage' : elle ne verrait alors RIEN, nulle part.
+  var cles = a.kind === 'cles';
+  if (!cles && c.kind !== 'menage') {
+    return ko('Le cahier partagé la classe en « remise des clés »',
+      'Sa fiche dit « ménage », son compte dit autre chose. Tant que c’est le cas, le cahier lui refuse ' +
+      '<strong>toutes</strong> les missions, sur tous les logements.',
+      'Appuie sur « Renvoyer ses droits » ci-dessous.');
+  }
+  // Une remise des clés ne prend aucune mission : il n'y a pas de chaîne à
+  // diagnostiquer, et un panneau vert de plus serait du bruit.
+  if (cles) return null;
+
+  // 3. Les logements que le COMPTE ouvre — et non ceux cochés sur la fiche.
+  var ouverts = c.props || [], coches = a.props || [];
+  var manquants = coches.filter(function (pid) { return ouverts.indexOf(pid) < 0; });
+
+  if (!ouverts.length) {
+    return ko('Le cahier partagé ne lui ouvre aucun logement',
+      coches.length
+        ? 'Tu en as pourtant coché <strong>' + coches.length + '</strong> sur sa fiche. Les cases sont sur ton ' +
+          'ordinateur, elles ne sont pas encore arrivées dans son compte — et c’est le compte que le cahier regarde.'
+        : 'Aucun logement n’est coché sur sa fiche non plus. Son téléphone affiche une page vide, ce qui est normal.',
+      coches.length ? 'Appuie sur « Renvoyer ses droits » ci-dessous.'
+                    : 'Ouvre « ⚙ Réglages et accès » et coche ses logements.');
+  }
+  if (manquants.length) {
+    return ko('Ce que tu as coché n’est pas arrivé jusqu’à son compte',
+      'Son téléphone ouvre <strong>' + ouverts.length + '</strong> logement(s) sur les <strong>' + coches.length +
+      '</strong> cochés ici. Il manque : ' +
+      manquants.map(function (pid) { return '<strong>' + esc(prop(pid).name) + '</strong>'; }).join(', ') + '.',
+      'Appuie sur « Renvoyer ses droits » ci-dessous.');
+  }
+
+  // 4. Le dernier envoi au cahier. Une mission refusée n'est jamais partie :
+  //    inutile de chercher plus loin, elle n'existe que sur cet ordinateur.
+  var env = DB.dernierEnvoi();
+  if (env && !env.ok) {
+    return ko('Le cahier partagé a refusé ton dernier enregistrement',
+      'Ce que tu vois à l’écran n’est parti nulle part. Raison donnée : « ' + esc(env.erreur || 'inconnue') + ' ».',
+      'Utilise « Réessayer maintenant », dans le bandeau rouge en haut de la page.');
+  }
+
+  // 5. Les prestations. Ce qui n'est pas coché n'apparaît jamais chez elle,
+  //    même sur un logement parfaitement confié (D-53).
+  var dispo = (state.missions || []).filter(function (m) {
+    return m.status === 'dispo' && ouverts.indexOf(m.prop) >= 0;
+  });
+  var couvre = function (m) { return !Array.isArray(c.services) || c.services.indexOf(m.type) >= 0; };
+  var visibles = dispo.filter(couvre);
+  var ecartees = dispo.filter(function (m) { return !couvre(m); });
+
+  if (!visibles.length && ecartees.length) {
+    var types = {};
+    ecartees.forEach(function (m) { types[m.type] = true; });
+    return ko('Ses prestations ne couvrent pas ces missions',
+      '<strong>' + ecartees.length + '</strong> mission(s) l’attendent sur ses logements, mais elles sont d’un ' +
+      'type qu’elle n’a pas le droit de prendre : ' +
+      Object.keys(types).map(function (k) {
+        var s = state.services.filter(function (x) { return x.key === k; })[0];
+        return '<strong>' + esc(s ? s.label : k) + '</strong>';
+      }).join(', ') + '.',
+      'Ouvre « ⚙ Réglages et accès » et coche ces prestations, puis « Renvoyer ses droits ».');
+  }
+
+  // 6. Tout est en règle. Reste à dire ce qu'elle voit — et si c'est zéro,
+  //    à dire POURQUOI c'est zéro (règle 5 : « aucune » n'est pas « erreur »).
+  if (!visibles.length) {
+    var prises = (state.missions || []).filter(function (m) {
+      return m.status !== 'dispo' && ouverts.indexOf(m.prop) >= 0;
+    }).length;
+    return { ok: true,
+      titre: 'Tout est en règle de ton côté — il n’y a simplement aucune mission à prendre',
+      detail: ouverts.length + ' logement(s) ouverts par son compte. ' +
+        (prises ? 'Les ' + prises + ' mission(s) de ces logements sont déjà prises ou terminées.'
+                : 'Aucun séjour ne se termine sur ces logements : crée une réservation, la mission de ménage suivra.'),
+      remede: '' };
+  }
+
+  return { ok: true,
+    titre: visibles.length + ' mission(s) à prendre l’attendent sur son téléphone',
+    detail: 'Son compte ouvre ' + ouverts.length + ' logement(s), exactement ce qui est coché ici. ' +
+      'Si elle ne les voit pas, c’est chez elle : bouton <strong>⟳</strong> en haut à droite de son écran, ' +
+      'ou reposer et reprendre son téléphone.',
+    remede: '' };
+}
+
+/* Le diagnostic à l'écran. Toujours affiché, jamais replié : c'est
+   précisément la question que le propriétaire se pose, et une réponse rangée
+   derrière un bouton est une réponse qu'il ne trouvera pas (leçon de D-99). */
+function panneauDiagnostic(a) {
+  var d = diagnosticPresta(a);
+  if (!d) return '';
+  var teinte = d.ok ? 'var(--green-t)' : 'var(--amber-t)';
+  var fond = d.ok ? 'var(--green-bg)' : 'var(--amber-bg)';
+  return '<div class="diag" style="background:' + fond + ';border-left:3px solid ' + teinte + '">' +
+    '<div class="diag-t" style="color:' + teinte + '">' + (d.ok ? '✓ ' : '⚠️ ') + d.titre + '</div>' +
+    (d.detail ? '<div class="diag-d">' + d.detail + '</div>' : '') +
+    (d.remede ? '<div class="diag-r">👉 ' + d.remede + '</div>' : '') +
+    '</div>';
+}
+
 function ligneCompte(a) {
   if (typeof DB === 'undefined' || !DB.estDispo()) return '';
   var p = DB.profil();
@@ -5246,6 +5399,9 @@ function viewOwnerAgents() {
             '<button type="button" class="btn btn--xs" style="' + (paye ? 'background:var(--green-bg);color:var(--green-t)' : 'background:var(--amber-bg);color:var(--amber-t)') + '"' +
               act('toggle-payout', { ag: a.id }) + '>' + (paye ? '✓ Payé' : 'Marquer payé') + '</button>') +
       '</div>' +
+
+      /* Le diagnostic, à hauteur d'œil et jamais replié (D-111). */
+      panneauDiagnostic(a) +
 
       /* Une seule rangée de boutons, toujours la même, à hauteur d'œil. */
       '<div class="ag-barre">' +
