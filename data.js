@@ -342,10 +342,41 @@ var DB = (function () {
      faute que D-75.
 
      Règle : une colonne du voyageur n'est envoyée que si on a **vraiment**
-     quelque chose à y mettre. Un upsert n'écrit que les colonnes fournies :
-     ce qui est omis reste tel quel dans le cahier. */
+     quelque chose à y mettre.
+
+     ⚠️ CE QUI ÉTAIT FAUX, ET QUI A TOUT BLOQUÉ (session 20, D-113)
+
+     « Un upsert n'écrit que les colonnes fournies : ce qui est omis reste tel
+     quel. » C'est vrai d'une ligne SEULE. Ce n'est **pas** vrai d'un envoi
+     groupé, et `pousser()` envoie toutes les réservations d'un coup.
+
+     PostgREST fabrique **une seule** instruction pour tout le lot, dont les
+     colonnes sont l'**union** des clés de tous les objets. Une ligne à qui
+     manque une clé que d'autres ont ne reçoit donc pas la valeur par défaut,
+     ni son ancienne valeur : elle reçoit **NULL**.
+
+     Conséquences, tant qu'aucun voyageur ne s'était identifié : aucune, tous
+     les objets avaient les mêmes clés. Mais dès qu'UN voyageur remplissait
+     son livret, sa ligne portait `guest_ok`, et toutes les autres partaient
+     avec `guest_ok = null` — colonne `not null`. **Le lot entier était
+     refusé.** Or l'étape des réservations n'est pas facultative : la chaîne
+     s'arrêtait là, et **les missions ne partaient jamais**. Sur le téléphone
+     de la prestataire : rien.
+
+     Et le remède d'origine se retournait contre lui-même : `tel`, `mail`,
+     `arrivee_prevue`, `guests` et `depart_at` acceptent NULL, eux. Ils
+     auraient été **effacés** sur toutes les autres réservations — exactement
+     l'effacement que D-91 voulait empêcher.
+
+     LE REMÈDE : deux passes, et un jeu de clés FIXE dans chacune.
+     `resaVersBase()` ne rend plus que les colonnes du **propriétaire**,
+     toujours les mêmes, pour toutes les lignes — aucune union possible.
+     `resaVoyageur()` rend, ligne par ligne, les seules colonnes du voyageur
+     qu'on a vraiment, envoyées par des `update` ciblés. La garantie de D-91
+     est conservée à la lettre : on n'envoie jamais une colonne du voyageur
+     dont on n'a pas la valeur. */
   function resaVersBase(r, pid) {
-    var ligne = {
+    return {
       id: r.id,
       property_id: pid,
       uid: r.uid || null,
@@ -357,19 +388,23 @@ var DB = (function () {
       montant: (r.montant === null || r.montant === undefined) ? null : r.montant,
       statut: r.statut || 'confirme'
     };
+  }
 
-    // Les colonnes du voyageur : silence plutôt qu'un vide destructeur.
-    if (r.guests) ligne.guests = r.guests;
-    if (r.tel4) ligne.tel4 = r.tel4;
-    if (r.tel) ligne.tel = r.tel;
-    if (r.mail) ligne.mail = r.mail;
-    if (r.arriveePrevue) ligne.arrivee_prevue = r.arriveePrevue;
-    if (r.guestOk) ligne.guest_ok = true;
-    if (r.demarchable) ligne.demarchable = true;
+  /* Les colonnes qui appartiennent au voyageur, pour CETTE réservation.
+     Rend `null` quand il n'y a rien à dire — et il n'y a alors rien à
+     envoyer, ce qui est le comportement voulu. */
+  function resaVoyageur(r, pid) {
+    var maj = {};
+    if (r.guests) maj.guests = r.guests;
+    if (r.tel4) maj.tel4 = r.tel4;
+    if (r.tel) maj.tel = r.tel;
+    if (r.mail) maj.mail = r.mail;
+    if (r.arriveePrevue) maj.arrivee_prevue = r.arriveePrevue;
+    if (r.guestOk) maj.guest_ok = true;
+    if (r.demarchable) maj.demarchable = true;
     var parti = departSignale(pid, r);
-    if (parti) ligne.depart_at = parti;
-
-    return ligne;
+    if (parti) maj.depart_at = parti;
+    return Object.keys(maj).length ? { id: r.id, maj: maj } : null;
   }
 
   function compterResas() {
@@ -1449,14 +1484,34 @@ var DB = (function () {
     }, 800);
   }
 
+  /* La seconde passe des réservations (D-113) : une mise à jour par ligne,
+     avec ses seules colonnes. Groupées, elles se contamineraient à nouveau —
+     c'est tout le défaut qu'on corrige. Elles sont peu nombreuses : seules
+     les réservations dont un voyageur a rempli le livret en portent.
+     On rend le même objet `{ error }` qu'un upsert, pour que la chaîne
+     d'étapes n'ait pas à savoir laquelle des deux formes elle appelle. */
+  function majVoyageurs(lignes) {
+    return lignes.reduce(function (chaine, v) {
+      return chaine.then(function (bilan) {
+        if (bilan && bilan.error) return bilan;               // on s'arrête au premier refus
+        return client.from('reservations').update(v.maj).eq('id', v.id)
+          .then(function (r) { return (r && r.error) ? r : bilan; });
+      });
+    }, Promise.resolve({}));
+  }
+
   function pousserMaintenant() {
     if (!dispo || !profil) return Promise.resolve();
     var moi = profil.id;
     var biens = (state.props || []).map(function (p) { return bienVersBase(p, moi); });
     var secrets = (state.props || []).map(secretsVersBase);
-    var resas = [];
+    var resas = [], voyageurs = [];
     Object.keys(state.resas || {}).forEach(function (pid) {
-      (state.resas[pid] || []).forEach(function (r) { resas.push(resaVersBase(r, pid)); });
+      (state.resas[pid] || []).forEach(function (r) {
+        resas.push(resaVersBase(r, pid));
+        var v = resaVoyageur(r, pid);
+        if (v) voyageurs.push(v);
+      });
     });
     var missions = (state.missions || [])
       .filter(function (m) { return m.id && m.date && bienExiste(m.prop); })
@@ -1487,6 +1542,11 @@ var DB = (function () {
       { nom: 'les codes d\'accès', table: 'property_secrets', lignes: secrets },
       { nom: 'les réservations', table: 'reservations', lignes: resas },
       { nom: 'les missions', table: 'missions', lignes: missions },
+      /* La seconde passe des réservations (D-113). Placée APRÈS les missions :
+         chaque ligne y est mise à jour séparément, avec ses seules colonnes,
+         et si l'une échoue on veut que les missions soient déjà parties. */
+      { nom: 'les coordonnées des voyageurs', table: 'reservations',
+        lignes: voyageurs, envoi: majVoyageurs },
       { nom: 'les avis des voyageurs', table: 'avis', lignes: avis, facultative: true },
       // Le lot 4 (script 09). Facultatives pour la même raison que les avis :
       // tant que le script n'est pas collé, rien d'autre ne doit en souffrir.
@@ -1499,7 +1559,8 @@ var DB = (function () {
     return etapes.reduce(function (chaine, e) {
       return chaine.then(function () {
         if (!e.lignes.length) return null;
-        return client.from(e.table).upsert(e.lignes).then(function (r) {
+        var envoi = e.envoi ? e.envoi(e.lignes) : client.from(e.table).upsert(e.lignes);
+        return envoi.then(function (r) {
           if (r && r.error) {
             if (e.facultative) {
               if (tableAbsente(r.error)) tablesAbsentes[e.table] = true;
