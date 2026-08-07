@@ -3219,6 +3219,57 @@ function alerteScripts() {
     '</div>';
 }
 
+/* UN LOGEMENT NEUF N'EST CONFIÉ À PERSONNE (session 20, D-109)
+
+   Symptôme rapporté : « j'ai créé un logement, je vois ses missions sur mon
+   écran, et ma prestataire ne voit rien sur son téléphone. »
+
+   Cause. La règle de sécurité du script 01 ne montre au prestataire que les
+   missions dont le logement figure dans `mes_biens()`, c'est-à-dire la liste
+   `props` de SON COMPTE. Or `create-bien` ne touchait à aucune fiche : le
+   logement neuf n'entrait dans la liste de personne. Les missions partaient
+   bien dans le cahier partagé — elles y étaient — et aucun téléphone n'avait
+   le droit de les lire. `remove-bien`, lui, retire le logement supprimé de
+   chaque fiche : le geste inverse existait, celui-ci manquait.
+
+   C'est la règle 13 du §6 sous une autre forme : tout avait l'air de marcher.
+   On le dit donc en haut de chaque page, et on donne le geste qui répare —
+   plutôt que d'ouvrir des droits tout seuls, ce qui serait deviner à qui on
+   confie un logement (règle 15). */
+function prestasDuBien(pid) {
+  return (state.agents || []).filter(function (a) {
+    return a.kind !== 'cles' && (a.props || []).indexOf(pid) >= 0;
+  });
+}
+
+function biensNonConfies() {
+  return (state.props || []).filter(function (p) { return !prestasDuBien(p.id).length; });
+}
+
+function alerteBiensNonConfies() {
+  var menagers = (state.agents || []).filter(function (a) { return a.kind !== 'cles'; });
+  if (!menagers.length) return '';                 // personne à qui confier : rien à dire
+  var orphelins = biensNonConfies();
+  if (!orphelins.length) return '';
+  var plusieurs = orphelins.length > 1;
+  var noms = orphelins.map(function (p) { return '« ' + esc(p.name) + ' »'; }).join(', ');
+  var aQui = menagers.length > 1
+    ? 'mes ' + menagers.length + ' prestataires'
+    : esc(menagers[0].name);
+  return '<div class="alerte-envoi" style="border-left-color:var(--amber-t);color:var(--amber-t);' +
+    'background:var(--amber-bg)" role="status">' +
+    '<strong>' + (plusieurs ? 'Ces logements ne sont confiés' : 'Ce logement n’est confié') +
+    ' à personne : ' + noms + '.</strong> ' +
+    'Un logement neuf ne se confie pas tout seul. Ses missions existent bien et sont ' +
+    'parties dans le cahier partagé, mais <em>aucun téléphone n’a le droit de les voir</em> : ' +
+    'tant que personne ne l’a coché, l’écran de tes prestataires reste vide pour ce logement. ' +
+    'Le réglage fin est dans « Prestataires » → « ⚙ Réglages et accès ».' +
+    '<button type="button" class="btn btn--xs" style="background:var(--ink);color:#fff;margin-top:10px"' +
+      act('confier-a-tous') + '>Confier ' + (plusieurs ? 'ces logements' : 'ce logement') +
+      ' à ' + aQui + '</button>' +
+    '</div>';
+}
+
 function ownerShell(page, content) {
   var openCount = state.missions.filter(function (m) { return m.status === 'dispo'; }).length;
 
@@ -3246,7 +3297,7 @@ function ownerShell(page, content) {
         '</div>' +
       '</div>' +
     '</aside>' +
-    '<main class="owner-main">' + alerteEnvoi() + alerteScripts() + content + '</main>' +
+    '<main class="owner-main">' + alerteEnvoi() + alerteScripts() + alerteBiensNonConfies() + content + '</main>' +
     '</div>';
 }
 
@@ -7605,6 +7656,53 @@ var actions = {
      Se fait normalement tout seul à chaque enregistrement ; ce bouton existe
      parce qu'un échec silencieux ressemble, pour le propriétaire, à « j'ai
      confié un bien et il ne voit toujours rien ». */
+  /* Confier d'un geste les logements que personne n'a (session 20, D-109).
+     Deux moitiés, et il faut les deux : cocher le logement sur la FICHE, puis
+     recopier la liste dans le COMPTE — c'est le compte que la base regarde
+     (règle 10 du §6). Faire la première sans la seconde, c'est exactement
+     l'écart que « Renvoyer ses droits » sert à rattraper. */
+  'confier-a-tous': function () {
+    var orphelins = biensNonConfies().map(function (p) { return p.id; });
+    if (!orphelins.length) return;
+    var menagers = state.agents.filter(function (a) { return a.kind !== 'cles'; });
+    if (!menagers.length) return;
+
+    menagers.forEach(function (a) {
+      if (!Array.isArray(a.props)) a.props = [];
+      orphelins.forEach(function (pid) {
+        if (a.props.indexOf(pid) < 0) a.props.push(pid);
+      });
+    });
+    save();
+
+    // Sans cahier partagé (usage hors ligne), la fiche suffit : on le dit.
+    if (typeof DB === 'undefined' || !DB.estDispo() || !DB.profil()) {
+      state.migMsg = '✅ Logement(s) confié(s) sur la fiche. Ils partiront dans le cahier ' +
+        'partagé à la prochaine connexion.';
+      render();
+      return;
+    }
+
+    state.migMsg = 'Ouverture des droits…';
+    render();
+    DB.majComptesLies()
+      .then(function (ok) {
+        if (!ok) throw new Error(DB.erreur() || 'L\'envoi a échoué.');
+        return DB.charger();
+      })
+      .then(function () {
+        state.migMsg = '✅ C\'est fait. Sur son téléphone, il lui suffit d\'appuyer sur ' +
+          '« Vérifier à nouveau », ou de recharger la page : les missions de ce logement ' +
+          'apparaîtront.';
+        save();
+        render();
+      })
+      .catch(function (e) {
+        state.migMsg = '⚠️ ' + DB.messageClair(e);
+        render();
+      });
+  },
+
   'renvoyer-droits': function () {
     state.migMsg = 'Envoi en cours…';
     render();
