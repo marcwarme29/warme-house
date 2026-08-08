@@ -679,6 +679,35 @@ function load() {
 function upgrade() {
   var seedInfo = BIEN_INFO, seedLivret = baseLivret();
 
+  /* RÉPARER LES MISSIONS QUI PORTENT LE MÊME IDENTIFIANT (session 20, D-116)
+
+     Corriger la fabrication des identifiants ne suffit pas : les doublons
+     déjà créés par le premier import iCal sont dans le navigateur du
+     propriétaire, et le cahier partagé refusera le lot **à chaque envoi**
+     tant qu'ils y sont. Il faut donc aussi réparer l'existant.
+
+     On **ne supprime rien** (règle : alléger, jamais effacer) : la première
+     mission garde son identifiant, les suivantes en reçoivent un neuf. Si
+     deux d'entre elles décrivaient vraiment le même ménage, le propriétaire
+     verra deux missions et pourra en retirer une — visible, donc corrigeable,
+     plutôt qu'une disparition silencieuse (règle 13).
+
+     LES PHOTOS NE SUIVENT PAS, ET C'EST VOULU. Elles sont rangées sous
+     l'identifiant de la mission — mais justement, quand deux missions
+     partagent le même, **on ne peut pas savoir à laquelle elles étaient**.
+     Les déplacer vers la seconde reviendrait à voler le casier de la
+     première : c'est ce que faisait la première version de cette réparation,
+     et le test l'a montré. On les laisse donc à celle qui garde
+     l'identifiant. En pratique le cas est théorique — les doublons sont des
+     missions neuves, importées et jamais commencées, donc sans photo. */
+  var vus = {};
+  (state.missions || []).forEach(function (m) {
+    if (!m || !m.id) return;
+    if (!vus[m.id]) { vus[m.id] = true; return; }
+    do { m.id = slugMission(m.prop, m.date); } while (vus[m.id]);
+    vus[m.id] = true;
+  });
+
   // Session 13 — le cahier partagé. `comptes` est rempli à chaque lecture ;
   // `lienCompte` ne retient qu'un choix en cours, jamais une donnée utile.
   if (!Array.isArray(state.comptes)) state.comptes = [];
@@ -1075,13 +1104,38 @@ function quatreChiffres(v) {
 }
 
 /** Mission de ménage créée au départ du voyageur (règle D-06). */
+/* L'IDENTIFIANT D'UNE MISSION (corrigé en session 20, D-116)
+
+   Il valait `slug(resa.guest, 'm')`, c'est-à-dire le nom du voyageur suivi
+   des **quatre derniers chiffres de l'horloge**. Deux missions fabriquées
+   dans la même milliseconde pour un même nom recevaient donc le **même
+   identifiant**.
+
+   Tant que le propriétaire saisissait ses séjours à la main, un par un et
+   sous des noms différents, le cas ne se produisait pas. L'arrivée de l'iCal
+   (D-114) l'a rendu systématique : les calendriers ne publient pas le nom du
+   voyageur, tous les séjours importés s'appellent donc **« Voyageur »**, et
+   l'import les crée **en boucle**, dans la même milliseconde.
+
+   Le cahier partagé refusait alors le lot entier — « ON CONFLICT DO UPDATE
+   command cannot affect row a second time » : PostgreSQL n'accepte pas
+   d'écrire deux fois la même ligne dans une seule instruction. Et comme
+   l'étape des missions n'est pas facultative, **plus rien ne partait**.
+   Même famille que D-113 : un lot entier tombe pour une ligne.
+
+   On tire donc l'identifiant au hasard, comme celui des séjours (`slugResa`),
+   en gardant le logement et la date en clair pour rester lisible. */
+function slugMission(pid, date) {
+  return 'm_' + pid + '_' + date + '_' + jeton(8);
+}
+
 function creerMissionDepart(pid, resa) {
   var sv = state.services[0];
   if (!sv) return null;
   var suivante = resasOf(pid).find(function (x) { return x.start === resa.end && x !== resa; });
   var inf = state.info[pid] || {};
   var m = {
-    id: slug(resa.guest, 'm'), prop: pid, type: sv.key, date: resa.end,
+    id: slugMission(pid, resa.end), prop: pid, type: sv.key, date: resa.end,
     dateLabel: resa.end === TODAY ? 'Aujourd’hui' : fmtDate(resa.end),
     windowLabel: (inf.checkout || '11:00') + ' → ' + (inf.checkin || '16:00'),
     price: (state.tariffs[pid] || {})[sv.key] || 0,

@@ -1500,6 +1500,34 @@ var DB = (function () {
     }, Promise.resolve({}));
   }
 
+  /* LE FILET : DEUX FOIS LA MÊME LIGNE DANS UN LOT (session 20, D-116)
+
+     PostgreSQL refuse d'écrire deux fois la même ligne dans une seule
+     instruction : « ON CONFLICT DO UPDATE command cannot affect row a second
+     time ». Il ne refuse pas la ligne fautive — il refuse **tout le lot**.
+     Et comme l'étape des missions n'est pas facultative, plus rien ne part.
+     C'est la même forme d'échec que D-113, par une autre porte.
+
+     Ce n'est PAS le correctif du défaut trouvé aujourd'hui : celui-là est
+     dans `slugMission()` et dans la réparation d'`upgrade()`. C'est un filet,
+     posé une fois pour **toutes** les tables, parce que la question « et si
+     deux lignes portaient la même clé ? » se reposera à chaque nouvelle
+     table, et que la réponse ne doit plus jamais être « tout s'arrête ».
+
+     On garde la **dernière** occurrence : c'est ce que ferait la base si elle
+     acceptait, chaque écriture remplaçant la précédente. */
+  function sansDoublons(lignes, cle) {
+    var parCle = {}, ordre = [];
+    lignes.forEach(function (l) {
+      // Séparateur impossible dans une valeur : sans lui, ('ab','c') et
+      // ('a','bc') donneraient la même clé, et on effacerait une vraie ligne.
+      var k = cle.map(function (c) { return String(l[c]); }).join('\u0000');
+      if (!(k in parCle)) ordre.push(k);
+      parCle[k] = l;
+    });
+    return ordre.map(function (k) { return parCle[k]; });
+  }
+
   function pousserMaintenant() {
     if (!dispo || !profil) return Promise.resolve();
     var moi = profil.id;
@@ -1538,28 +1566,29 @@ var DB = (function () {
     // absurde qu'une table absente empêche les missions de partir. C'est
     // exactement la faute évitée : un seul refus faisait tomber tout un lot.
     var etapes = [
-      { nom: 'les logements', table: 'properties', lignes: biens },
-      { nom: 'les codes d\'accès', table: 'property_secrets', lignes: secrets },
-      { nom: 'les réservations', table: 'reservations', lignes: resas },
-      { nom: 'les missions', table: 'missions', lignes: missions },
+      { nom: 'les logements', table: 'properties', lignes: biens, cle: ['id'] },
+      { nom: 'les codes d\'accès', table: 'property_secrets', lignes: secrets, cle: ['property_id'] },
+      { nom: 'les réservations', table: 'reservations', lignes: resas, cle: ['id'] },
+      { nom: 'les missions', table: 'missions', lignes: missions, cle: ['id'] },
       /* La seconde passe des réservations (D-113). Placée APRÈS les missions :
          chaque ligne y est mise à jour séparément, avec ses seules colonnes,
          et si l'une échoue on veut que les missions soient déjà parties. */
       { nom: 'les coordonnées des voyageurs', table: 'reservations',
         lignes: voyageurs, envoi: majVoyageurs },
-      { nom: 'les avis des voyageurs', table: 'avis', lignes: avis, facultative: true },
+      { nom: 'les avis des voyageurs', table: 'avis', lignes: avis, facultative: true, cle: ['id'] },
       // Le lot 4 (script 09). Facultatives pour la même raison que les avis :
       // tant que le script n'est pas collé, rien d'autre ne doit en souffrir.
-      { nom: 'les fiches des prestataires', table: 'prestataires', lignes: fiches, facultative: true },
-      { nom: 'les stocks', table: 'stocks', lignes: stocks, facultative: true },
-      { nom: 'les réglages', table: 'reglages', lignes: reglages, facultative: true },
-      { nom: 'les demandes d\'accès', table: 'acces', lignes: acces, facultative: true }
+      { nom: 'les fiches des prestataires', table: 'prestataires', lignes: fiches, facultative: true, cle: ['id'] },
+      { nom: 'les stocks', table: 'stocks', lignes: stocks, facultative: true, cle: ['property_id', 'article'] },
+      { nom: 'les réglages', table: 'reglages', lignes: reglages, facultative: true, cle: ['owner_id', 'cle'] },
+      { nom: 'les demandes d\'accès', table: 'acces', lignes: acces, facultative: true, cle: ['id'] }
     ];
 
     return etapes.reduce(function (chaine, e) {
       return chaine.then(function () {
-        if (!e.lignes.length) return null;
-        var envoi = e.envoi ? e.envoi(e.lignes) : client.from(e.table).upsert(e.lignes);
+        var lignes = e.cle ? sansDoublons(e.lignes, e.cle) : e.lignes;
+        if (!lignes.length) return null;
+        var envoi = e.envoi ? e.envoi(lignes) : client.from(e.table).upsert(lignes);
         return envoi.then(function (r) {
           if (r && r.error) {
             if (e.facultative) {
