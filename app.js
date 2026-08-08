@@ -537,6 +537,10 @@ function initialState() {
     problems: [],
     lastDone: null,
     extraFeeds: {},
+    // Le relevé iCal en cours et son compte rendu, par logement (D-114).
+    // Ce sont des attentes de réponse, pas des données : `load()` les remet à zéro.
+    icalEnCours: null,
+    icalBilan: {},
 
     // Préférences d'affichage
     missionFilter: 'all',
@@ -654,6 +658,7 @@ function load() {
   state.loginEnCours = false;
   state.migEnCours = false;
   state.majEnCours = false;           // le bouton « ⟳ » du prestataire (session 19)
+  state.icalEnCours = null;           // un relevé de calendrier en cours (session 20)
   state.mMsg = '';
   state.migMsg = '';
   state.photoPlein = null;            // une photo ouverte en grand n'est pas une donnée
@@ -1156,9 +1161,10 @@ function retirerResa(pid, resa) {
 }
 
 /* Fusion d'un lot de réservations venu d'une source extérieure (iCal, Beds24).
-   Rien ne l'appelle encore : le navigateur ne peut pas interroger ces services
-   (voir CONNECTEURS et D-42). C'est la porte d'entrée prête pour le serveur,
-   et elle est écrite ici pour que les écrans n'aient rien à changer ce jour-là.
+   Écrite en session 10, restée sans appelant jusqu'à la **session 20** : le
+   navigateur ne peut pas interroger ces services (CORS, D-42). Depuis que
+   `api/ical.js` existe, c'est `releverIcal()` qui l'appelle. Les écrans
+   n'ont rien eu à changer, ce qui était exactement le but.
 
    Règle de rapprochement : l'identifiant d'origine (uid). À défaut, un séjour
    qui a les mêmes dates dans le même logement est considéré comme le même.
@@ -1211,6 +1217,108 @@ function fusionnerResas(pid, lot, source) {
     return a.start < b.start ? -1 : a.start > b.start ? 1 : 0;
   });
   return bilan;
+}
+
+/* ==========================================================================
+   LES CALENDRIERS iCal (session 20, D-114)
+
+   Airbnb, Booking et les autres publient chacun un calendrier à une adresse
+   secrète. Jusqu'ici ces adresses étaient « mises de côté et rien de plus »
+   (D-42) : un navigateur n'a pas le droit d'aller les lire. `api/ical.js`,
+   qui tourne chez Vercel sur la même adresse que le site, les relève ; il ne
+   reste ici qu'à comprendre ce qu'il rend.
+
+   CE QU'UN iCal CONTIENT, ET SURTOUT CE QU'IL NE CONTIENT PAS
+   Il donne les **dates occupées**, et c'est à peu près tout. Le nom du
+   voyageur, son téléphone et le montant n'y sont pas — les plateformes ne les
+   publient pas, par respect de la vie privée. On ne les invente donc pas
+   (règle 5) : le séjour arrive au nom de « Voyageur », à renommer si on veut,
+   et le montant reste estimé au prix par nuit. C'est Beds24 qui apportera le
+   reste, plus tard.
+   ========================================================================== */
+
+/** D'où vient ce calendrier, en français, d'après l'adresse du lien. */
+function plateformeDuLien(url) {
+  var h = '';
+  try { h = new URL(url).hostname.toLowerCase(); } catch (e) { return 'iCal'; }
+  if (/airbnb\./.test(h)) return 'Airbnb';
+  if (/booking\.com$/.test(h) || /\.booking\.com$/.test(h)) return 'Booking.com';
+  if (/vrbo|abritel|homeaway/.test(h)) return 'Abritel';
+  if (/expedia/.test(h)) return 'Expedia';
+  if (/google/.test(h)) return 'Google Agenda';
+  if (/beds24/.test(h)) return 'Beds24';
+  return 'iCal';
+}
+
+/* Une date iCal → 'AAAA-MM-JJ'. Deux formes existent : `20260810` (une
+   journée entière, c'est le cas des séjours) et `20260810T140000Z` (un
+   instant). Seul le jour nous intéresse. */
+function dateIcs(v) {
+  var m = /(\d{4})(\d{2})(\d{2})/.exec(String(v || ''));
+  return m ? m[1] + '-' + m[2] + '-' + m[3] : '';
+}
+
+/* Les blocages ne sont pas des séjours. Airbnb publie ses indisponibilités
+   sous le même format que ses réservations : sans ce tri, chaque période
+   bloquée créerait un faux voyageur et une fausse mission de ménage. */
+function estBlocage(sommaire, description) {
+  var t = (sommaire + ' ' + description).toLowerCase();
+  return /not available|unavailable|blocked|closed|indisponible|bloqué/.test(t);
+}
+
+/* Le nom du voyageur, quand la plateforme veut bien le donner. Airbnb écrit
+   « Reserved » ou « Airbnb (XXXX) », Booking écrit parfois le vrai nom.
+   Tout ce qui ressemble à un mot de remplissage est écarté : mieux vaut
+   « Voyageur » qu'un séjour appelé « Reserved » (règle 5). */
+function voyageurIcs(sommaire) {
+  var s = (sommaire || '').trim();
+  if (!s || /^(reserved|reservation|booking|airbnb|busy|occupé)\b/i.test(s)) return 'Voyageur';
+  if (s.length > 60) return 'Voyageur';
+  return s;
+}
+
+/* Lecture d'un fichier iCal. Le format déplie ses longues lignes en les
+   faisant continuer par une espace ou une tabulation : sans ce dépliage, une
+   adresse coupée en deux ferait perdre la moitié d'un champ. */
+function analyserIcs(texte, plat) {
+  var lignes = String(texte || '').replace(/\r\n/g, '\n').replace(/\n[ \t]/g, '').split('\n');
+  var sejours = [], cour = null;
+
+  lignes.forEach(function (ligne) {
+    if (/^BEGIN:VEVENT/i.test(ligne)) { cour = {}; return; }
+    if (/^END:VEVENT/i.test(ligne)) {
+      if (cour && cour.start && cour.end && !estBlocage(cour.sommaire || '', cour.description || '')) {
+        sejours.push({
+          uid: cour.uid || null,
+          plat: plat || 'iCal',             // Airbnb, Booking.com… d'après l'adresse du lien
+          guest: voyageurIcs(cour.sommaire),
+          start: cour.start,
+          end: cour.end,
+          guests: null,
+          montant: null,                    // l'iCal ne le donne jamais
+          statut: 'confirme'
+        });
+      }
+      cour = null;
+      return;
+    }
+    if (!cour) return;
+
+    var sep = ligne.indexOf(':');
+    if (sep < 0) return;
+    var nom = ligne.slice(0, sep).toUpperCase();   // « DTSTART;VALUE=DATE »
+    var val = ligne.slice(sep + 1);
+
+    if (nom.indexOf('DTSTART') === 0) cour.start = dateIcs(val);
+    else if (nom.indexOf('DTEND') === 0) cour.end = dateIcs(val);
+    else if (nom.indexOf('UID') === 0) cour.uid = val.trim();
+    else if (nom.indexOf('SUMMARY') === 0) cour.sommaire = val.trim();
+    else if (nom.indexOf('DESCRIPTION') === 0) cour.description = val.trim();
+  });
+
+  /* Un séjour dont le départ précède l'arrivée n'existe pas : on l'écarte
+     plutôt que de fabriquer une mission à une date absurde. */
+  return sejours.filter(function (s) { return s.end > s.start; });
 }
 
 /** Nuits d'un séjour qui tombent dans un mois donné (un séjour peut être à cheval). */
@@ -2284,6 +2392,13 @@ function decorate(m) {
   var canStart = m.date <= TODAY || !!free;
   var mine = m.taker === state.me;
 
+  /* Une mission dont le jour est passé et que personne n'a prise (D-115).
+     Elle restait affichée sans rien de particulier, au milieu des autres :
+     le propriétaire en a conclu qu'elle était périmée, et que « la date
+     dépassée » lui fermait la porte. Elle ne l'est pas — elle se prend et se
+     fait normalement. On le montre plutôt que de laisser deviner. */
+  var enRetard = m.status === 'dispo' && m.date < TODAY;
+
   var ctaLabel, ctaCls, ctaAction = '';
   if (m.status === 'termine') { ctaLabel = 'Mission terminée'; ctaCls = 'btn--muted'; }
   else if (m.status === 'encours') { ctaLabel = 'Reprendre la checklist'; ctaCls = 'btn--go'; ctaAction = 'resume'; }
@@ -2296,6 +2411,7 @@ function decorate(m) {
     typeLabel: ty.label, durationLabel: duration(m.prop, m.type),
     dateLabel: m.dateLabel, windowLabel: m.windowLabel,
     free: free, freeLabel: free ? 'Logement libre depuis ' + free : '',
+    enRetard: enRetard, retardLabel: enRetard ? 'En retard — encore à prendre' : '',
     day: m.date.split('-')[2], month: MOIS[parseInt(m.date.split('-')[1], 10) - 1],
     priceLabel: m.price + ' €',
     urgent: !!m.urgent, urgentLabel: m.urgent,
@@ -2433,6 +2549,7 @@ function missionCard(m) {
     '</div>' +
     (m.note ? '<div class="mission-note">✎ ' + esc(m.note) + '</div>' : '') +
     '<div class="mission-chips">' +
+      (m.enRetard ? '<span class="badge badge--amber">⏱ ' + esc(m.retardLabel) + '</span>' : '') +
       (m.redoLabel ? '<span class="badge badge--terra">↻ ' + esc(m.redoLabel) + '</span>' : '') +
       (m.free ? '<span class="badge badge--green num">✓ ' + esc(m.freeLabel) + '</span>' : '') +
       '<span class="badge badge--soft num">' + esc(m.dateLabel) + '</span>' +
@@ -2586,7 +2703,17 @@ function viewPrestaDetail() {
          donc un tiret, sans un mot d'explication — il ne pouvait pas entrer.
          Le script `06-code-porte-prestataire.sql` ouvre cette lecture ; en
          attendant, ou si le propriétaire n'a rien saisi, on **dit lequel des
-         deux cas c'est** au lieu d'un tiret muet (D-86, règle D-74). */
+         deux cas c'est** au lieu d'un tiret muet (D-86, règle D-74).
+
+         SESSION 20, D-115. Le propriétaire a rapporté : « si la date de la
+         mission est dépassée, la prestataire ne voit plus le code ». Vérifié :
+         **la date n'y est pour rien.** Ni la règle du cahier
+         (`secrets_presta` ne regarde que le statut), ni le pool, ni « Mes
+         missions », ni `start()` ne filtrent sur une date passée — une mission
+         d'hier se prend et se démarre exactement comme celle d'aujourd'hui.
+         Ce qui manquait, c'est que **la mission n'avait pas été prise**, et
+         le message ne disait pas que le retard n'y change rien. On l'écrit :
+         c'est le geste qui ouvre le code, pas le calendrier. */
       '<div class="access-card">' +
         '<div class="access-item"><div class="k">Entrée / clés</div><div class="v num">' + esc(inf.code || '—') + '</div></div>' +
         '<div class="access-item"><div class="k">Wi-Fi</div><div class="v num">' + esc(inf.wifi || '—') + '</div></div>' +
@@ -2597,7 +2724,11 @@ function viewPrestaDetail() {
               ? 'Le code d’accès et le Wi-Fi ne s’affichent pas. Préviens le propriétaire : soit il ne les a pas encore ' +
                 'renseignés sur la fiche du logement, soit le cahier partagé ne t’autorise pas encore à les lire ' +
                 '(script « 06-code-porte-prestataire.sql »).'
-              : 'Le code d’accès apparaîtra ici une fois que tu auras pris cette mission.') +
+              : 'Le code d’accès et le Wi-Fi apparaîtront ici <strong>dès que tu auras pris cette mission</strong>. ' +
+                (m.date < TODAY
+                  ? 'Cette mission était prévue le ' + esc(m.dateLabel.toLowerCase()) + ', mais elle reste à prendre : ' +
+                    '<strong>le retard n’y change rien</strong>, tu peux la prendre et la faire aujourd’hui.'
+                  : 'C’est ce geste qui t’ouvre la porte, pas la date.')) +
           '</div>'
         : '') +
       (urgentNote ? '<div style="background:var(--terra-bg2);border-radius:16px;padding:13px 15px;font:600 13px/1.45 Figtree,sans-serif;color:var(--terra-dd)">' + esc(urgentNote) + '</div>' : '') +
@@ -7038,43 +7169,87 @@ function bienIcal(pid) {
   // Seulement les liens réellement collés par le propriétaire. La démonstration
   // affichait deux flux « Synchronisé » qui n'existaient pas : trompeur, retiré
   // en session 14. Aucun lien n'est encore relevé — il y faut le serveur (D-42).
-  var feeds = (state.extraFeeds[pid] || []).map(function (u) {
-    return { cls: 'feed--new', dot: C.bleu, fg: 'var(--blue-t)', source: 'Lien collé', url: u, status: 'En attente du serveur' };
-  });
+  var liens = state.extraFeeds[pid] || [];
+  var enCours = state.icalEnCours === pid;
+  var bilan = state.icalBilan[pid];
+
+  /* LE COMPTE RENDU DU DERNIER RELEVÉ (D-114).
+     Il dit toujours quelque chose, y compris « rien de nouveau » : un bouton
+     muet passe pour un bouton en panne (règle 18). Et il sépare ce qui a
+     marché de ce qui a échoué — un lien expiré chez Airbnb ne doit pas faire
+     croire que Booking a échoué aussi. */
+  var compteRendu = '';
+  if (bilan) {
+    var t = bilan.total;
+    var rien = !t.ajoutees && !t.majs && !t.annulees;
+    var ok = !bilan.soucis.length;
+    compteRendu = '<div style="margin-top:14px;border-radius:16px;padding:13px 15px;background:' +
+      (ok ? 'var(--green-bg)' : 'var(--amber-bg)') + ';border-left:3px solid ' +
+      (ok ? 'var(--green-t)' : 'var(--amber-t)') + '">' +
+      '<div style="font:700 13px Figtree,sans-serif;color:' + (ok ? 'var(--green-t)' : 'var(--amber-t)') + '">' +
+        (ok ? '✓ ' : '⚠️ ') +
+        (rien
+          ? 'Relevé effectué — rien de nouveau'
+          : t.ajoutees + ' séjour(s) ajouté(s), ' + t.majs + ' modifié(s), ' + t.annulees + ' annulé(s)') +
+      '</div>' +
+      (rien && ok
+        ? '<p class="sec-note" style="margin:5px 0 0">Les ' + t.inchangees + ' séjour(s) du calendrier ' +
+          'étaient déjà enregistrés. C\'est le résultat normal d\'un second relevé.</p>'
+        : '') +
+      (t.ajoutees
+        ? '<p class="sec-note" style="margin:5px 0 0">Les missions de ménage correspondantes ont été ' +
+          'créées. <strong>Le nom du voyageur n\'est pas dans les calendriers</strong> — les nouveaux ' +
+          'séjours s\'appellent « Voyageur », renomme-les dans l\'onglet « Réservations » si tu veux.</p>'
+        : '') +
+      (bilan.soucis.length
+        ? '<ul class="sec-note" style="margin:8px 0 0;padding-left:18px">' +
+          bilan.soucis.map(function (s) { return '<li>' + esc(s) + '</li>'; }).join('') + '</ul>'
+        : '') +
+      '</div>';
+  }
 
   return '<div class="card" style="margin-top:22px;padding:22px">' +
     '<h2 style="font:700 16px Figtree,sans-serif;margin:0">Liens iCal de ce bien</h2>' +
 
-    /* Honnêteté sur ce que ce panneau fait, et surtout sur ce qu'il ne fait
-       pas. Le bouton s'appelait « Connecter » : il ne connectait rien, il
-       rangeait une adresse dans un coin. D'où « les liens iCal ne marchent
-       pas » — c'était exact, et ce n'était pas une panne (session 15). */
-    '<div style="margin-top:12px;background:var(--terra-bg2);border-radius:16px;padding:14px 16px">' +
-      '<div style="font:700 13px Figtree,sans-serif;color:var(--terra-dd)">⚠️ Ces liens ne sont pas encore relevés</div>' +
-      '<p class="sec-note" style="margin:6px 0 0;color:var(--terra-dd)">Une page web n’a pas le droit ' +
-        'd’aller lire un calendrier hébergé chez Airbnb ou Booking.com : c’est une règle de sécurité ' +
-        'des navigateurs, et elle ne se contourne pas. Il faut pour cela un ordinateur qui travaille ' +
-        'de son côté — le serveur. Tant qu’il n’existe pas, un lien collé ici est <strong>mis de côté ' +
-        'et rien de plus</strong> : aucune réservation ne rentrera toute seule, aucune mission de ' +
-        'ménage ne se créera. En attendant, les séjours se saisissent dans l’onglet ' +
-        '« Réservations ».</p>' +
-    '</div>' +
+    /* Ce panneau a menti pendant quatre sessions : son bouton s'appelait
+       « Connecter » et ne connectait rien (session 15). Depuis la session 20,
+       il relève pour de vrai — mais il dit toujours honnêtement ce que l'iCal
+       ne sait pas donner : ni le nom du voyageur, ni le montant (D-114). */
+    '<p class="sec-note" style="margin:6px 0 0">Colle ici l’adresse du calendrier publiée par Airbnb ' +
+      'ou Booking.com pour ce logement, puis appuie sur « Relever maintenant » : les séjours entrent ' +
+      'et les missions de ménage se créent toutes seules. ' +
+      '<strong>Les calendriers ne donnent que les dates</strong> — ni le nom du voyageur, ni le ' +
+      'montant, que les plateformes ne publient pas. C’est Beds24 qui les apportera.</p>' +
 
-    '<div class="stack" style="margin-top:16px">' + (feeds.length ? feeds.map(function (f, i) {
-      return '<div class="feed ' + f.cls + '">' +
-        '<span class="dot" style="background:' + f.dot + '"></span>' +
-        '<div style="flex:1;min-width:200px"><div style="font:600 13.5px Figtree,sans-serif">' + esc(f.source) + '</div>' +
-        '<div class="url">' + esc(f.url) + '</div></div>' +
-        '<span style="font:600 12px Figtree,sans-serif;color:' + f.fg + ';flex:none">' + f.status + '</span>' +
+    '<div class="stack" style="margin-top:16px">' + (liens.length ? liens.map(function (u, i) {
+      return '<div class="feed feed--new">' +
+        '<span class="dot" style="background:' + C.bleu + '"></span>' +
+        '<div style="flex:1;min-width:200px"><div style="font:600 13.5px Figtree,sans-serif">' +
+          esc(plateformeDuLien(u)) + '</div>' +
+        '<div class="url">' + esc(u) + '</div></div>' +
         '<button type="button" class="btn btn--xs" style="background:transparent;color:var(--muted);flex:none"' +
           act('del-feed', { pid: pid, i: i }) + '>Retirer</button></div>';
     }).join('') : '<p class="empty">Aucun lien iCal enregistré pour ce logement.</p>') + '</div>' +
+
+    (liens.length
+      ? '<div style="margin-top:16px">' +
+          '<button type="button" class="btn btn--primary btn--sm"' + (enCours ? ' disabled' : '') +
+            act('relever-ical', { pid: pid }) + '>' +
+            (enCours ? 'Relevé en cours…' : 'Relever maintenant (' + liens.length + ' lien' + (liens.length > 1 ? 's' : '') + ')') +
+          '</button>' +
+          '<p class="sec-note" style="margin-top:8px">Les plateformes rafraîchissent leur calendrier ' +
+            'environ toutes les heures : un séjour réservé à l’instant peut mettre ce temps-là à ' +
+            'apparaître ici.</p>' +
+        '</div>'
+      : '') +
+    compteRendu +
+
     '<div style="margin-top:18px;display:flex;gap:12px;flex-wrap:wrap">' +
-      '<input class="inp" style="flex:1;min-width:260px" type="text" placeholder="Coller un lien iCal, pour plus tard…" value="' + esc(state.newFeed) + '" data-fid="new-feed" data-in="new-feed">' +
-      '<button type="button" class="btn btn--dark btn--sm"' + act('add-feed', { pid: pid }) + '>Mettre ce lien de côté</button>' +
+      '<input class="inp" style="flex:1;min-width:260px" type="text" placeholder="Coller un lien iCal…" value="' + esc(state.newFeed) + '" data-fid="new-feed" data-in="new-feed">' +
+      '<button type="button" class="btn btn--dark btn--sm"' + act('add-feed', { pid: pid }) + '>Ajouter ce lien</button>' +
     '</div>' +
-    '<p class="sec-note" style="margin-top:10px">Ces liens restent dans ce navigateur : ils ne partent ' +
-      'pas encore dans le cahier partagé.</p>' +
+    '<p class="sec-note" style="margin-top:10px">Ces liens sont enregistrés dans le cahier partagé : ' +
+      'tu les retrouveras sur un autre ordinateur.</p>' +
     '</div>' +
 
     /* Préparation de Beds24 : seulement l'identifiant du logement chez eux.
@@ -8362,7 +8537,62 @@ var actions = {
   'del-feed': function (el) {
     var pid = el.dataset.pid, i = parseInt(el.dataset.i, 10);
     state.extraFeeds[pid] = (state.extraFeeds[pid] || []).filter(function (_, k) { return k !== i; });
+    state.icalBilan[pid] = null;
     save(); render();
+  },
+
+  /* RELEVER LES CALENDRIERS D'UN LOGEMENT (session 20, D-114)
+
+     Le bouton qui manquait depuis la session 5. Il appelle `api/ical.js`,
+     qui tourne chez Vercel — donc hors du navigateur, donc autorisé à lire
+     Airbnb et Booking.
+
+     Deux précautions qui viennent de règles déjà payées :
+     · on relève les liens **l'un après l'autre** et on garde le détail de
+       chacun : un lien expiré ne doit pas faire croire que les autres ont
+       échoué, ni l'inverse (règle 19) ;
+     · on **dit toujours ce qu'on a trouvé**, y compris « rien de nouveau ».
+       Un bouton muet passe pour un bouton en panne (règle 18, D-94). */
+  'relever-ical': function (el) {
+    var pid = el.dataset.pid;
+    var liens = state.extraFeeds[pid] || [];
+    if (!liens.length || state.icalEnCours) return;
+
+    state.icalEnCours = pid;
+    state.icalBilan[pid] = null;
+    render();
+
+    var total = { ajoutees: 0, majs: 0, annulees: 0, inchangees: 0 };
+    var soucis = [];
+
+    liens.reduce(function (chaine, lien) {
+      return chaine.then(function () {
+        return fetch('/api/ical?url=' + encodeURIComponent(lien))
+          .then(function (r) {
+            return r.text().then(function (corps) {
+              if (!r.ok) {
+                var dit = '';
+                try { dit = JSON.parse(corps).erreur; } catch (e) { dit = ''; }
+                throw new Error(dit || 'Le relevé a échoué (code ' + r.status + ').');
+              }
+              return corps;
+            });
+          })
+          .then(function (ics) {
+            var lot = analyserIcs(ics, plateformeDuLien(lien));
+            var b = fusionnerResas(pid, lot, 'ical');
+            ['ajoutees', 'majs', 'annulees', 'inchangees'].forEach(function (k) { total[k] += b[k]; });
+          })
+          .catch(function (e) {
+            soucis.push(plateformeDuLien(lien) + ' : ' + (e.message || 'raison inconnue'));
+          });
+      });
+    }, Promise.resolve()).then(function () {
+      state.icalEnCours = null;
+      state.icalBilan[pid] = { quand: Date.now(), total: total, soucis: soucis };
+      save();                                  // save() pousse aussi vers le cahier partagé
+      render();
+    });
   },
 
   /* Biens : création et suppression ------------------------------------- */
