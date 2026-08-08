@@ -1182,6 +1182,71 @@ function ajouterResa(pid, resa) {
   return resa;
 }
 
+/* LE MÉNAGE QUI N'A JAMAIS ÉTÉ CRÉÉ (session 21, D-117)
+
+   Une mission de ménage naît **au moment** où le séjour entre — dans
+   `ajouterResa()`, et là seulement. Si quelque chose s'est mis en travers ce
+   jour-là — un lot refusé par le cahier partagé (D-113, D-116), un import
+   fait par une version du code qui portait encore le défaut —, le séjour
+   reste et la mission manque. **Et relever le calendrier une seconde fois n'y
+   change rien** : le séjour est alors « déjà connu », donc `fusionnerResas()`
+   ne lui recrée rien. Le trou était définitif, et parfaitement silencieux.
+
+   C'est la règle 20, encore : le geste avait son inverse, il n'avait pas son
+   rattrapage. On le pose ici, et surtout on le rend VISIBLE (règle 13) — le
+   compte rendu du relevé dit combien de ménages ont été rattrapés, la fiche
+   du bien propose le bouton quand il en manque, celle du séjour aussi.
+
+   On ne remonte pas dans le passé de soi-même : un ménage d'il y a trois
+   semaines n'a plus lieu d'être et ne ferait qu'encombrer la liste. Le bouton
+   d'une fiche de séjour, lui, crée quand même — c'est un geste explicite. */
+function departsSansMission(pid, depuis) {
+  var d = depuis === undefined ? TODAY : depuis;
+  return resasOf(pid).filter(function (r) {
+    if (r.statut === 'annule') return false;
+    if (d && r.end < d) return false;
+    return !missionDuDepart(pid, r);
+  });
+}
+
+function creerMissionsManquantes(pid, depuis) {
+  var creees = [];
+  departsSansMission(pid, depuis).forEach(function (r) {
+    var m = creerMissionDepart(pid, r);
+    if (m) creees.push(m);
+  });
+  /* Qui arrive derrière ne se sait qu'une fois TOUTES les missions posées :
+     on repasse à la fin, sinon la dernière créée n'apprendrait jamais son
+     turnover — c'est le défaut corrigé en session 15, par la même porte. */
+  if (creees.length) resasOf(pid).forEach(function (r) { rattacherArrivee(pid, r); });
+  return creees;
+}
+
+/* Le nom et le nombre de voyageurs sont RECOPIÉS dans les missions au moment
+   où elles sont créées. Quand le propriétaire les corrige après coup — et il
+   le fera, puisque l'iCal ne donne pas le nom —, il faut les y reporter :
+   sans ça la prestataire lirait « Voyageur » pour toujours, et la mission de
+   la veille annoncerait un arrivant sans nom. */
+function refletSurMissions(pid, r) {
+  var m = missionDuDepart(pid, r);
+  if (m && m.status !== 'termine') {
+    if (!m.res) m.res = { plat: r.plat, guest: '', guests: null, nights: nights(r.start, r.end) };
+    m.res.guest = r.guest || 'Voyageur';
+    m.res.guests = r.guests || null;
+    m.res.plat = r.plat || m.res.plat;
+  }
+  state.missions.forEach(function (x) {
+    if (x.prop !== pid || x.date !== r.start || x.status === 'termine' || !x.next) return;
+    x.next.guest = r.guest || 'Voyageur';
+    x.next.guests = r.guests || null;
+    if (!r.arriveePrevue) return;
+    x.next.at = r.arriveePrevue;
+    // Le bandeau rouge de la mission annonce l'heure lui aussi : le laisser à
+    // l'ancienne ferait dire deux heures différentes sur le même écran.
+    if (/^Turnover/.test(x.urgent || '')) x.urgent = 'Turnover · arrivée ' + r.arriveePrevue;
+  });
+}
+
 /** Retire une réservation et, si elle n'a pas été prise, sa mission de départ. */
 function retirerResa(pid, resa) {
   state.resas[pid] = resasOf(pid).filter(function (x) { return x !== resa; });
@@ -1224,7 +1289,7 @@ function retirerResa(pid, resa) {
    qui a les mêmes dates dans le même logement est considéré comme le même.
    Rend le détail de ce qui a été fait, pour l'afficher au propriétaire. */
 function fusionnerResas(pid, lot, source) {
-  var bilan = { ajoutees: 0, majs: 0, annulees: 0, inchangees: 0 };
+  var bilan = { ajoutees: 0, majs: 0, annulees: 0, inchangees: 0, rattrapees: 0 };
 
   lot.forEach(function (brut) {
     var incoming = normaliserResa(brut, source, pid);
@@ -1270,6 +1335,12 @@ function fusionnerResas(pid, lot, source) {
   state.resas[pid] = resasOf(pid).sort(function (a, b) {
     return a.start < b.start ? -1 : a.start > b.start ? 1 : 0;
   });
+
+  /* LE RATTRAPAGE (session 21, D-117). Les séjours neufs ont eu leur ménage
+     par `ajouterResa()`. Ceux qui étaient DÉJÀ là et n'en ont pas — parce
+     qu'un import précédent s'est cassé en route — n'en auraient jamais eu :
+     rien, dans cette fonction, ne repasse derrière un séjour connu. */
+  bilan.rattrapees = creerMissionsManquantes(pid).length;
   return bilan;
 }
 
@@ -3794,6 +3865,31 @@ function mailtoVoyageur(f) {
 
 /* --- Missions ------------------------------------------------------------ */
 
+/* Le même constat, tous logements confondus, à l'endroit où le propriétaire
+   va justement chercher ses missions (session 21, D-117). C'est là qu'il a
+   vu « rien », et c'est là qu'il faut le lui dire. */
+function bandeauTousMenagesManquants() {
+  var lignes = (state.props || []).filter(function (p) { return !p.gone; })
+    .map(function (p) { return { p: p, n: departsSansMission(p.id).length }; })
+    .filter(function (x) { return x.n; });
+  if (!lignes.length) return '';
+  var total = lignes.reduce(function (n, x) { return n + x.n; }, 0);
+
+  return '<div class="card" style="margin-top:18px;padding:18px 20px;background:var(--amber-bg);' +
+    'border-left:3px solid var(--amber-t)">' +
+    '<div style="font:700 14px Figtree,sans-serif;color:var(--amber-t)">⚠️ ' + total + ' départ(s) à venir ' +
+      'sans mission de ménage</div>' +
+    '<p class="sec-note" style="margin:6px 0 12px">Ces séjours sont bien enregistrés — ils viennent ' +
+      'souvent d’un relevé de calendrier qui s’est interrompu avant de créer les ménages. Tant que ' +
+      'la mission n’existe pas, ton prestataire n’a rien à faire ce jour-là.</p>' +
+    '<div style="display:flex;gap:10px;flex-wrap:wrap">' + lignes.map(function (x) {
+      return '<button type="button" class="btn btn--sm" style="background:var(--terra);color:#fff"' +
+        act('creer-menages-manquants', { pid: x.p.id }) + '>' +
+        esc(x.p.short || x.p.name) + ' · créer ' + x.n + ' ménage(s)</button>';
+    }).join('') + '</div>' +
+    '</div>';
+}
+
 function viewOwnerMissions() {
   var filters = [['all', 'Toutes'], ['dispo', 'Disponibles'], ['prise', 'Acceptées'], ['termine', 'Terminées']];
   var rows = state.missions
@@ -3837,6 +3933,7 @@ function viewOwnerMissions() {
         ';min-height:42px;font-size:13px"' + act('toggle-new') + '>' +
         (state.showNew ? 'Fermer le formulaire' : '+ Créer une mission') + '</button>' +
     '</div>' + form +
+    bandeauTousMenagesManquants() +
 
     '<div class="chiprow" style="margin:20px 0 16px">' + filters.map(function (f) {
       return '<button type="button" class="chip" aria-pressed="' + (state.missionFilter === f[0]) + '"' +
@@ -4576,31 +4673,84 @@ function viewOwnerResa() {
   var src = SOURCES[r.source] || SOURCES.manuel;
   var nb = nights(r.start, r.end);
   var mnt = montantResa(pid, r);
-  var lie = state.missions.find(function (m) { return m.fromResa === resaKey(pid, r); });
+  /* On cherche le ménage de ce départ par la règle métier, pas seulement par
+     le lien direct : une mission saisie à la main le jour du départ compte
+     tout autant, et l'annoncer « absente » ferait créer un doublon. */
+  var lie = missionDuDepart(pid, r);
   var msgs = messagesDe(r.id);
   var parti = departAt(pid, r);
   var avisSej = avisDone(pid, r, 'sejour');
   var avisMen = avisDone(pid, r, 'menage');
 
   var lignes = [
-    ['Plateforme', r.plat],
     ['Origine', src.label + (r.uid ? ' · réf. ' + r.uid : '')],
     ['Arrivée', fmtDate(r.start) + ' à partir de ' + (inf.checkin || '16:00')],
     ['Départ', fmtDate(r.end) + ' avant ' + (inf.checkout || '11:00') + (parti ? ' · parti à ' + parti : '')],
     ['Durée', nb + ' nuits'],
-    ['Voyageurs', r.guests],
     ['Prix moyen par nuit', (nb ? Math.round(mnt / nb) : 0) + ' €']
   ];
 
-  /* Coordonnées : ce que la plateforme a transmis, et surtout ce que le
-     voyageur a laissé lui-même en ouvrant son livret (D-48). */
-  var coord = [
-    ['Téléphone', r.tel || (r.tel4 ? '•• •• •• ' + r.tel4 : ''), r.tel ? 'voyageur' : r.tel4 ? 'plateforme' : ''],
-    ['E-mail', r.mail, 'voyageur'],
-    ['Arrivée annoncée', r.arriveePrevue, 'voyageur']
-  ].filter(function (l) { return l[1]; });
+  /* LA FICHE DU VOYAGEUR SE REMPLIT À LA MAIN (session 21, D-118)
 
-  var manque = !r.tel && !r.mail && !r.arriveePrevue;
+     Cet encadré ne faisait que CONSTATER : « cette plateforme ne transmet
+     aucun numéro », « le reste arrivera quand il ouvrira son livret ». Or
+     depuis que les séjours entrent par iCal, ils arrivent tous au nom de
+     « Voyageur », sans téléphone et sans nombre de personnes — et le
+     propriétaire, lui, a ces informations sous les yeux dans la messagerie
+     Airbnb. Il n'avait aucun endroit où les écrire (règle 13 : un écran qui
+     a l'air de marcher).
+
+     Ce qui est saisi ici part dans le cahier partagé comme le reste, et se
+     reporte aussitôt sur la mission de ménage : c'est là que la prestataire
+     lit qui part, qui arrive et combien ils sont.
+
+     ON N'ÉCRASE RIEN DE CE QUE LE VOYAGEUR A ÉCRIT LUI-MÊME sans le dire :
+     quand une valeur vient de lui (livret d'accueil, D-48), une étiquette le
+     signale sous le champ. Le propriétaire reste libre de la corriger — c'est
+     sa fiche —, mais il sait ce qu'il remplace. */
+  var venuDuVoyageur = r.guestOk;
+  function champResa(k, label, type, ph, val, aide) {
+    var fid = 'rf-' + k + '-' + r.id;
+    return '<div style="flex:1;min-width:min(100%,190px)">' +
+      '<label class="lab" for="' + esc(fid) + '">' + esc(label) + '</label>' +
+      '<input class="inp' + (type === 'number' || type === 'tel' ? ' num' : '') + '" id="' + esc(fid) + '"' +
+        ' type="' + type + '"' + (type === 'number' ? ' min="1"' : '') +
+        ' placeholder="' + esc(ph) + '" value="' + esc(val === null || val === undefined ? '' : val) + '"' +
+        ' data-fid="' + esc(fid) + '" data-in="resa-champ" data-rid="' + esc(r.id) + '" data-k="' + esc(k) + '">' +
+      (aide ? '<p class="sec-note" style="margin:4px 0 0">' + aide + '</p>' : '') +
+      '</div>';
+  }
+
+  var ficheVoyageur =
+    '<div class="cols" style="gap:14px;margin-top:14px">' +
+      champResa('guest', 'Nom du voyageur', 'text', 'Ex. Emma Dufour', r.guest,
+        r.guest === 'Voyageur' ? 'Les calendriers ne donnent pas le nom : écris-le ici.' : '') +
+      champResa('guests', 'Nombre de voyageurs', 'number', '2', r.guests,
+        r.guests ? '' : 'Inconnu : la prestataire ne sait pas combien de lits faire.') +
+    '</div>' +
+    '<div class="cols" style="gap:14px;margin-top:14px">' +
+      champResa('tel', 'Téléphone', 'tel', '06 12 34 56 78', r.tel,
+        !r.tel && r.tel4 ? 'La plateforme n’a donné que les 4 derniers chiffres : •• •• •• ' + esc(r.tel4) + '.'
+          : (r.tel && venuDuVoyageur ? '<span class="src-tag">laissé par le voyageur</span>' : '')) +
+      champResa('mail', 'E-mail', 'email', 'prenom@exemple.fr', r.mail,
+        r.mail && venuDuVoyageur ? '<span class="src-tag">laissé par le voyageur</span>' : '') +
+    '</div>' +
+    '<div class="cols" style="gap:14px;margin-top:14px">' +
+      champResa('arriveePrevue', 'Heure d’arrivée annoncée', 'time', '', r.arriveePrevue,
+        'Reprise sur la mission de la veille : la prestataire sait à quelle heure il faut avoir fini.') +
+      '<div style="flex:1;min-width:min(100%,190px)">' +
+        '<label class="lab" for="rf-plat-' + esc(r.id) + '">Plateforme</label>' +
+        '<select class="inp" id="rf-plat-' + esc(r.id) + '" data-fid="rf-plat-' + esc(r.id) + '"' +
+          ' data-ch="resa-plat" data-rid="' + esc(r.id) + '">' +
+          Object.keys(PLATS).map(function (k) {
+            return '<option value="' + esc(k) + '"' + (r.plat === k ? ' selected' : '') + '>' + esc(k) + '</option>';
+          }).join('') +
+        '</select>' +
+      '</div>' +
+    '</div>' +
+    '<p class="sec-note" style="margin-top:12px">Enregistré au fur et à mesure, rien à valider. ' +
+      'Ce que tu écris ici part dans le cahier partagé et s’affiche sur le téléphone de ta ' +
+      'prestataire, sur la mission de ce départ.</p>';
 
   return ownerShell('calendrier',
     '<button type="button" class="btn-back" style="min-height:38px;font-size:13px;color:var(--muted)"' +
@@ -4632,19 +4782,11 @@ function viewOwnerResa() {
         }).join('') + '</div>' +
 
         '<div style="margin-top:16px;padding-top:16px;border-top:1px solid rgba(36,30,26,.08)">' +
-          '<h2 style="font:700 16px Figtree,sans-serif;margin:0 0 6px">Coordonnées du voyageur</h2>' +
-          (manque
-            ? '<p class="sec-note" style="margin:0">' +
-                (r.tel4
-                  ? 'La plateforme a transmis les 4 derniers chiffres du téléphone (•• •• •• ' + esc(r.tel4) + '), ' +
-                    'ce qui suffit à identifier ce voyageur sur le lien d\'accueil. '
-                  : 'Cette plateforme ne transmet aucun numéro. ') +
-                'Le reste arrivera quand il ouvrira son livret et laissera ses coordonnées.</p>'
-            : '<div class="list">' + coord.map(function (l) {
-                return '<div class="kv" style="padding:12px 0"><span>' + esc(l[0]) +
-                  (l[2] ? ' <span class="src-tag">' + esc(l[2]) + '</span>' : '') + '</span>' +
-                  '<span class="num" style="color:var(--ink-soft);font-weight:600">' + esc(l[1]) + '</span></div>';
-              }).join('') + '</div>') +
+          '<h2 style="font:700 16px Figtree,sans-serif;margin:0 0 6px">Le voyageur</h2>' +
+          '<p class="sec-note" style="margin:0">Complète ce que la plateforme ne donne pas : ' +
+            'son nom, son numéro, combien ils sont. Il le remplira peut-être lui-même en ouvrant ' +
+            'son livret d’accueil — ce qu’il aura écrit apparaîtra ici aussi.</p>' +
+          ficheVoyageur +
         '</div>' +
 
         '<div style="margin-top:16px;padding-top:16px;border-top:1px solid rgba(36,30,26,.08)">' +
@@ -4670,7 +4812,14 @@ function viewOwnerResa() {
                 '<span class="resa-lien-s num">' + esc(lie.dateLabel) + ' · ' + esc(lie.windowLabel) + ' · ' + lie.price + ' €</span></span>' +
                 '<span class="badge ' + STATUS[lie.status].cls + '">' + esc(lie.taker ? STATUS[lie.status].label + ' · ' + lie.taker : STATUS[lie.status].label) + '</span>' +
                 '</button>'
-            : '<p class="sec-note">Aucune mission rattachée à ce départ.</p>') +
+            /* Il manquait le geste qui répare (session 21, D-117) : l'écran
+               constatait le trou et laissait le propriétaire devant. */
+            : '<p class="sec-note" style="margin:0 0 10px">Aucune mission de ménage n’est rattachée à ' +
+                'ce départ. C’est le cas quand un relevé de calendrier s’est interrompu en chemin : ' +
+                'le séjour est entré, le ménage non. Le prestataire ne voit donc rien à faire ce ' +
+                'jour-là.</p>' +
+              '<button type="button" class="btn btn--sm" style="background:var(--terra);color:#fff;width:100%"' +
+                act('resa-creer-menage', { rid: r.id }) + '>Créer le ménage du ' + esc(fmtDate(r.end)) + '</button>') +
         '</div>' +
 
         '<div class="card" style="padding:22px">' +
@@ -7219,6 +7368,25 @@ function livretVoyageur(pid, inf) {
   return out;
 }
 
+/* « Des départs n'ont pas de ménage » — dit à l'écran, réparé d'un bouton
+   (session 21, D-117). Un écran qui ne dit rien laisse croire que tout va
+   bien : c'est exactement ce qui s'est passé après le premier relevé iCal. */
+function bandeauMenagesManquants(pid) {
+  var manquants = departsSansMission(pid);
+  if (!manquants.length) return '';
+  var n = manquants.length;
+  return '<div style="margin-top:14px;border-radius:16px;padding:13px 15px;background:var(--amber-bg);' +
+    'border-left:3px solid var(--amber-t)">' +
+    '<div style="font:700 13px Figtree,sans-serif;color:var(--amber-t)">⚠️ ' + n + ' départ(s) à venir ' +
+      'n’ont pas de mission de ménage</div>' +
+    '<p class="sec-note" style="margin:5px 0 10px">Ces séjours sont bien enregistrés, mais le ménage ' +
+      'de leur départ n’a jamais été créé — le prestataire ne voit donc rien à faire ce jour-là. ' +
+      'Un seul bouton suffit à les créer, aux tarifs et horaires de ce logement.</p>' +
+    '<button type="button" class="btn btn--sm" style="background:var(--terra);color:#fff"' +
+      act('creer-menages-manquants', { pid: pid }) + '>Créer les ' + n + ' mission(s) de ménage</button>' +
+    '</div>';
+}
+
 function bienIcal(pid) {
   // Seulement les liens réellement collés par le propriétaire. La démonstration
   // affichait deux flux « Synchronisé » qui n'existaient pas : trompeur, retiré
@@ -7235,7 +7403,8 @@ function bienIcal(pid) {
   var compteRendu = '';
   if (bilan) {
     var t = bilan.total;
-    var rien = !t.ajoutees && !t.majs && !t.annulees;
+    var rattrapees = t.rattrapees || 0;      // les relevés d'avant la session 21 n'ont pas ce compte
+    var rien = !t.ajoutees && !t.majs && !t.annulees && !rattrapees;
     var ok = !bilan.soucis.length;
     compteRendu = '<div style="margin-top:14px;border-radius:16px;padding:13px 15px;background:' +
       (ok ? 'var(--green-bg)' : 'var(--amber-bg)') + ';border-left:3px solid ' +
@@ -7253,7 +7422,15 @@ function bienIcal(pid) {
       (t.ajoutees
         ? '<p class="sec-note" style="margin:5px 0 0">Les missions de ménage correspondantes ont été ' +
           'créées. <strong>Le nom du voyageur n\'est pas dans les calendriers</strong> — les nouveaux ' +
-          'séjours s\'appellent « Voyageur », renomme-les dans l\'onglet « Réservations » si tu veux.</p>'
+          'séjours s\'appellent « Voyageur ». Ouvre un séjour pour écrire son nom, son numéro et le ' +
+          'nombre de personnes : ils partent aussitôt sur le téléphone de ta prestataire.</p>'
+        : '') +
+      /* Le rattrapage doit se DIRE : c'est justement la réparation qu'on
+         n'aurait pas vue autrement (session 21, D-117, règle 4). */
+      (rattrapees
+        ? '<p class="sec-note" style="margin:5px 0 0"><strong>' + rattrapees + ' ménage(s) manquant(s) ' +
+          'ont été rattrapés</strong> : ces séjours étaient déjà enregistrés, mais leur mission de ' +
+          'ménage n’avait jamais été créée. Elle l’est maintenant.</p>'
         : '') +
       (bilan.soucis.length
         ? '<ul class="sec-note" style="margin:8px 0 0;padding-left:18px">' +
@@ -7297,6 +7474,7 @@ function bienIcal(pid) {
         '</div>'
       : '') +
     compteRendu +
+    bandeauMenagesManquants(pid) +
 
     '<div style="margin-top:18px;display:flex;gap:12px;flex-wrap:wrap">' +
       '<input class="inp" style="flex:1;min-width:260px" type="text" placeholder="Coller un lien iCal…" value="' + esc(state.newFeed) + '" data-fid="new-feed" data-in="new-feed">' +
@@ -8616,7 +8794,7 @@ var actions = {
     state.icalBilan[pid] = null;
     render();
 
-    var total = { ajoutees: 0, majs: 0, annulees: 0, inchangees: 0 };
+    var total = { ajoutees: 0, majs: 0, annulees: 0, inchangees: 0, rattrapees: 0 };
     var soucis = [];
 
     liens.reduce(function (chaine, lien) {
@@ -8635,7 +8813,7 @@ var actions = {
           .then(function (ics) {
             var lot = analyserIcs(ics, plateformeDuLien(lien));
             var b = fusionnerResas(pid, lot, 'ical');
-            ['ajoutees', 'majs', 'annulees', 'inchangees'].forEach(function (k) { total[k] += b[k]; });
+            ['ajoutees', 'majs', 'annulees', 'inchangees', 'rattrapees'].forEach(function (k) { total[k] += b[k]; });
           })
           .catch(function (e) {
             soucis.push(plateformeDuLien(lien) + ' : ' + (e.message || 'raison inconnue'));
@@ -8796,6 +8974,34 @@ var actions = {
     var f = resaById(el.dataset.rid);
     if (f) { f.r.montant = null; save(); render(); }
   },
+  /* LES DEUX BOUTONS QUI RATTRAPENT UN MÉNAGE MANQUANT (session 21, D-117).
+     L'un pour un séjour, l'autre pour tout un logement. Ils DISENT ce qu'ils
+     ont fait, y compris quand ils n'ont rien trouvé à faire : un bouton muet
+     passe pour un bouton en panne (règle 18). */
+  'resa-creer-menage': function (el) {
+    var f = resaById(el.dataset.rid);
+    if (!f) return;
+    // Sans borne de date : c'est un geste explicite, y compris sur un séjour passé.
+    var creees = creerMissionsManquantes(f.pid, '');
+    save(); render();
+    alert(creees.length
+      ? 'Mission de ménage créée pour le ' + fmtDate(f.r.end) + '.\n\n' +
+        'Elle est publiée au pool : ton prestataire la voit sur son téléphone, ' +
+        'à condition que ce logement lui soit confié.'
+      : 'Ce départ a déjà une mission de ménage : rien à créer.');
+  },
+
+  'creer-menages-manquants': function (el) {
+    var pid = el.dataset.pid;
+    var creees = creerMissionsManquantes(pid);
+    save(); render();
+    alert(creees.length
+      ? creees.length + ' mission(s) de ménage créée(s).\n\n' +
+        'Elles sont publiées au pool : ton prestataire les voit sur son téléphone, ' +
+        'à condition que ce logement lui soit confié.'
+      : 'Tous les départs à venir ont déjà leur mission de ménage.');
+  },
+
   'resa-remove': function (el) {
     var f = resaById(el.dataset.rid);
     if (!f) return;
@@ -9500,6 +9706,32 @@ var inputs = {
   // redessin à chaque touche ferait sauter le curseur.
   'problem-texte': function (el) { state.problemTexte = el.value; },
 
+  /* LA FICHE DU VOYAGEUR, SAISIE À LA MAIN (session 21, D-118)
+
+     Un seul point d'entrée pour tous les champs : le nom, le nombre, le
+     téléphone, l'e-mail, l'heure annoncée. On ne redessine pas — un redessin
+     à chaque touche ferait sauter le curseur — donc `save()` sans `render()`.
+
+     Le téléphone alimente aussi `tel4` : c'est par ces quatre chiffres que la
+     porte du livret reconnaît un voyageur (D-46). Écrire le numéro complet
+     ouvre donc l'accueil au voyageur, sans autre manipulation. */
+  'resa-champ': function (el) {
+    var f = resaById(el.dataset.rid);
+    if (!f) return;
+    var k = el.dataset.k, v = el.value;
+    if (k === 'guests') {
+      f.r.guests = v === '' ? null : Math.max(1, parseInt(v, 10) || 1);
+    } else if (k === 'tel') {
+      f.r.tel = v;
+      var q = quatreChiffres(v);
+      if (q) f.r.tel4 = q;
+    } else {
+      f.r[k] = v;
+    }
+    refletSurMissions(f.pid, f.r);
+    save();
+  },
+
   /* Montant réel d'un séjour : vide = calculé au prix par nuit du logement. */
   'resa-montant': function (el) {
     var f = resaById(el.dataset.rid);
@@ -9611,6 +9843,15 @@ var changes = {
   'bien-field': function (el) { setBienField(el); render(); },
   'nr-pid': function (el) { state.nr.pid = el.value; save(); render(); },
   'nr-plat': function (el) { state.nr.plat = el.value; save(); },
+  /* La plateforme d'un séjour déjà enregistré : elle colore le bandeau et
+     suit sur la mission, d'où le redessin (session 21). */
+  'resa-plat': function (el) {
+    var f = resaById(el.dataset.rid);
+    if (!f) return;
+    f.r.plat = el.value;
+    refletSurMissions(f.pid, f.r);
+    save(); render();
+  },
   'nr-start': function (el) { state.nr.start = el.value; save(); },
   'nr-end': function (el) { state.nr.end = el.value; save(); },
   'owner-month': function (el) { state.ownerMonth = el.value; save(); render(); },
