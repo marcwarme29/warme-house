@@ -1678,6 +1678,58 @@ textarea.inp { min-height: 90px; resize: vertical; line-height: 1.5; }
 .cell-q--low   { background: var(--amber-bg2); color: var(--amber-t); }
 .cell-q--zero  { background: #F7DDD3;        color: var(--terra-dd); }
 
+/* La case se tape directement (session 23). Elle garde l'allure d'une pastille
+   pour que le tableau ne se transforme pas en formulaire : bordure au survol
+   et au focus seulement, flèches de compteur retirées — elles doubleraient les
+   pastilles de seuil et rendraient les colonnes illisibles à quatre logements. */
+.cell-q--edit {
+  /* Largeur fixée : un `<input>` prend sinon une vingtaine de caractères et
+     la pastille devient une barre qui traverse la colonne. */
+  width: 62px;
+  min-width: 62px;
+  border: 1.5px solid transparent;
+  text-align: center;
+  cursor: text;
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+.cell-q--edit::-webkit-outer-spin-button,
+.cell-q--edit::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.cell-q--edit:hover  { border-color: rgba(36,30,26,.18); }
+.cell-q--edit:focus  { outline: none; border-color: var(--terra); background: #fff; color: var(--ink); }
+
+/* Cet article n'existe pas dans ce logement : grisé, et il ne compte plus
+   nulle part — ni alerte, ni liste de courses, ni relevé du prestataire. */
+.cell-q--off {
+  background: transparent;
+  color: var(--muted2);
+  border: 1.5px dashed rgba(36,30,26,.18);
+  cursor: pointer;
+}
+.cell-q--off:hover { border-color: var(--terra); color: var(--terra-d); }
+
+/* Le panneau qui se déplie sous une ligne de tableau (session 23) : détail
+   d'un logement dans les statistiques. Fond légèrement creusé pour qu'on voie
+   qu'il appartient à la ligne du dessus, et non qu'il en est une nouvelle. */
+.trow-detail {
+  padding: 18px 20px 20px;
+  background: var(--cream);
+  border-top: 1px solid rgba(36,30,26,.06);
+}
+
+/* La vignette d'un logement dans une liste (session 23). Assez grande pour
+   reconnaître la maison, assez petite pour ne pas changer la hauteur des
+   lignes du tableau des missions. */
+.vignette {
+  width: 34px;
+  height: 26px;
+  flex: none;
+  border-radius: 7px;
+  object-fit: cover;
+  background: var(--fill4);
+}
+.vignette--l { width: 56px; height: 42px; border-radius: 10px; }
+
 .checkbox-sq { width: 16px; height: 16px; border-radius: 5px; border: 1.5px solid rgba(36,30,26,.2); flex: none; }
 .checkbox-sq--on {
   background: var(--accent, var(--terra));
@@ -1902,4 +1954,17 @@ textarea.inp { min-height: 90px; resize: vertical; line-height: 1.5; }
   font: 700 17px Figtree, sans-serif;
   display: flex; align-items: center; justify-content: center;
   cursor: pointer;
+}
+
+/* Le logement nommé par un lien d'accueil par bien (session 23) : le voyageur
+   doit reconnaître sa maison avant de taper quoi que ce soit. */
+.bv-bien {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 16px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: var(--cream);
+  font: 500 13.5px/1.4 Figtree, sans-serif;
 }

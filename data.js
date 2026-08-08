@@ -769,7 +769,13 @@ var DB = (function () {
 
   /* Ce qui vit dans `reglages`, et sous quelle clé. Une seule liste, pour que
      l'aller et le retour ne puissent pas diverger. */
-  var CLES_REGLAGES = ['services', 'articles', 'seuils', 'payouts', 'autoMsgs', 'beds24', 'extraFeeds'];
+  var CLES_REGLAGES = ['services', 'articles', 'seuils', 'payouts', 'autoMsgs', 'beds24', 'extraFeeds',
+    /* Session 23 (D-126) : les articles qu'un logement n'a pas. Doit voyager,
+       sinon le prestataire continue de se les voir demander au relevé —
+       septième occurrence de la règle 14 évitée d'avance. */
+    'horsStock',
+    // Session 23 (D-129) : la vignette de chaque logement, en clair dans le jsonb.
+    'photosBien'];
 
   /* Deux clés ne doivent JAMAIS être remplacées par une liste vide : sans
      prestation ni article, l'application n'a plus rien à afficher et
@@ -778,18 +784,46 @@ var DB = (function () {
      Même famille de garde-fou que la règle de fusion de D-75. */
   var REGLAGES_NON_VIDES = { services: true, articles: true };
 
+  /* « Vide » au sens du cahier : une liste sans élément, un objet sans clé,
+     un texte sans caractère. Pas `0` ni `false`, qui sont des valeurs. */
+  function reglageVide(v) {
+    if (Array.isArray(v)) return !v.length;
+    if (v && typeof v === 'object') return !Object.keys(v).length;
+    return v === '' || v === null || v === undefined;
+  }
+
   function reglagesVersBase(moi) {
     return CLES_REGLAGES.map(function (cle) {
       return { owner_id: moi, cle: cle, valeur: state[cle] === undefined ? null : state[cle] };
     }).filter(function (l) { return l.valeur !== null; });
   }
 
+  /* LE CAHIER NE VIDE JAMAIS LE NAVIGATEUR — Y COMPRIS ICI (session 23, D-124)
+
+     Cette fonction **remplaçait** chaque réglage par la valeur du cahier, sans
+     autre protection que les deux clés de `REGLAGES_NON_VIDES`. Or `extraFeeds`
+     — les liens iCal — n'en faisait pas partie, et voici ce qui se passait :
+
+       1. le cahier contient `extraFeeds = {}` (écrit avant que Marc ait un lien) ;
+       2. Marc colle son lien : `state.extraFeeds` vaut `{ p1: ['https://…'] }`,
+          et l'écriture partira dans 800 ms (`pousser()` regroupe les frappes) ;
+       3. **dans cette fenêtre**, n'importe quelle relecture — le temps réel, un
+          retour au premier plan, le bouton ⟳ — rapporte l'ancien `{}` et
+          **écrase le lien tout juste collé** ;
+       4. l'écriture suivante renvoie le vide au cahier. Le lien est perdu des
+          deux côtés, définitivement, et **rien ne le dit**.
+
+     C'est la règle 3 (D-63, D-75) au mot près, appliquée partout sauf ici. Deux
+     réponses, et il faut les deux : on **vide la file d'écriture avant de
+     lire** (voir `viderFileEcriture()`), et une valeur vide venue du cahier ne
+     remplace **jamais** une valeur locale qui, elle, contient quelque chose. */
   function reglagesDepuisBase(lignes) {
     lignes.forEach(function (l) {
       if (CLES_REGLAGES.indexOf(l.cle) < 0) return;
       var v = l.valeur;
       if (v === null || v === undefined) return;
       if (REGLAGES_NON_VIDES[l.cle] && (!Array.isArray(v) || !v.length)) return;
+      if (reglageVide(v) && !reglageVide(state[l.cle])) return;
       state[l.cle] = v;
     });
   }
@@ -1371,8 +1405,24 @@ var DB = (function () {
     return out;
   }
 
+  /* ON NE LIT JAMAIS PAR-DESSUS UNE ÉCRITURE QUI N'EST PAS ENCORE PARTIE
+     (session 23, D-124). `pousser()` attend 800 ms avant d'écrire, pour ne pas
+     parler à la base à chaque touche. Pendant ces 800 ms, une relecture
+     rapportait l'**ancienne** valeur et effaçait la nouvelle avant qu'elle
+     n'ait bougé. On solde donc la file d'abord. */
+  function viderFileEcriture() {
+    if (!enAttente) return Promise.resolve();
+    clearTimeout(enAttente);
+    enAttente = null;
+    return pousserMaintenant().then(function () { return null; }, function () { return null; });
+  }
+
   function charger() {
     if (!dispo || !profil) return Promise.resolve(false);
+    return viderFileEcriture().then(lireTout);
+  }
+
+  function lireTout() {
     return Promise.all([
       client.from('properties').select('*').order('id'),
       client.from('property_secrets').select('*'),
@@ -1474,9 +1524,54 @@ var DB = (function () {
 
   /* Regroupe les écritures rapprochées : on ne parle à la base qu'une fois
      la frappe terminée, pas à chaque touche. Rien n'attend le résultat. */
+  /* POURQUOI RIEN NE PART — DIT, AU LIEU D'ÊTRE DEVINÉ (session 23, D-122)
+
+     `pousser()` abandonnait en silence dans trois cas. Aucun n'était visible
+     de nulle part, et tous les trois donnent **exactement le même symptôme** :
+     « je fais des modifications, je me reconnecte, il n'y a plus rien ». Le
+     travail reste dans le navigateur, la copie de secours le rend au
+     rechargement — et le jour où on ouvre l'application ailleurs, ou après un
+     vidage du navigateur, tout a disparu.
+
+     · le compte connecté n'a pas `role = 'owner'` dans `profiles` ;
+     · la **première lecture** du cahier n'a jamais abouti — garde-fou voulu
+       (« on n'écrit jamais avant d'avoir lu »), mais qui, silencieux, gèle
+       toutes les écritures de la session ;
+     · la connexion n'est pas disponible du tout.
+
+     On rend donc la raison, et l'écran du propriétaire l'affiche en rouge.
+     C'est la règle 4, appliquée à l'endroit où elle manquait le plus. */
+  function etatEcriture() {
+    if (!dispo) {
+      return { ok: false, code: 'hors-ligne',
+        raison: 'La connexion au cahier partagé n’est pas disponible' + (derniereErreur ? ' : ' + derniereErreur : '.'),
+        geste: 'Vérifie ta connexion internet, puis recharge la page.' };
+    }
+    if (!profil) {
+      return { ok: false, code: 'pas-de-compte',
+        raison: 'Aucun compte n’est reconnu par le cahier partagé.',
+        geste: 'Déconnecte-toi et reconnecte-toi.' };
+    }
+    if (profil.role !== 'owner') {
+      return { ok: false, code: 'role',
+        raison: 'Le compte connecté n’est pas un compte propriétaire (son rôle est « ' +
+          (profil.role || 'vide') + '  »). Seul un compte propriétaire a le droit d’écrire les ' +
+          'logements, les séjours et les réglages.',
+        geste: 'Recopie-nous cette phrase : le rôle du compte est à corriger dans Supabase.' };
+    }
+    if (!premiereLectureFaite) {
+      return { ok: false, code: 'lecture',
+        raison: 'La première lecture du cahier partagé n’a pas abouti. Par sécurité, rien n’est ' +
+          'écrit avant d’avoir lu — sinon une relecture ratée effacerait tout.' +
+          (derniereErreur ? ' Raison donnée : « ' + derniereErreur + ' ».' : ''),
+        geste: 'Recharge la page. Si le bandeau revient, recopie-nous la raison affichée.' };
+    }
+    return { ok: true };
+  }
+
   function pousser() {
-    if (!dispo || !profil || profil.role !== 'owner') return;
-    if (!premiereLectureFaite) return;   // on n'écrit jamais avant d'avoir lu
+    var etat = etatEcriture();
+    if (!etat.ok) return;
     clearTimeout(enAttente);
     enAttente = setTimeout(function () {
       enAttente = null;
@@ -1584,6 +1679,22 @@ var DB = (function () {
       { nom: 'les demandes d\'accès', table: 'acces', lignes: acces, facultative: true, cle: ['id'] }
     ];
 
+    /* UNE ÉTAPE FACULTATIVE QUI ÉCHOUE DOIT PARLER (session 23, D-123)
+
+       `facultative` voulait dire « son échec n'emporte pas le reste » — ce qui
+       est juste, et c'est ce qui empêche une table absente de bloquer les
+       missions (D-97). Mais l'échec était **avalé en entier** : seul le cas
+       « la table n'existe pas » était retenu, et **toute autre raison ne
+       laissait aucune trace nulle part**. Or `reglages` est facultative, et
+       c'est elle qui porte les **liens iCal**, les articles, les seuils, les
+       versements. Un refus de sa part donnait donc : le lien s'affiche, il est
+       dans le navigateur, il n'est jamais parti, et **rien ne le dit**.
+
+       Sixième fois que le même silence coûte une session (D-95, D-102, D-113).
+       On garde le « ça n'emporte pas le reste », on supprime le « en
+       silence » : chaque refus est collecté et affiché, en nommant l'étape. */
+    var soucis = [];
+
     return etapes.reduce(function (chaine, e) {
       return chaine.then(function () {
         var lignes = e.cle ? sansDoublons(e.lignes, e.cle) : e.lignes;
@@ -1593,6 +1704,7 @@ var DB = (function () {
           if (r && r.error) {
             if (e.facultative) {
               if (tableAbsente(r.error)) tablesAbsentes[e.table] = true;
+              else soucis.push({ nom: e.nom, table: e.table, message: messageClair(r.error) });
               return null;
             }
             var err = new Error(messageClair(r.error) + ' (en écrivant ' + e.nom + ')');
@@ -1603,9 +1715,10 @@ var DB = (function () {
         });
       });
     }, Promise.resolve()).then(function () {
-      return { ok: true, biens: biens.length, resas: resas.length, missions: missions.length };
+      return { ok: true, biens: biens.length, resas: resas.length, missions: missions.length,
+        soucis: soucis };
     }).catch(function (e) {
-      return { ok: false, erreur: e.message || messageClair(e) };
+      return { ok: false, erreur: e.message || messageClair(e), soucis: soucis };
     }).then(function (bilan) {
       derniereErreur = bilan.ok ? null : bilan.erreur;
       /* CE QUI S'EST RÉELLEMENT PASSÉ À LA DERNIÈRE ÉCRITURE (session 19).
@@ -1618,7 +1731,10 @@ var DB = (function () {
       dernierEnvoi = {
         ok: bilan.ok, erreur: bilan.erreur || null,
         quand: Date.now(),
-        missions: bilan.missions || 0, resas: bilan.resas || 0, biens: bilan.biens || 0
+        missions: bilan.missions || 0, resas: bilan.resas || 0, biens: bilan.biens || 0,
+        // Les refus des étapes facultatives : le lot est parti, mais pas tout
+        // (session 23). Sans cette liste, ils n'existaient pour personne.
+        soucis: bilan.soucis || []
       };
       /* LES DROITS PARTENT DANS TOUS LES CAS (session 15, après incident).
          Ils étaient jusqu'ici accrochés à la fin de la chaîne ci-dessus : la
@@ -1731,6 +1847,10 @@ var DB = (function () {
     /* Le bilan de la dernière écriture : l'écran du propriétaire s'en sert
        pour dire « ce que tu vois n'est pas encore parti » (session 19). */
     dernierEnvoi: function () { return dernierEnvoi; },
+    /* Pourquoi une écriture ne part même pas (session 23, D-122). Trois cas,
+       tous silencieux jusqu'ici, tous donnant le même symptôme : « je modifie,
+       je me reconnecte, il n'y a plus rien ». */
+    etatEcriture: etatEcriture,
     messageClair: messageClair,
     relireProfil: relireProfil,
     sessionLocale: sessionLocale,
@@ -1750,6 +1870,10 @@ var DB = (function () {
     // et c'est le point le plus délicat de la couche (une erreur ici fait
     // disparaître des prestataires ou leur retire tous leurs droits).
     appliquerComptes: comptesDepuisBase,
+    /* Exposée pour la même raison qu'`appliquerComptes` : c'est un point où une
+       erreur fait **disparaître du travail** — les liens iCal y sont passés
+       (D-124) — et il faut pouvoir l'éprouver sans compte Supabase. */
+    appliquerReglages: reglagesDepuisBase,
     identifiantDeCompte: identifiantDeCompte,
     majComptesLies: majComptesLies,
     prendreMission: prendreMission,

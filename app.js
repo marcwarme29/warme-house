@@ -314,6 +314,7 @@ var T = {
   bvP:          ['Deux informations suffisent : votre nom, tel que vous l’avez donné au moment de réserver, et la date de votre arrivée.',
                  'Two details are enough: your name, as given when you booked, and your arrival date.'],
   bvDate:       ['Date de votre arrivée', 'Your arrival date'],
+  bvFin:        ['Date de votre départ (facultatif)', 'Your departure date (optional)'],
   bvNomTitre:   ['Votre nom', 'Your name'],
   bvErrNomCourt: ['Indiquez votre nom (au moins 3 lettres).', 'Please enter your name (at least 3 letters).'],
   bvCherche:    ['Recherche…', 'Searching…'],
@@ -534,6 +535,20 @@ function initialState() {
        lecture. Vaut pour toute donnée nouvelle : les deux endroits, pas un. */
     annulVues: {},                    // { missionId: true } — annulations déjà lues SUR CET APPAREIL
     stock: baseStock(),
+    /* CE QUE CE LOGEMENT N'A PAS (session 23, D-126). `{ pid: { article: true } }`.
+       Un studio sans lave-vaisselle réclamait des pastilles à chaque relevé, et
+       la liste de courses en achetait. Un article grisé ici ne déclenche plus
+       d'alerte, n'entre plus dans les courses, et n'est plus demandé au
+       prestataire. Déclarée ici **et** dans `upgrade()` — les deux endroits,
+       règle 9 (D-121). */
+    horsStock: {},
+    /* LA PHOTO DE CHAQUE LOGEMENT (session 23, D-129). `{ pid: 'data:image/jpeg…' }`.
+       Rangée dans les réglages partagés plutôt que dans un casier de fichiers :
+       cela **évite un dixième script SQL** à coller, et une vignette réduite à
+       480 px pèse une trentaine de kilo-octets. À quatre logements c'est sans
+       conséquence ; au-delà d'une vingtaine il faudra un vrai casier. */
+    photosBien: {},
+    statBien: null,                   // logement déplié dans les statistiques (préférence d'écran)
     seuils: baseSeuils(),
     draft: null,                      // { id, prop, qty }
     checklists: buildChecklists(),
@@ -882,6 +897,8 @@ function upgrade() {
   if (!Array.isArray(state.acces)) state.acces = [];
   if (state.guestPass === undefined) state.guestPass = null;
   if (!state.bienvenue) state.bienvenue = { date: '', tel4: '', pid: '', nom: '', etape: 'recherche', erreur: '', choix: null };
+  // Session 23 : la date de départ, pour départager deux séjours du même nom.
+  if (typeof state.bienvenue.fin !== 'string') state.bienvenue.fin = '';
   if (!state.gform) state.gform = { nom: '', tel: '', mail: '', guests: '', arrivee: '', optin: false };
   if (!state.repFiltre) state.repFiltre = 'tous';
   if (state.lvLang !== 'en') state.lvLang = 'fr';
@@ -896,6 +913,17 @@ function upgrade() {
      d'écran, pas une donnée métier : elle n'a pas à voyager (D-106). On
      oublie celles dont la mission n'existe plus, sinon la liste enfle sans
      fin. */
+  /* Session 23 — les articles qu'un logement n'a pas (D-126). Un logement
+     supprimé n'a plus rien à exclure. */
+  if (!state.horsStock) state.horsStock = {};
+  Object.keys(state.horsStock).forEach(function (pid) {
+    if (prop(pid).gone) delete state.horsStock[pid];
+  });
+  if (!state.photosBien) state.photosBien = {};
+  Object.keys(state.photosBien).forEach(function (pid) {
+    if (prop(pid).gone) delete state.photosBien[pid];
+  });
+
   if (!state.annulVues) state.annulVues = {};
   Object.keys(state.annulVues).forEach(function (id) {
     if (!state.missions.some(function (m) { return m.id === id; })) delete state.annulVues[id];
@@ -1072,6 +1100,17 @@ function allResas() {
 function resaById(id) {
   var f = allResas().find(function (x) { return x.r.id === id; });
   return f || null;
+}
+
+/* Ce qu'on écrit en gris dans le champ « Prix du séjour » quand il est vide
+   (session 23). Tant que les dates ne sont pas saisies on ne peut pas calculer
+   de total : on rappelle alors le prix par nuit, en disant que c'est lui. */
+function indicationPrixSejour(pid, r) {
+  var prix = parseInt((state.info[pid] || {}).prixNuit, 10) || 0;
+  if (!prix) return 'Total du séjour';
+  if (!r.start || !r.end || r.end <= r.start) return 'Total — ' + prix + ' € par nuit ici';
+  var n = nights(r.start, r.end);
+  return (prix * n) + ' €  (' + n + ' nuit' + (n > 1 ? 's' : '') + ' × ' + prix + ' €)';
 }
 
 /** Montant d'un séjour : celui saisi, sinon nuits × prix par nuit du logement. */
@@ -1472,8 +1511,31 @@ function dateIcs(v) {
 
 /* Les blocages ne sont pas des séjours. Airbnb publie ses indisponibilités
    sous le même format que ses réservations : sans ce tri, chaque période
-   bloquée créerait un faux voyageur et une fausse mission de ménage. */
-function estBlocage(sommaire, description) {
+   bloquée créerait un faux voyageur et une fausse mission de ménage.
+
+   MAIS CE TRI JETAIT TOUT BOOKING.COM (session 23, D-125)
+
+   Signalé par le propriétaire : « j'ai mis mon lien iCal Booking mais je ne
+   récupère rien ». Et pour cause. **Booking.com écrit `SUMMARY:CLOSED - Not
+   available` sur ses RÉSERVATIONS**, pas seulement sur ses blocages : son
+   calendrier ne publie que des périodes indisponibles, sans jamais distinguer
+   « quelqu'un a réservé » de « j'ai fermé ces dates ». Le mot « closed » et
+   les mots « not available » étaient tous deux dans le tri : **chacune de ses
+   réservations était donc écartée**, silencieusement, et le relevé annonçait
+   « rien de nouveau » en toute bonne foi.
+
+   Le tri devient donc propre à chaque plateforme :
+   · **Airbnb** dit « Reserved » pour une réservation et « Not available »
+     pour un blocage : le tri garde tout son sens, et on le garde tel quel.
+   · **Booking.com** ne dit rien d'utile : on prend **tout**. Une période
+     fermée à la main y créera un ménage de trop — visible, donc supprimable
+     d'un clic (règle 13), là où le tri d'avant faisait perdre de vraies
+     réservations sans rien dire. Le moindre mal, et de loin.
+   · Les autres gardent l'ancien comportement, qui est le plus prudent. */
+var PLATEFORMES_SANS_DISTINCTION = { 'Booking.com': true };
+
+function estBlocage(sommaire, description, plat) {
+  if (PLATEFORMES_SANS_DISTINCTION[plat]) return false;
   var t = (sommaire + ' ' + description).toLowerCase();
   return /not available|unavailable|blocked|closed|indisponible|bloqué/.test(t);
 }
@@ -1485,6 +1547,11 @@ function estBlocage(sommaire, description) {
 function voyageurIcs(sommaire) {
   var s = (sommaire || '').trim();
   if (!s || /^(reserved|reservation|booking|airbnb|busy|occupé)\b/i.test(s)) return 'Voyageur';
+  /* Ajouté en session 23 avec le correctif Booking (D-125) : ses réservations
+     s'appellent « CLOSED - Not available ». Sans cette ligne, on aurait un
+     séjour au nom d'un voyageur qui n'existe pas — pire qu'« inconnu »
+     (règle 5). */
+  if (/^(closed|not available|unavailable|blocked|indisponible)\b/i.test(s)) return 'Voyageur';
   if (s.length > 60) return 'Voyageur';
   return s;
 }
@@ -1499,7 +1566,8 @@ function analyserIcs(texte, plat) {
   lignes.forEach(function (ligne) {
     if (/^BEGIN:VEVENT/i.test(ligne)) { cour = {}; return; }
     if (/^END:VEVENT/i.test(ligne)) {
-      if (cour && cour.start && cour.end && !estBlocage(cour.sommaire || '', cour.description || '')) {
+      if (cour && cour.start && cour.end &&
+          !estBlocage(cour.sommaire || '', cour.description || '', plat)) {
         sejours.push({
           uid: cour.uid || null,
           plat: plat || 'iCal',             // Airbnb, Booking.com… d'après l'adresse du lien
@@ -2395,8 +2463,23 @@ function isPaid(agentId, month) {
   return !!(md && md.paid);
 }
 
+/* CET ARTICLE EXISTE-T-IL DANS CE LOGEMENT ? (session 23, D-126)
+   Un seul point de vérité, appelé par les alertes, la liste de courses, le
+   relevé du prestataire et la revue de mission. Écrire le test à la main dans
+   chacun d'eux, c'est se garantir d'en oublier un. */
+function horsStock(pid, key) {
+  return !!(state.horsStock[pid] && state.horsStock[pid][key]);
+}
+
+/** Les articles d'un logement, une fois retirés ceux qu'il n'a pas. */
+function artsDe(pid) {
+  return arts().filter(function (a) { return !horsStock(pid, a.key); });
+}
+
 function lowsFor(pid) {
-  return arts().filter(function (a) { return (state.stock[pid][a.key] || 0) <= state.seuils[a.key]; });
+  return artsDe(pid).filter(function (a) {
+    return (state.stock[pid][a.key] || 0) <= state.seuils[a.key];
+  });
 }
 
 /** Attributs d'une action cliquable : nom + paramètres optionnels.
@@ -2404,6 +2487,19 @@ function lowsFor(pid) {
  *  produirait un second `data-a` et le navigateur ne garderait que le premier,
  *  ce qui ferait lire le nom de l'action à la place de la valeur attendue.
  *  Il est donc refusé — utiliser « ag », « id », « k »… à la place. */
+/* La vignette d'un logement, avec un repli sur sa pastille de couleur quand
+   aucune photo n'a été choisie (session 23, D-129). Un repli, toujours :
+   sans lui, la liste des missions serait trouée jusqu'à ce que les quatre
+   logements aient leur photo. */
+function vignetteBien(pid, couleur) {
+  var url = state.photosBien[pid];
+  if (url) {
+    return '<img class="vignette" src="' + esc(url) + '" alt="">';
+  }
+  return '<span class="dot" style="width:7px;height:7px;flex:none;background:' +
+    (couleur || prop(pid).color) + '"></span>';
+}
+
 function act(name, params) {
   var out = ' data-a="' + esc(name) + '"';
   if (params) Object.keys(params).forEach(function (k) {
@@ -2453,7 +2549,10 @@ function parseRoute() {
 
   // Porte d'entrée du livret : le lien unique envoyé à tous les voyageurs,
   // toutes plateformes et tous logements confondus (D-46). Page publique.
-  if (seg[0] === 'bienvenue') return { name: 'bienvenue', id: null, sec: null };
+  /* UN LIEN PAR LOGEMENT (session 23, D-132). `#/bienvenue` reste le lien
+     unique, tous logements confondus ; `#/bienvenue/<logement>` est le même
+     accueil, mais qui SAIT déjà de quelle maison il s'agit. */
+  if (seg[0] === 'bienvenue') return { name: 'bienvenue', id: seg[1] || null, sec: null };
 
   // Lien PERSONNEL d'un séjour (session 16 — D-80). Page publique : le
   // voyageur est reconnu par l'adresse elle-même, il n'a rien à taper.
@@ -2634,6 +2733,9 @@ function decorate(m) {
     reviewed: m.review === 'valide',
     // « si connu » : un logement en iCal seul ne transmet pas le nombre de
     // personnes, et « 1 voyageurs » serait un mensonge (session 15).
+    /* Le nom du voyageur sortant, prêt à afficher (session 23, D-130). On
+       n'invente rien : sans séjour rattaché, c'est « — », pas un nom. */
+    voyageurLabel: (m.res && m.res.guest) ? m.res.guest : '—',
     hasRes: !!(m.res && parseInt(m.res.guests, 10) > 0),
     guestsLabel: m.res && parseInt(m.res.guests, 10) > 0
       ? m.res.guests + (m.res.guests > 1 ? ' voyageurs' : ' voyageur') : '',
@@ -2756,6 +2858,10 @@ function missionCard(m) {
   return '<button type="button" class="mission" style="--accent:' + m.color + '"' +
     act('open-mission', { id: m.id }) + '>' +
     '<div class="mission-top">' +
+      /* La photo du logement sur la carte du prestataire (session 23, D-129) :
+         elle sait à quelle maison elle va avant même de lire l'adresse. */
+      (state.photosBien[m.raw.prop]
+        ? '<img class="vignette vignette--l" src="' + esc(state.photosBien[m.raw.prop]) + '" alt="">' : '') +
       '<div class="grow">' +
         '<div class="mission-type"><span class="dot" style="background:' + m.color + '"></span>' + esc(m.typeLabel) + '</div>' +
         '<div class="mission-name">' + esc(m.propName) + '</div>' +
@@ -3118,7 +3224,13 @@ function viewPrestaStock() {
       }).join('') +
     '</div></div>';
 
-  var blocs = state.mStockGroup === 'Tous' ? grouped() : grouped().filter(function (g) { return g[0] === state.mStockGroup; });
+  /* On ne demande au prestataire que ce que ce logement possède (session 23,
+     D-126) : lui faire compter des pastilles de lave-vaisselle dans un studio
+     qui n'en a pas, c'est du travail pour rien et un relevé faux. */
+  var blocs = (state.mStockGroup === 'Tous' ? grouped() : grouped().filter(function (g) { return g[0] === state.mStockGroup; }))
+    .map(function (g) {
+      return [g[0], g[1].filter(function (a) { return !horsStock(m.prop, a.key); })];
+    }).filter(function (g) { return g[1].length; });
   var body = '<div class="stack-l">' + blocs.map(function (g) {
     return '<section>' +
       '<h2 style="font:700 14px Figtree,sans-serif;margin:0 4px 8px;color:var(--ink-soft)">' + esc(g[0]) + '</h2>' +
@@ -3579,17 +3691,68 @@ function compteConnecte() {
 
    Ce bandeau est volontairement gros et rouge : il annonce que **ce qui est
    à l'écran n'existe que sur cet ordinateur**. */
+/* TROIS SILENCES, UN SEUL SYMPTÔME (session 23, D-122 et D-123)
+
+   Ce bandeau ne couvrait qu'un cas : « le cahier a refusé le lot ». Il en
+   manquait deux, et ce sont eux qui donnaient le symptôme le plus déroutant —
+   « je fais des modifications, je me reconnecte, il n'y a plus rien » :
+
+   · **rien ne part du tout** (`DB.etatEcriture()`) : mauvais rôle sur le
+     compte, ou première lecture jamais aboutie. Le travail reste dans le
+     navigateur, la copie de secours le rend au rechargement, et il disparaît
+     le jour où on ouvre l'application ailleurs ;
+   · **une partie seulement est partie** : une étape facultative refusée. Or
+     `reglages` est facultative, et c'est elle qui porte les **liens iCal**,
+     les articles, les seuils, les versements.
+
+   Un seul bandeau, trois raisons, chacune nommée. */
 function alerteEnvoi() {
   if (typeof DB === 'undefined' || !DB.estDispo()) return '';
+  if (!DB.profil()) return '';                       // pas connecté : ce n'est pas le sujet
+
+  var cadre = function (titre, corps, bouton) {
+    return '<div class="alerte-envoi" role="alert"><strong>' + titre + '</strong> ' + corps +
+      (bouton
+        ? '<button type="button" class="btn btn--xs" style="background:var(--ink);color:#fff;margin-top:10px"' +
+          act('reessayer-envoi') + '>Réessayer maintenant</button>'
+        : '') +
+      '</div>';
+  };
+
+  // 1. Rien ne part, et rien ne le disait.
+  var etat = DB.etatEcriture();
+  if (!etat.ok) {
+    return cadre('Tes modifications ne partent PAS dans le cahier partagé.',
+      'Elles ne vivent que sur cet appareil : en te reconnectant ailleurs, ou après un nettoyage ' +
+      'du navigateur, elles auront disparu. Raison : ' + esc(etat.raison) + ' ' +
+      '<em>' + esc(etat.geste || '') + '</em>',
+      etat.code === 'lecture');
+  }
+
   var e = DB.dernierEnvoi();
-  if (!e || e.ok) return '';
-  return '<div class="alerte-envoi" role="alert">' +
-    '<strong>Le cahier partagé a refusé le dernier enregistrement.</strong> ' +
-    'Ce que tu vois ici n’est encore parti nulle part : tes prestataires et tes ' +
-    'voyageurs ne le voient pas. Raison donnée : « ' + esc(e.erreur || 'inconnue') + ' ».' +
-    '<button type="button" class="btn btn--xs" style="background:var(--ink);color:#fff;margin-top:10px"' +
-      act('reessayer-envoi') + '>Réessayer maintenant</button>' +
-    '</div>';
+  if (!e) return '';
+
+  // 2. Le lot entier a été refusé.
+  if (!e.ok) {
+    return cadre('Le cahier partagé a refusé le dernier enregistrement.',
+      'Ce que tu vois ici n’est encore parti nulle part : tes prestataires et tes voyageurs ne le ' +
+      'voient pas. Raison donnée : « ' + esc(e.erreur || 'inconnue') + ' ».', true);
+  }
+
+  // 3. Le lot est parti, mais une partie a été refusée en chemin.
+  if (e.soucis && e.soucis.length) {
+    return cadre('Une partie de tes réglages n’a pas été enregistrée.',
+      'Le reste est bien parti, mais pas ceci — et sans ce message, tu ne l’aurais découvert qu’en ' +
+      'te reconnectant :<ul style="margin:8px 0 0;padding-left:20px">' +
+      e.soucis.map(function (s) {
+        return '<li>' + esc(s.nom) + ' — « ' + esc(s.message) + ' »</li>';
+      }).join('') + '</ul>' +
+      '<span class="sec-note">Les <strong>liens iCal</strong>, les articles, les seuils et les ' +
+      'versements voyagent dans « les réglages » : si c’est cette ligne qui apparaît, c’est ' +
+      'précisément ce qui ne se sauvegarde pas. Recopie-nous la phrase entre guillemets.</span>',
+      true);
+  }
+  return '';
 }
 
 /* LES SCRIPTS QUI MANQUENT, NOMMÉS (session 19)
@@ -4081,7 +4244,13 @@ function viewOwnerMissions() {
     }).join('') + '</div>' +
 
     '<div class="table"><div class="table-scroll">' +
-      '<div class="thead"><span style="width:96px">Date</span><span style="flex:1.4">Bien</span>' +
+      /* Colonne « Voyageur » ajoutée en session 23 (D-130) : c'est la question
+         que le propriétaire se pose en regardant cette liste — « le ménage du
+         13, c'est après qui ? » — et il fallait ouvrir chaque ligne pour y
+         répondre. La vignette du logement (D-129) remplace la pastille de
+         couleur : on reconnaît une maison plus vite qu'un point vert. */
+      '<div class="thead"><span style="width:96px">Date</span><span style="flex:1.5">Bien</span>' +
+      '<span style="flex:1.2">Voyageur</span>' +
       '<span style="flex:1">Type</span><span style="width:120px">Créneau</span>' +
       '<span style="flex:1">Statut</span><span style="width:70px;text-align:right">Prix</span>' +
       '<span style="width:76px"></span></div>' +
@@ -4097,8 +4266,9 @@ function viewOwnerMissions() {
             esc((done ? 'Revoir' : 'Ouvrir') + ' la mission ' + m.typeLabel + ' — ' + m.propName + ', ' + m.dateLabel) + '"' +
             act('nav', { path: '#/admin/missions/' + m.id }) + '>' +
           '<span class="num" style="width:96px;font-weight:600">' + esc(m.dateLabel) + '</span>' +
-          '<span style="flex:1.4;display:flex;align-items:center;gap:9px;min-width:0">' +
-            '<span class="dot" style="width:7px;height:7px;background:' + m.color + '"></span>' + esc(m.propName) + '</span>' +
+          '<span style="flex:1.5;display:flex;align-items:center;gap:9px;min-width:0">' +
+            vignetteBien(m.raw.prop, m.color) + '<span style="min-width:0">' + esc(m.propName) + '</span></span>' +
+          '<span style="flex:1.2;min-width:0;color:var(--ink-soft)">' + esc(m.voyageurLabel) + '</span>' +
           '<span style="flex:1;color:var(--muted3)">' + esc(m.typeLabel) + '</span>' +
           '<span class="num" style="width:120px;color:var(--muted3)">' + esc(m.windowLabel) + '</span>' +
           '<span style="flex:1;display:flex;align-items:center;gap:7px;flex-wrap:wrap">' +
@@ -4629,6 +4799,8 @@ function viewOwnerMission() {
   var releve = !repComplet ? '' :
     '<h2 class="sec-title" style="margin:30px 0 12px">Relevé de stock envoyé</h2>' +
     '<div class="grid-cards">' + grouped().map(function (g) {
+      return [g[0], g[1].filter(function (a) { return !horsStock(m.prop, a.key); })];
+    }).filter(function (g) { return g[1].length; }).map(function (g) {
       return '<div class="card">' +
         '<div style="font:700 15px Figtree,sans-serif">' + esc(g[0]) + '</div>' +
         '<div class="list" style="margin-top:8px">' + g[1].map(function (a) {
@@ -5405,6 +5577,111 @@ function statsMois(mois) {
   });
 }
 
+/* D'OÙ VIENNENT LES RÉSERVATIONS D'UN LOGEMENT (session 23, D-131)
+
+   Demandé par le propriétaire : « pouvoir cliquer sur un logement pour avoir
+   plus de détail, par exemple le % de réservations via Airbnb, Booking et
+   direct ». La question derrière est commerciale : sur quelle plateforme ai-je
+   intérêt à pousser, et combien me coûte chacune en commission ?
+
+   On compte sur **deux périodes**, et c'est volontaire : le mois affiché — qui
+   peut n'avoir que deux séjours, donc des pourcentages qui ne veulent rien
+   dire — et **depuis le début**, qui est la seule base honnête pour une part
+   de marché. Afficher le premier seul serait trompeur (règle 5).
+
+   On répartit par **nuits** autant que par nombre de séjours : trois séjours
+   d'une nuit chez l'un et un séjour de trois semaines chez l'autre ne disent
+   pas du tout la même chose, et le compte de séjours seul le cacherait. */
+function repartitionPlat(pid, mois) {
+  var parPlat = {};
+  Object.keys(PLATS).forEach(function (k) {
+    parPlat[k] = { plat: k, sejours: 0, nuits: 0, revenus: 0 };
+  });
+
+  resasOf(pid).forEach(function (r) {
+    if (r.statut === 'annule') return;
+    var k = PLATS[r.plat] ? r.plat : 'Direct';        // une plateforme inconnue compte en direct
+    var n = mois ? nuitsDansMois(r, mois) : nights(r.start, r.end);
+    if (!n) return;
+    var total = nights(r.start, r.end) || 1;
+    parPlat[k].sejours++;
+    parPlat[k].nuits += n;
+    parPlat[k].revenus += Math.round(montantResa(pid, r) * n / total);
+  });
+
+  var lignes = Object.keys(parPlat).map(function (k) { return parPlat[k]; });
+  var tot = lignes.reduce(function (a, l) {
+    return { sejours: a.sejours + l.sejours, nuits: a.nuits + l.nuits, revenus: a.revenus + l.revenus };
+  }, { sejours: 0, nuits: 0, revenus: 0 });
+
+  lignes.forEach(function (l) {
+    l.partSejours = tot.sejours ? Math.round(l.sejours / tot.sejours * 100) : 0;
+    l.partNuits = tot.nuits ? Math.round(l.nuits / tot.nuits * 100) : 0;
+    l.adr = l.nuits ? Math.round(l.revenus / l.nuits) : 0;
+  });
+  return { lignes: lignes, tot: tot };
+}
+
+function detailStatBien(l, mois) {
+  var pid = l.p.id;
+  var duMois = repartitionPlat(pid, mois);
+  var toujours = repartitionPlat(pid, null);
+
+  var barres = function (r, quoi) {
+    if (!r.tot.sejours) {
+      return '<p class="sec-note" style="margin:0">Aucun séjour sur cette période.</p>';
+    }
+    return '<div class="stack" style="gap:10px">' + r.lignes.map(function (x) {
+      var pl = PLATS[x.plat];
+      var part = quoi === 'nuits' ? x.partNuits : x.partSejours;
+      return '<div>' +
+        '<div style="display:flex;align-items:center;gap:8px;font:600 12.5px Figtree,sans-serif">' +
+          '<span class="dot" style="background:' + pl.color + '"></span>' +
+          '<span class="grow">' + esc(x.plat) + '</span>' +
+          '<span class="num" style="font-weight:700">' + part + ' %</span>' +
+          '<span class="num" style="color:var(--muted2);width:96px;text-align:right">' +
+            x.nuits + ' nuit' + (x.nuits > 1 ? 's' : '') + ' · ' + x.sejours + ' séj.</span>' +
+          '<span class="num" style="font-weight:600;width:82px;text-align:right">' + x.revenus + ' €</span>' +
+        '</div>' +
+        '<span class="jauge" style="margin-top:4px"><span style="width:' + part + '%;background:' + pl.color + '"></span></span>' +
+        '</div>';
+    }).join('') + '</div>';
+  };
+
+  var meilleur = toujours.lignes.slice().sort(function (a, b) { return b.adr - a.adr; })[0];
+
+  return '<div class="trow-detail">' +
+    '<div class="cols" style="gap:18px">' +
+      '<div style="flex:1;min-width:min(100%,300px)">' +
+        '<h3 class="sec-title" style="margin:0 0 10px">Répartition en ' + esc(moisLabel(mois)) +
+          ' <span style="font-weight:500;color:var(--muted2)">(part des nuits)</span></h3>' +
+        barres(duMois, 'nuits') +
+        (duMois.tot.sejours && duMois.tot.sejours < 4
+          ? '<p class="sec-note" style="margin-top:10px">Seulement ' + duMois.tot.sejours + ' séjour(s) ce ' +
+            'mois-ci : ces pourcentages ne veulent pas dire grand-chose. Regarde la colonne de droite.</p>'
+          : '') +
+      '</div>' +
+      '<div style="flex:1;min-width:min(100%,300px)">' +
+        '<h3 class="sec-title" style="margin:0 0 10px">Depuis le début ' +
+          '<span style="font-weight:500;color:var(--muted2)">(part des nuits)</span></h3>' +
+        barres(toujours, 'nuits') +
+        (meilleur && meilleur.adr
+          ? '<p class="sec-note" style="margin-top:10px">Prix moyen par nuit le plus élevé : ' +
+            '<strong>' + esc(meilleur.plat) + '</strong>, ' + meilleur.adr + ' € la nuit. ' +
+            'Ce chiffre est <strong>avant commission</strong> — l’application ne connaît pas ' +
+            'les commissions des plateformes.</p>'
+          : '') +
+      '</div>' +
+    '</div>' +
+    '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:16px">' +
+      '<button type="button" class="btn btn--xs" style="background:var(--cream);color:var(--ink-soft)"' +
+        act('nav', { path: '#/admin/biens/' + pid }) + '>Ouvrir la fiche du logement</button>' +
+      '<button type="button" class="btn btn--xs" style="background:var(--cream);color:var(--ink-soft)"' +
+        act('nav', { path: '#/admin/biens/' + pid + '/resas' }) + '>Voir ses réservations</button>' +
+    '</div>' +
+    '</div>';
+}
+
 function viewOwnerStats() {
   var mois = state.statMonth;
   var lignes = statsMois(mois);
@@ -5461,15 +5738,21 @@ function viewOwnerStats() {
     '<h2 class="sec-title" style="margin-top:26px">Par logement</h2>' +
     '<div class="card" style="padding:0;overflow:hidden">' +
       '<div class="table-scroll">' +
-        '<div class="thead" style="min-width:860px"><span style="flex:1.4">Logement</span>' +
+        '<div class="thead" style="min-width:920px"><span style="flex:1.8">Logement</span>' +
           '<span style="width:150px">Occupation</span><span style="width:90px;text-align:right">Nuits</span>' +
           '<span style="width:90px;text-align:right">Séjours</span><span style="width:100px;text-align:right">Revenus</span>' +
           '<span style="width:100px;text-align:right">Prix / nuit</span><span style="width:100px;text-align:right">Ménage</span>' +
           '<span style="width:100px;text-align:right">Net</span></div>' +
         lignes.map(function (l) {
-          return '<div class="trow" style="min-width:860px">' +
-            '<span style="flex:1.4;display:flex;align-items:center;gap:9px;min-width:0">' +
-              '<span class="dot" style="background:' + l.p.color + '"></span>' + esc(l.p.name) + '</span>' +
+          var ouvert = state.statBien === l.p.id;
+          return '<button type="button" class="trow trow--link" style="min-width:920px;width:100%"' +
+              ' aria-expanded="' + ouvert + '" aria-label="Détail de ' + esc(l.p.name) + '"' +
+              act('stat-bien', { pid: l.p.id }) + '>' +
+            '<span style="flex:1.8;display:flex;align-items:center;gap:9px;min-width:0">' +
+              vignetteBien(l.p.id, l.p.color) +
+              '<span style="min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' +
+                esc(l.p.name) + '</span>' +
+              '<span style="color:var(--muted2);flex:none">' + (ouvert ? '▾' : '▸') + '</span></span>' +
             '<span style="width:150px;display:flex;align-items:center;gap:9px">' +
               '<span class="jauge"><span style="width:' + l.taux + '%;background:' + l.p.color + '"></span></span>' +
               '<span class="num" style="font-weight:700;width:44px;text-align:right">' + l.taux + ' %</span></span>' +
@@ -5479,10 +5762,13 @@ function viewOwnerStats() {
             '<span class="num" style="width:100px;text-align:right;color:var(--muted3)">' + l.adr + ' €</span>' +
             '<span class="num" style="width:100px;text-align:right;color:var(--terra-d)">' + (l.depenses ? '− ' + l.depenses + ' €' : '—') + '</span>' +
             '<span class="num" style="width:100px;text-align:right;font-weight:700">' + l.net + ' €</span>' +
-            '</div>';
+            '</button>' +
+            (ouvert ? detailStatBien(l, mois) : '');
         }).join('') +
       '</div>' +
     '</div>' +
+    '<p class="sec-note" style="margin-top:10px">Clique sur un logement pour voir d’où viennent ' +
+      'ses réservations — Airbnb, Booking.com ou direct.</p>' +
 
     '<h2 class="sec-title" style="margin-top:26px">Six derniers mois</h2>' +
     '<div class="card" style="padding:22px">' +
@@ -6144,6 +6430,43 @@ function viewOwnerAvis() {
 
 /* --- Stocks -------------------------------------------------------------- */
 
+/* UNE CASE DU TABLEAU DES STOCKS (session 23, D-126 et D-127)
+
+   Elle ne faisait que **montrer** un nombre : pour corriger une quantité, il
+   fallait passer par un relevé de mission — donc par le téléphone du
+   prestataire. Le propriétaire, lui, n'avait aucun moyen de dire « j'ai
+   racheté six draps ». C'est maintenant un champ : on tape dedans.
+
+   Et un **double-clic** grise la case : cet article n'existe pas dans ce
+   logement. Plus d'alerte « stock insuffisant », plus de ligne dans la liste
+   de courses, et le prestataire ne se le voit plus demander au relevé.
+   Double-clic à nouveau pour revenir en arrière — rien n'est irréversible.
+
+   Le double-clic est **doublé d'un bouton** au survol : un geste qui ne se
+   devine pas n'existe pas (leçon de D-99), et sur une tablette il n'y a pas de
+   double-clic confortable. */
+function celluleStock(p, a) {
+  var exclu = horsStock(p.id, a.key);
+  var fid = 'sq-' + p.id + '-' + a.key;
+
+  if (exclu) {
+    return '<span style="flex:1;text-align:center">' +
+      '<button type="button" class="cell-q cell-q--off num" title="' + esc(a.label + ' — absent de ' + p.name) +
+        '. Double-clique pour le remettre."' +
+        act('stock-hors', { pid: p.id, k: a.key }) + ' data-dbl="stock-hors" data-pid="' + esc(p.id) +
+        '" data-k="' + esc(a.key) + '">—</button></span>';
+  }
+
+  var v = (state.stock[p.id] || {})[a.key] || 0;
+  var cls = v === 0 ? 'cell-q--zero' : v <= (state.seuils[a.key] || 0) ? 'cell-q--low' : 'cell-q--ok';
+  return '<span style="flex:1;text-align:center">' +
+    '<input class="cell-q cell-q--edit num ' + cls + '" type="number" min="0" inputmode="numeric"' +
+      ' value="' + v + '" aria-label="' + esc(a.label + ' à ' + p.name) + '"' +
+      ' title="Tape la quantité. Double-clique pour dire que ' + esc(p.name) + ' n’a pas cet article."' +
+      ' data-fid="' + esc(fid) + '" data-in="stock-qty" data-dbl="stock-hors"' +
+      ' data-pid="' + esc(p.id) + '" data-k="' + esc(a.key) + '"></span>';
+}
+
 function viewOwnerStocks() {
   var content;
 
@@ -6162,7 +6485,9 @@ function viewOwnerStocks() {
       '<div class="stack-l" style="margin-top:16px">' + visible.map(function (gn) {
         var rows = arts().filter(function (a) { return a.group === gn; })
           .filter(function (a) {
-            return state.stockScope === 'all' || state.props.some(function (p) { return (state.stock[p.id][a.key] || 0) <= state.seuils[a.key]; });
+            return state.stockScope === 'all' || state.props.some(function (p) {
+              return !horsStock(p.id, a.key) && (state.stock[p.id][a.key] || 0) <= state.seuils[a.key];
+            });
           });
         return '<div class="table"><div class="table-scroll">' +
           '<div class="thead thead--stock" style="align-items:center">' +
@@ -6183,11 +6508,7 @@ function viewOwnerStocks() {
                   '<span class="val num">' + (state.seuils[a.key] || 0) + '</span>' +
                   '<button type="button" aria-label="Monter le seuil de ' + esc(a.label) + '"' + act('seuil', { k: a.key, d: 1 }) + '>+</button>' +
                 '</span></span>' +
-              state.props.map(function (p) {
-                var v = (state.stock[p.id] || {})[a.key] || 0;
-                var cls = v === 0 ? 'cell-q--zero' : v <= (state.seuils[a.key] || 0) ? 'cell-q--low' : 'cell-q--ok';
-                return '<span style="flex:1;text-align:center"><span class="cell-q num ' + cls + '">' + v + '</span></span>';
-              }).join('') +
+              state.props.map(function (p) { return celluleStock(p, a); }).join('') +
               '<span style="width:46px;text-align:right">' +
                 '<button type="button" class="x-btn" aria-label="Supprimer l\'article ' + esc(a.label) + '"' +
                   act('remove-article', { k: a.key }) + '>×</button></span>' +
@@ -6455,6 +6776,62 @@ function carteLienUnique() {
     '</div>';
 }
 
+/* LE LIEN D'UN SEUL LOGEMENT (session 23, D-132)
+
+   Demandé par le propriétaire : « je voudrais créer un lien par bien pour les
+   voyageurs, sur ce lien ils entreraient leurs dates de séjour ». Le lien
+   unique existait déjà, mais il vaut pour **tous** les logements à la fois —
+   or les messages automatiques d'Airbnb et de Booking se règlent **annonce par
+   annonce**. Un lien par annonce est donc exactement ce qu'il faut coller, et
+   il est meilleur pour deux raisons :
+
+   · le voyageur **reconnaît sa maison** en ouvrant la page, au lieu de se
+     demander s'il est au bon endroit ;
+   · la recherche ne regarde que ce logement, donc deux voyageurs qui arrivent
+     le même jour dans deux maisons différentes ne peuvent plus se croiser
+     (règle 15 : ne jamais deviner qui regarde).
+
+   Il garde la limite du lien unique — nom + date, D-90 — et on le redit ici
+   plutôt que de laisser croire qu'un lien par bien la fait disparaître. */
+function lienBien(pid) {
+  return appUrl() + '#/bienvenue/' + pid;
+}
+
+function texteBienvenueBien(pid) {
+  var p = prop(pid);
+  return 'Bonjour,\n\n' +
+    'Voici votre livret d’accueil pour ' + p.name + ' :\n' +
+    lienBien(pid) + '\n\n' +
+    'Indiquez votre nom et vos dates de séjour : vous y retrouverez l’adresse, ' +
+    'les horaires, le code d’accès et le Wi-Fi pendant votre séjour, ainsi que ' +
+    'nos conseils sur place.\n\n' +
+    'À très bientôt !';
+}
+
+function carteLienBien(pid, b) {
+  var lien = lienBien(pid);
+  return '<div class="card" style="margin-top:16px;padding:22px;border-left:4px solid ' + b.color + '">' +
+    '<h2 style="font:700 16px Figtree,sans-serif;margin:0 0 4px">Le lien de ' + esc(b.name) + '</h2>' +
+    '<p class="sec-note" style="margin:0 0 12px">Le lien à coller dans les messages automatiques de ' +
+      '<strong>l’annonce de ce logement</strong>, sur Airbnb comme sur Booking. Le voyageur y entre ' +
+      'son nom et ses dates de séjour ; il voit tout de suite qu’il est chez « ' + esc(b.name) +
+      ' », et la recherche ne va chercher que dans ce logement.</p>' +
+    '<input class="inp num" style="font-size:12.5px" readonly value="' + esc(lien) +
+      '" data-fid="lien-bien-' + esc(pid) + '">' +
+    '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">' +
+      '<button type="button" class="btn btn--xs" style="background:var(--terra);color:#fff"' +
+        act('copier-lien', { url: lien }) + '>Copier le lien</button>' +
+      '<button type="button" class="btn btn--xs" style="background:var(--cream);color:var(--ink-soft)"' +
+        act('copier-message-bien', { pid: pid }) + '>Copier le message tout prêt</button>' +
+      '<button type="button" class="btn btn--xs" style="background:var(--cream);color:var(--ink-soft)"' +
+        act('nav', { path: '#/bienvenue/' + pid }) + '>👁 Voir ce que le voyageur voit</button>' +
+    '</div>' +
+    '<p class="sec-note" style="margin-top:12px">Même limite que le lien général : il identifie par ' +
+      'le <strong>nom + les dates</strong>. Pour écrire à une personne en particulier, le ' +
+      '<strong>lien personnel</strong> de sa réservation reste préférable — il n’a pas ce défaut.</p>' +
+    '</div>';
+}
+
 /* --- Connexions aux plateformes ------------------------------------------
    Panneau d'état, honnête sur ce qui marche et ce qui attend le serveur.
    Aucune clé secrète n'est demandée ici : elle n'a rien à faire dans une page
@@ -6533,6 +6910,42 @@ function viewOwnerBien() {
     '</div>' + messageCahier() + panel);
 }
 
+/* LA PHOTO DU LOGEMENT (session 23, D-129)
+
+   Demandée pour reconnaître un logement d'un coup d'œil dans la liste des
+   missions. Elle se choisit ici, une fois, et se retrouve partout.
+
+   Elle est **réduite à 480 px** et recompressée avant d'être gardée : une photo
+   de téléphone pèse 4 Mo, et la mémoire du navigateur en fait 5 en tout — en
+   garder quatre telles quelles remplirait tout et ferait échouer les
+   sauvegardes suivantes (leçon de la session 15 sur les photos de ménage). */
+function photoBienBloc(pid, b) {
+  var url = state.photosBien[pid] || '';
+  var fid = 'photo-bien-' + pid;
+  return '<div style="margin-top:18px;padding-top:16px;border-top:1px solid rgba(36,30,26,.08)">' +
+    '<h2 style="font:700 16px Figtree,sans-serif;margin:0 0 4px">Photo du logement</h2>' +
+    '<p class="sec-note" style="margin:0 0 14px">Elle sert à reconnaître le logement d’un coup d’œil ' +
+      'dans la liste des missions et sur le téléphone de ton prestataire. Une seule, la plus ' +
+      'parlante — l’extérieur ou la pièce principale.</p>' +
+    (url
+      ? '<img src="' + esc(url) + '" alt="' + esc(b.name) + '"' +
+          ' style="width:100%;max-width:320px;aspect-ratio:4/3;object-fit:cover;border-radius:16px;display:block">'
+      : '<div style="width:100%;max-width:320px;aspect-ratio:4/3;border-radius:16px;' +
+          'border:1.5px dashed rgba(36,30,26,.18);display:flex;align-items:center;justify-content:center;' +
+          'color:var(--muted2);font:500 13px Figtree,sans-serif">Aucune photo</div>') +
+    '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:14px;align-items:center">' +
+      '<label class="btn btn--dark btn--sm" for="' + fid + '" style="cursor:pointer">' +
+        (url ? 'Remplacer la photo' : 'Choisir une photo') + '</label>' +
+      '<input id="' + fid + '" type="file" accept="image/*" style="position:absolute;width:1px;height:1px;opacity:0"' +
+        ' data-ch="photo-bien" data-pid="' + esc(pid) + '">' +
+      (url ? '<button type="button" class="btn btn--xs" style="background:var(--cream);color:var(--terra-d)"' +
+        act('photo-bien-retirer', { pid: pid }) + '>Retirer</button>' : '') +
+      (state.photoBienMsg && state.photoBienMsg.pid === pid
+        ? '<span class="sec-note" style="margin:0">' + esc(state.photoBienMsg.texte) + '</span>' : '') +
+    '</div>' +
+    '</div>';
+}
+
 function bienInfos(pid, b) {
   var inf = state.info[pid] || {};
 
@@ -6560,6 +6973,7 @@ function bienInfos(pid, b) {
       '</button>' +
     '<div style="margin-top:14px"><label class="lab" for="bn-' + pid + '">Consignes libres pour le prestataire</label>' +
       '<textarea class="inp" id="bn-' + pid + '" data-fid="bn-' + pid + '" data-in="bien-notes" data-pid="' + pid + '">' + esc(state.notes[pid] || '') + '</textarea></div>' +
+    photoBienBloc(pid, b) +
   '</div>';
 
   var presta = '<div class="card" style="flex:1;min-width:min(100%,320px);padding:22px">' +
@@ -6784,10 +7198,21 @@ function formNewResa(pid) {
         '<input class="inp num" id="nr-start" type="date" value="' + esc(r.start) + '" data-fid="nr-start" data-ch="nr-start"></div>' +
       '<div style="flex:1;min-width:min(100%,150px)"><label class="lab" for="nr-end">Départ</label>' +
         '<input class="inp num" id="nr-end" type="date" value="' + esc(r.end) + '" data-fid="nr-end" data-ch="nr-end"></div>' +
-      '<div style="flex:1;min-width:min(100%,150px)"><label class="lab" for="nr-montant">Montant (€)</label>' +
+      /* PRIX DU SÉJOUR, PAS PRIX DE LA NUIT (session 23, D-128)
+
+         Le champ a toujours porté le **total du séjour** — c'est ce que
+         `montantResa()` utilise tel quel. Mais il s'appelait « Montant » et son
+         indication disait « 90 € / nuit » : le propriétaire y a naturellement
+         lu un prix à la nuitée, et n'avait aucun moyen de savoir lequel des
+         deux on attendait. Rien à changer au calcul, tout à changer au mot.
+         L'indication montre désormais le total calculé, et **dit** de quoi il
+         est fait. */
+      '<div style="flex:1.2;min-width:min(100%,190px)"><label class="lab" for="nr-montant">Prix du séjour (€)</label>' +
         '<input class="inp num" id="nr-montant" type="number" min="0" placeholder="' +
-          (parseInt((state.info[bien] || {}).prixNuit, 10) || 0) + ' € / nuit" value="' + esc(r.montant) +
-          '" data-fid="nr-montant" data-in="nr-montant"></div>' +
+          esc(indicationPrixSejour(bien, r)) + '" value="' + esc(r.montant) +
+          '" data-fid="nr-montant" data-in="nr-montant">' +
+        '<p class="sec-note" style="margin:4px 0 0">Le <strong>total</strong> encaissé pour tout le ' +
+          'séjour, pas le prix d’une nuit. Laissé vide, il est calculé au prix par nuit du logement.</p></div>' +
     '</div>' +
     '<div style="display:flex;gap:10px;align-items:center;margin-top:14px;flex-wrap:wrap">' +
       '<button type="button" class="btn btn--primary btn--sm"' + act('create-resa', { pid: pid || '' }) + '>Enregistrer la réservation</button>' +
@@ -6825,6 +7250,11 @@ function bienLivret(pid, b) {
         return '<div><div class="k">' + r[0] + '</div><div class="v num">' + esc(r[1]) + '</div></div>';
       }).join('') +
     '</div>' +
+    /* Le lien de CE logement (session 23, D-132) se range ici, entre le rappel
+       des horaires et l'écriture du livret : c'est l'endroit où l'on vient
+       quand on prépare l'accueil de ce logement-là. */
+    '</div>' + carteLienBien(pid, b) +
+    '<div class="card" style="padding:20px 22px;margin-top:16px">' +
 
     /* Choix de la langue que l'on écrit. Tout ce qui est fixe (boutons, titres,
        messages) est déjà traduit : seuls vos propres textes sont ici. */
@@ -6993,9 +7423,20 @@ function bvCoque(contenu, sousTitre) {
     '</div>';
 }
 
+/* LE LOGEMENT QUE LE LIEN DÉSIGNE, s'il en désigne un (session 23, D-132).
+   Lu depuis la route, jamais recopié dans l'état : une vue est une fonction
+   pure, et un lien qui laisserait une trace dans l'état ferait croire au
+   voyageur suivant qu'il arrive dans la même maison. */
+function bienDuLien() {
+  if (route.name !== 'bienvenue' || !route.id) return null;
+  var p = (state.props || []).find(function (x) { return x.id === route.id && !x.gone; });
+  return p || null;
+}
+
 /** Étape 1 : date d'arrivée + 4 derniers chiffres du téléphone. */
 function bvRecherche() {
   var b = state.bienvenue;
+  var bien = bienDuLien();
 
   return bvCoque(
     '<section class="lv-section">' +
@@ -7003,9 +7444,26 @@ function bvRecherche() {
         '<h2 class="bv-h">' + esc(t('bvTitre')) + '</h2>' +
         '<p class="bv-p">' + esc(t('bvP')) + '</p>' +
 
+        /* Quand le lien nomme le logement, on le DIT : le voyageur doit
+           reconnaître la maison qu'il a réservée, sinon il se demande s'il est
+           au bon endroit et referme la page. */
+        (bien
+          ? '<div class="bv-bien"><span class="dot" style="background:' + bien.color + '"></span>' +
+            '<span><strong>' + esc(bien.name) + '</strong>' +
+            (bien.city ? '<br><span style="color:var(--muted2)">' + esc(bien.city) + '</span>' : '') +
+            '</span></div>'
+          : '') +
+
         '<label class="lab" for="bv-date">' + esc(t('bvDate')) + '</label>' +
         '<input class="inp" id="bv-date" type="date" value="' + esc(b.date) + '" ' +
           'data-fid="bv-date" data-ch="bv-date">' +
+
+        /* La date de DÉPART (session 23). Facultative, et c'est voulu : elle ne
+           sert qu'à départager deux séjours du même voyageur. L'exiger ferait
+           échouer ceux qui ne s'en souviennent pas. */
+        '<label class="lab" style="margin-top:14px" for="bv-fin">' + esc(t('bvFin')) + '</label>' +
+        '<input class="inp" id="bv-fin" type="date" value="' + esc(b.fin || '') + '" ' +
+          'data-fid="bv-fin" data-ch="bv-fin">' +
 
         /* LE NOM, ET NON PLUS LES 4 CHIFFRES DU TÉLÉPHONE (session 18, D-90).
            Ces 4 chiffres, presque aucune plateforme ne les transmet : personne
@@ -7911,14 +8369,17 @@ function etapeDe(pid, sid) {
 /** Réduit une image choisie ou prise par l'appareil photo.
     Rend deux formes de la même image : `url` pour l'afficher tout de suite et
     la garder sur l'appareil, `fichier` pour la déposer dans le casier. */
-function reduirePhoto(fichier, quand) {
+function reduirePhoto(fichier, quand, cote) {
   var lecteur = new FileReader();
   lecteur.onerror = function () { quand(null, 'La photo n\'a pas pu être lue.'); };
   lecteur.onload = function () {
     var img = new Image();
     img.onerror = function () { quand(null, 'Ce fichier n\'est pas une image.'); };
     img.onload = function () {
-      var max = 900;
+      /* 900 px pour une photo de ménage (elle doit prouver quelque chose),
+         480 px pour la vignette d'un logement (session 23) : quatre vignettes
+         à 900 px pèseraient autant que toute la mémoire disponible. */
+      var max = cote || 900;
       var ech = Math.min(1, max / Math.max(img.width, img.height));
       var c = document.createElement('canvas');
       c.width = Math.round(img.width * ech);
@@ -8129,7 +8590,7 @@ function bump(key, delta) {
 function finish(id) {
   var d = state.draft, m = mission(id);
   if (!d || !m || d.id !== id) return;
-  var lowKeys = arts().filter(function (a) { return (d.qty[a.key] || 0) <= state.seuils[a.key]; })
+  var lowKeys = artsDe(m.prop).filter(function (a) { return (d.qty[a.key] || 0) <= state.seuils[a.key]; })
     .map(function (a) { return a.key; });
   var photos = photoCount(m);
   var ph = state.photos[id] || {};
@@ -8484,6 +8945,15 @@ var actions = {
   'copier-message-bienvenue': function () {
     copier(texteBienvenue(),
       '✅ Message copié. Colle-le dans le message automatique d\'Airbnb ou de Booking.');
+  },
+
+  /* Le message du lien d'UN logement (session 23, D-132) : à coller dans les
+     messages automatiques de l'annonce de ce logement-là. */
+  'copier-message-bien': function (el) {
+    var pid = el.dataset.pid;
+    copier(texteBienvenueBien(pid),
+      '✅ Message copié. Colle-le dans le message automatique de l\'annonce de ' +
+      prop(pid).name + ', sur Airbnb ou Booking.');
   },
 
   /* Le message d'accompagnement, lien compris. Même repli que « Copier le
@@ -9196,6 +9666,34 @@ var actions = {
     save(); render();
   },
 
+  /* « Ce logement n'a pas cet article » (session 23, D-126). Réversible : le
+     même geste remet la case. On n'efface pas la quantité connue — si l'article
+     revient un jour, elle est encore là. */
+  /* Retirer la photo d'un logement (session 23, D-129). */
+  'photo-bien-retirer': function (el) {
+    var pid = el.dataset.pid;
+    delete state.photosBien[pid];
+    state.photoBienMsg = { pid: pid, texte: 'Photo retirée.' };
+    save(); render();
+  },
+
+  /* Déplier le détail d'un logement dans les statistiques (session 23, D-131).
+     Un seul à la fois : deux panneaux ouverts noient la comparaison. */
+  'stat-bien': function (el) {
+    var pid = el.dataset.pid;
+    state.statBien = state.statBien === pid ? null : pid;
+    save(); render();
+  },
+
+  'stock-hors': function (el) {
+    var pid = el.dataset.pid, k = el.dataset.k;
+    if (!state.horsStock[pid]) state.horsStock[pid] = {};
+    if (state.horsStock[pid][k]) delete state.horsStock[pid][k];
+    else state.horsStock[pid][k] = true;
+    if (!Object.keys(state.horsStock[pid]).length) delete state.horsStock[pid];
+    save(); render();
+  },
+
   'msg-filter': function (el) { state.msgFilter = el.dataset.f; save(); render(); },
 
   /* Messages programmés --------------------------------------------------- */
@@ -9252,13 +9750,27 @@ var actions = {
   },
 
   'create-resa': function (el) { createResa(el.dataset.pid); },
+  /* Le second bouton de suppression, dans l'onglet « Réservations » d'un
+     logement. Oublié par la session 22 : il gardait l'ancien texte et
+     n'annonçait aucun message à la prestataire. Même geste, mêmes mots. */
   'remove-resa': function (el) {
     var pid = el.dataset.pid, ri = parseInt(el.dataset.ri, 10);
     var r = resasOf(pid)[ri];
     if (!r) return;
-    if (!confirm('Supprimer la réservation de ' + r.guest + ' ?\n\nLa mission créée à son départ, ' +
-      'si elle n\'a pas encore été prise, sera retirée elle aussi.')) return;
-    retirerResa(pid, r);
+    var mm = missionDuDepart(pid, r, true);
+    var avertir = 'Supprimer la réservation de ' + r.guest + ' ?\n\n';
+    if (mm && (mm.status === 'prise' || mm.status === 'encours')) {
+      avertir += '⚠️ ' + agent(mm.taker).name + ' a pris le ménage du ' + fmtDate(mm.date) + '.\n' +
+        'Il passera en « Annulée » sur son téléphone, avec le message qui explique pourquoi.\n\n';
+    } else if (mm && mm.status === 'termine') {
+      avertir += 'ℹ️ Le ménage du ' + fmtDate(mm.date) + ' a déjà été fait : il est conservé, ' +
+        'avec son compte rendu et sa rémunération.\n\n';
+    } else if (mm) {
+      avertir += 'La mission de ménage du ' + fmtDate(mm.date) + ', que personne n\'a prise, ' +
+        'sera retirée elle aussi.\n\n';
+    }
+    if (!confirm(avertir + 'Cette suppression est définitive.')) return;
+    retirerResa(pid, r, 'La réservation a été supprimée par le propriétaire.');
     save(); render();
   },
 
@@ -9387,17 +9899,35 @@ var actions = {
     if ((b.nom || '').trim().length < 3) { b.erreur = t('bvErrNomCourt'); save(); render(); return; }
     b.erreur = '';
 
+    /* Le lien peut désigner un logement (session 23, D-132) : on ne cherche
+       alors que chez lui. Deux voyageurs qui arrivent le même jour dans deux
+       maisons différentes ne peuvent plus se croiser — c'est la règle 15 (ne
+       jamais deviner qui regarde), et le lien par bien la sert mieux que le
+       lien unique. */
+    var duBien = bienDuLien();
+    var restreindre = function (liste) {
+      return duBien ? liste.filter(function (x) { return x.pid === duBien.id; }) : liste;
+    };
+    /* La date de départ, si elle est donnée, départage. Si elle ne correspond à
+       rien on ne l'impose pas : mieux vaut proposer un choix que renvoyer « je
+       ne trouve rien » à quelqu'un qui s'est trompé d'un jour. */
+    var affiner = function (liste) {
+      if (!b.fin || liste.length < 2) return liste;
+      var exact = liste.filter(function (x) { return x.r.end === b.fin; });
+      return exact.length ? exact : liste;
+    };
+
     var localement = function () {
       // Repli : les séjours déjà présents sur cet appareil. Le nom d'abord,
       // les 4 chiffres ensuite pour ne pas perdre l'ancien parcours.
       var n = nomSimple(b.nom);
-      var parNom = allResas().filter(function (x) {
+      var parNom = restreindre(allResas().filter(function (x) {
         var r = x.r;
         if (r.statut === 'annule' || r.end < TODAY) return false;
         if (nomSimple(r.guest).indexOf(n) < 0) return false;
         return r.start === b.date || (r.start <= b.date && b.date < r.end);
-      });
-      return parNom.length ? parNom : trouverSejour(b.date, b.tel4);
+      }));
+      return affiner(parNom.length ? parNom : restreindre(trouverSejour(b.date, b.tel4)));
     };
 
     var suite = function (trouves) {
@@ -9419,9 +9949,11 @@ var actions = {
       .then(function (lignes) {
         if (!lignes.length) { suite(localement()); return; }
         // Un seul séjour : on l'installe et on ouvre. Plusieurs : on fait choisir.
-        var faits = lignes.map(function (l) {
-          return { pid: l.property_id, r: { id: l.reservation_id, start: l.start_date } };
-        });
+        var faits = restreindre(lignes.map(function (l) {
+          return { pid: l.property_id, r: { id: l.reservation_id, start: l.start_date, end: l.end_date } };
+        }));
+        faits = affiner(faits);
+        if (!faits.length) { suite(localement()); return; }
         if (faits.length > 1) {
           b.enCours = false;
           b.choix = faits.map(function (x) { return { rid: x.r.id, pid: x.pid, start: x.r.start }; });
@@ -9886,6 +10418,17 @@ var inputs = {
   'step-draft': function (el) { state.stepDrafts[el.dataset.key] = el.value; },
   'new-room': function (el) { state.newRoom = el.value; },
   'new-feed': function (el) { state.newFeed = el.value; },
+
+  /* Corriger une quantité de stock depuis le tableau du propriétaire
+     (session 23, D-127). Sans `render()` : un redessin par touche ferait
+     sauter le curseur. La couleur de la case se remet à jour au prochain
+     dessin, ce qui suffit — elle n'est pas une information urgente. */
+  'stock-qty': function (el) {
+    var pid = el.dataset.pid, k = el.dataset.k;
+    if (!state.stock[pid]) state.stock[pid] = {};
+    state.stock[pid][k] = el.value === '' ? 0 : Math.max(0, parseInt(el.value, 10) || 0);
+    save();
+  },
   'nr-montant': function (el) { state.nr.montant = el.value; },
   // Le commentaire du signalement (session 16). Saisie silencieuse : un
   // redessin à chaque touche ferait sauter le curseur.
@@ -10010,6 +10553,7 @@ var changes = {
   /* Porte d'entrée du livret : la date sert aux deux écrans (D-46). */
   'bv-date': function (el) { state.bienvenue.date = el.value; state.bienvenue.erreur = ''; save(); },
   'bv-pid': function (el) { state.bienvenue.pid = el.value; state.bienvenue.erreur = ''; save(); },
+  'bv-fin': function (el) { state.bienvenue.fin = el.value; state.bienvenue.erreur = ''; save(); },
   'gf-heure': function (el) { state.gform.arrivee = el.value; save(); },
 
   'nm-prop': function (el) {
@@ -10030,6 +10574,42 @@ var changes = {
   'nr-plat': function (el) { state.nr.plat = el.value; save(); },
   /* La plateforme d'un séjour déjà enregistré : elle colore le bandeau et
      suit sur la mission, d'où le redessin (session 21). */
+  /* LA PHOTO D'UN LOGEMENT (session 23, D-129)
+
+     Réduite à 480 px et recompressée : une photo de téléphone pèse 4 Mo et la
+     mémoire du navigateur en fait 5 en tout. Sans cette réduction, deux photos
+     rempliraient tout et **les sauvegardes suivantes échoueraient** — c'est le
+     défaut payé en session 15 sur les photos de ménage.
+
+     On vérifie que l'enregistrement a réellement tenu avant de dire « c'est
+     fait » (règle 4) : `save()` rend `false` quand la mémoire est pleine. */
+  'photo-bien': function (el) {
+    var pid = el.dataset.pid;
+    var f = el.files && el.files[0];
+    el.value = '';                                  // pour pouvoir rechoisir le même fichier
+    if (!f) return;
+    state.photoBienMsg = { pid: pid, texte: 'Réduction de la photo…' };
+    render();
+    reduirePhoto(f, function (res, err) {
+      if (err || !res || !res.url) {
+        state.photoBienMsg = { pid: pid, texte: err || 'Cette photo n’a pas pu être lue.' };
+        render();
+        return;
+      }
+      var ancienne = state.photosBien[pid];
+      state.photosBien[pid] = res.url;
+      if (save()) {
+        state.photoBienMsg = { pid: pid, texte: '✓ Photo enregistrée.' };
+      } else {
+        // La mémoire de l'appareil est pleine : on remet l'ancienne et on le DIT.
+        if (ancienne) state.photosBien[pid] = ancienne; else delete state.photosBien[pid];
+        state.photoBienMsg = { pid: pid, texte: 'La mémoire de cet appareil est pleine : la photo ' +
+          'n’a pas pu être enregistrée. Supprime des photos de ménage anciennes, puis réessaie.' };
+      }
+      render();
+    }, 480);
+  },
+
   'resa-plat': function (el) {
     var f = resaById(el.dataset.rid);
     if (!f) return;
@@ -10161,6 +10741,19 @@ document.addEventListener('change', function (e) {
   if (!el) return;
   var fn = changes[el.dataset.ch];
   if (fn) fn(el);
+});
+
+/* Le double-clic (session 23) : il n'y en a qu'un, sur les cases du tableau des
+   stocks, mais il passe par le même aiguillage que le reste — un mécanisme de
+   moins à retenir. `preventDefault` évite que le double-clic sélectionne le
+   contenu du champ juste avant qu'il ne disparaisse. */
+document.addEventListener('dblclick', function (e) {
+  var el = e.target.closest('[data-dbl]');
+  if (!el) return;
+  var fn = actions[el.dataset.dbl];
+  if (!fn) return;
+  e.preventDefault();
+  fn(el, e);
 });
 
 // Entrée = se connecter, sur l'écran de connexion.
