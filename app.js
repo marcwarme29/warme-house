@@ -423,7 +423,14 @@ var STATUS = {
   dispo: { label: 'Disponible', cls: 'badge--terra' },
   prise: { label: 'Acceptée', cls: 'badge--blue' },
   encours: { label: 'En cours', cls: 'badge--amber' },
-  termine: { label: 'Terminée', cls: 'badge--green' }
+  termine: { label: 'Terminée', cls: 'badge--green' },
+  /* Le cinquième état existait dans la base depuis le script 01 — et
+     `annulee` figure même dans la contrainte `missions_status_check` — mais
+     **rien ne l'écrivait jamais, et ce tableau ne le connaissait pas**. Une
+     mission annulée aurait donc fait lire `undefined.cls` et **figé toute
+     l'application** (règle 6). Ajouté en session 22, en même temps que ce qui
+     l'écrit enfin. */
+  annulee: { label: 'Annulée', cls: 'badge--terra' }
 };
 
 /* --------------------------------------------------------------------------
@@ -519,6 +526,13 @@ function initialState() {
     missions: clone(MISSIONS),
     photos: {},                       // { missionId: { stepId: photo enregistrée sur l'appareil } }
     photosEnvoi: {},                  // { 'missionId:stepId': 'encours' | 'ok' | 'erreur' } — dépôt dans le casier (lot 2)
+    /* DÉCLARÉE ICI, ET PAS SEULEMENT DANS `upgrade()` (session 22). `load()`
+       ne recopie que les clés que `initialState()` connaît : une clé posée
+       uniquement par `upgrade()` est **relue puis jetée** à chaque
+       rechargement. Le « J'ai compris » d'une annulation revenait donc à
+       chaque ouverture de l'application — trouvé par la recette, pas par la
+       lecture. Vaut pour toute donnée nouvelle : les deux endroits, pas un. */
+    annulVues: {},                    // { missionId: true } — annulations déjà lues SUR CET APPAREIL
     stock: baseStock(),
     seuils: baseSeuils(),
     draft: null,                      // { id, prop, qty }
@@ -877,6 +891,15 @@ function upgrade() {
 
   state.missions.forEach(function (m) { if (m.note === undefined) m.note = ''; });
   if (state.nm.note === undefined) state.nm.note = '';
+
+  /* Session 22 — les annulations déjà lues sur CE téléphone. Préférence
+     d'écran, pas une donnée métier : elle n'a pas à voyager (D-106). On
+     oublie celles dont la mission n'existe plus, sinon la liste enfle sans
+     fin. */
+  if (!state.annulVues) state.annulVues = {};
+  Object.keys(state.annulVues).forEach(function (id) {
+    if (!state.missions.some(function (m) { return m.id === id; })) delete state.annulVues[id];
+  });
 
   // Les biens supprimés ne doivent pas rester cochés dans la liste de courses.
   if (Array.isArray(state.coursesProps)) {
@@ -1247,21 +1270,71 @@ function refletSurMissions(pid, r) {
   });
 }
 
-/** Retire une réservation et, si elle n'a pas été prise, sa mission de départ. */
-function retirerResa(pid, resa) {
+/* UNE MISSION QUI DISPARAÎT SANS UN MOT (session 22, D-119)
+
+   Jusqu'ici, supprimer une réservation ne retirait que les missions **encore
+   libres**. Celle que la prestataire avait déjà **prise** restait sur son
+   téléphone, rattachée à un séjour qui n'existait plus : elle se serait
+   déplacée pour rien. Et la supprimer purement et simplement n'aurait pas
+   été mieux — elle aurait disparu de son écran sans explication, ce qui est
+   la même panne muette que d'habitude (règle 22).
+
+   Trois cas, trois traitements, et c'est le statut qui les sépare :
+
+   · **Libre** (`dispo`) — personne ne l'attend : on la **supprime**, comme
+     avant. Il n'y a personne à prévenir.
+   · **Prise ou en cours** — quelqu'un a organisé sa journée autour : on la
+     passe en **« Annulée »**, avec la phrase qui dit quoi et pourquoi. Elle
+     n'est plus à faire, et le message arrive sur son téléphone.
+   · **Terminée** — le ménage a été fait : on n'y touche **jamais**. Il doit
+     être payé, et son compte rendu reste l'historique du logement.
+
+   POURQUOI LE MESSAGE VOYAGE DANS `note`. Il n'existe aucune boîte à
+   messages pour les prestataires, et en créer une voudrait dire une table de
+   plus, donc un dixième script SQL à coller. Or `missions.note` existe déjà,
+   part déjà dans le cahier partagé, et **est déjà affichée au prestataire** :
+   c'est exactement le tuyau qu'il faut. Une note du propriétaire qui s'y
+   trouverait déjà est conservée à la suite, jamais écrasée. */
+function texteAnnulation(m, motif) {
+  var qui = m.res && m.res.guest && m.res.guest !== 'Voyageur' ? ' pour ' + m.res.guest : '';
+  return 'Mission du ' + fmtDate(m.date) + ' à ' + prop(m.prop).name + qui +
+    ' : ANNULÉE. ' + (motif || 'La réservation a été supprimée.');
+}
+
+function annulerMission(m, motif) {
+  var ancienne = (m.note || '').trim();
+  m.status = 'annulee';
+  m.note = texteAnnulation(m, motif) + (ancienne ? '\n(note précédente : ' + ancienne + ')' : '');
+  // Plus de séjour, donc plus de turnover ni d'heure d'arrivée à annoncer.
+  m.urgent = '';
+  m.turnover = false;
+  m.next = null;
+  return m;
+}
+
+/** Retire une réservation : sa mission est supprimée, ou annulée avec un mot. */
+function retirerResa(pid, resa, motif) {
   state.resas[pid] = resasOf(pid).filter(function (x) { return x !== resa; });
   var cle = resaKey(pid, resa);
-  var missionsRetirees = state.missions.filter(function (m) {
-    return m.fromResa === cle && m.status === 'dispo';
-  }).map(function (m) { return m.id; });
+
+  var missionsRetirees = [], missionsAnnulees = [];
+  state.missions.forEach(function (m) {
+    if (m.fromResa !== cle) return;
+    if (m.status === 'termine' || m.status === 'annulee') return;
+    if (m.status === 'dispo') { missionsRetirees.push(m.id); return; }
+    annulerMission(m, motif);
+    missionsAnnulees.push(m);
+  });
   state.missions = state.missions.filter(function (m) {
-    return !(m.fromResa === cle && m.status === 'dispo');
+    return missionsRetirees.indexOf(m.id) < 0;
   });
 
   /* LE CAHIER PARTAGÉ DOIT L'APPRENDRE (session 16).
      `pousser()` ne sait qu'ajouter et modifier : sans cette suppression
      explicite, le séjour effacé revenait à la première relecture, et rien de
-     ce qu'on supprimait ne tenait. */
+     ce qu'on supprimait ne tenait. Les missions **annulées**, elles, ne sont
+     pas supprimées : elles partent par `pousser()` comme n'importe quelle
+     modification — c'est ce qui porte le message jusqu'au téléphone. */
   if (typeof DB !== 'undefined' && DB.estDispo() && DB.profil()) {
     missionsRetirees.forEach(function (id) { DB.supprimerMission(id); });
     DB.supprimerResa(resa.id);
@@ -1270,13 +1343,18 @@ function retirerResa(pid, resa) {
   // Plus personne n'arrive ce jour-là : la mission de la veille n'est plus
   // un turnover, et ne doit plus annoncer un voyageur qui ne viendra pas.
   var encore = resasOf(pid).some(function (x) { return x.start === resa.start; });
-  if (encore) return;
-  state.missions.forEach(function (m) {
-    if (m.prop !== pid || m.date !== resa.start || m.status === 'termine') return;
-    m.next = null;
-    m.turnover = false;
-    if (/^Turnover/.test(m.urgent || '')) m.urgent = '';
-  });
+  if (!encore) {
+    state.missions.forEach(function (m) {
+      if (m.prop !== pid || m.date !== resa.start || m.status === 'termine') return;
+      m.next = null;
+      m.turnover = false;
+      if (/^Turnover/.test(m.urgent || '')) m.urgent = '';
+    });
+  }
+
+  // Rendu à l'appelant pour qu'il puisse le DIRE : « la mission de Sofia a été
+  // annulée, elle en sera prévenue » (règle 4).
+  return { supprimees: missionsRetirees.length, annulees: missionsAnnulees };
 }
 
 /* Fusion d'un lot de réservations venu d'une source extérieure (iCal, Beds24).
@@ -1289,7 +1367,7 @@ function retirerResa(pid, resa) {
    qui a les mêmes dates dans le même logement est considéré comme le même.
    Rend le détail de ce qui a été fait, pour l'afficher au propriétaire. */
 function fusionnerResas(pid, lot, source) {
-  var bilan = { ajoutees: 0, majs: 0, annulees: 0, inchangees: 0, rattrapees: 0 };
+  var bilan = { ajoutees: 0, majs: 0, annulees: 0, inchangees: 0, rattrapees: 0, missionsAnnulees: 0 };
 
   lot.forEach(function (brut) {
     var incoming = normaliserResa(brut, source, pid);
@@ -1306,8 +1384,10 @@ function fusionnerResas(pid, lot, source) {
     }
 
     if (incoming.statut === 'annule') {
-      retirerResa(pid, connue);
+      var b = retirerResa(pid, connue, 'Le voyageur a annulé sa réservation sur ' +
+        (connue.plat || 'la plateforme') + '.');
       bilan.annulees++;
+      bilan.missionsAnnulees += b.annulees.length;
       return;
     }
 
@@ -1316,9 +1396,16 @@ function fusionnerResas(pid, lot, source) {
     });
     if (!change) { bilan.inchangees++; return; }
 
-    // Les dates ont bougé : la mission de départ doit suivre.
+    // Les dates ont bougé : la mission de départ doit suivre. Si elle avait
+    // été prise, elle est annulée et une nouvelle est créée plus bas — la
+    // prestataire doit savoir que ce n'est pas une disparition mais un
+    // déplacement, sinon elle croit à une erreur (session 22).
     var datesBougent = connue.end !== incoming.end;
-    if (datesBougent) retirerResa(pid, connue);
+    if (datesBougent) {
+      var bd = retirerResa(pid, connue, 'Le séjour a été déplacé au ' + fmtDate(incoming.end) +
+        ' : une nouvelle mission a été créée à cette date.');
+      bilan.missionsAnnulees += bd.annulees.length;
+    }
     ['plat', 'guest', 'guests', 'start', 'end', 'uid', 'source'].forEach(function (k) { connue[k] = incoming[k]; });
     if (incoming.montant !== null) connue.montant = incoming.montant;
 
@@ -2508,7 +2595,8 @@ function guard() {
 
 /** Présentation commune d'une mission (équivalent de decorate() du prototype). */
 function decorate(m) {
-  var p = prop(m.prop), ty = service(m.type), st = STATUS[m.status];
+  // Repli obligatoire (règle 6) : un état inconnu ne doit pas figer l'écran.
+  var p = prop(m.prop), ty = service(m.type), st = STATUS[m.status] || STATUS.dispo;
   var total = stepIds(m.prop).length, done = photoCount(m);
 
   // Le voyageur a signalé son départ : le logement est libre, la mission peut
@@ -2525,7 +2613,8 @@ function decorate(m) {
   var enRetard = m.status === 'dispo' && m.date < TODAY;
 
   var ctaLabel, ctaCls, ctaAction = '';
-  if (m.status === 'termine') { ctaLabel = 'Mission terminée'; ctaCls = 'btn--muted'; }
+  if (m.status === 'annulee') { ctaLabel = 'Mission annulée'; ctaCls = 'btn--muted'; }
+  else if (m.status === 'termine') { ctaLabel = 'Mission terminée'; ctaCls = 'btn--muted'; }
   else if (m.status === 'encours') { ctaLabel = 'Reprendre la checklist'; ctaCls = 'btn--go'; ctaAction = 'resume'; }
   else if (canStart) { ctaLabel = 'Commencer la mission'; ctaCls = 'btn--go'; ctaAction = 'start'; }
   else { ctaLabel = 'Démarrage le ' + m.dateLabel.toLowerCase(); ctaCls = 'btn--muted'; }
@@ -2578,10 +2667,15 @@ function prestaShell(head, body, foot, opts) {
 function tabBar() {
   var cles = isCles(state.me);
   var dispoCount = cles ? keyEventsOn(state.me, TODAY).length : dispoForMe().length;
+  // Une annulation qui n'est vue que si on pense à ouvrir l'onglet n'est pas
+  // un message : elle se signale sur la barre du bas (session 22).
+  var annulCount = cles ? 0 : annulationsPourMoi().length;
   return '<nav class="tabbar">' + (cles ? CLES_TABS : PRESTA_TABS).map(function (t) {
     var on = routeTab() === t.key;
     var badge = dispoCount > 0 && (cles ? t.key === 'calendrier' : t.key === 'missions')
-      ? '<div class="tab-badge num">' + dispoCount + (cles ? ' auj.' : ' new') + '</div>' : '';
+      ? '<div class="tab-badge num">' + dispoCount + (cles ? ' auj.' : ' new') + '</div>'
+      : annulCount > 0 && t.key === 'mes-missions'
+      ? '<div class="tab-badge num">' + annulCount + ' ⛔</div>' : '';
     return '<button type="button"' + (on ? ' aria-current="page"' : '') + act('nav', { path: t.path }) + '>' +
       '<div class="tab-dot"></div><div class="tab-label">' + t.label + '</div>' + badge + '</button>';
   }).join('') + '</nav>';
@@ -2687,9 +2781,49 @@ function missionCard(m) {
 
 /* --- Mes missions -------------------------------------------------------- */
 
+/* LES ANNULATIONS QUI M'ONT ÉTÉ ADRESSÉES (session 22, D-119)
+
+   Une mission annulée n'est plus du travail : elle est **un message**. Elle
+   sort donc de la liste des missions acceptées et se range au-dessus, dans un
+   encadré rouge qui dit quoi, quand, où et pourquoi.
+
+   « J'ai compris » ne la supprime pas dans le cahier partagé — un prestataire
+   n'a pas le droit d'effacer une ligne, et il ne l'aura pas : ce serait lui
+   donner de quoi faire disparaître le travail des autres. Il range la
+   notification **sur son propre téléphone**, et c'est une préférence
+   d'écran, pas une donnée métier (D-106) : `state.annulVues`. Le propriétaire,
+   lui, peut la supprimer pour de bon depuis sa page « Missions ». */
+function annulationsPourMoi() {
+  return state.missions.filter(function (m) {
+    return m.status === 'annulee' && m.taker === state.me && !state.annulVues[m.id];
+  });
+}
+
+function carteAnnulation(m) {
+  var p = prop(m.prop);
+  return '<article class="card pop" style="border-left:4px solid var(--terra)">' +
+    '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px">' +
+      '<span class="badge badge--terra">⛔ Annulée</span>' +
+      '<span class="num" style="font:600 12px Figtree,sans-serif;color:var(--muted)">' +
+        esc(fmtDate(m.date)) + '</span>' +
+    '</div>' +
+    '<div style="font:700 17px/1.3 Figtree,sans-serif;margin-top:9px">' + esc(p.name) + '</div>' +
+    '<div class="num" style="font:500 13px Figtree,sans-serif;color:var(--muted);margin-top:2px">' +
+      esc(service(m.type).label) + ' · ' + m.price + ' €</div>' +
+    '<p style="font:500 13.5px/1.5 Figtree,sans-serif;color:var(--ink-soft);margin:10px 0 0;white-space:pre-line">' +
+      esc(m.note || texteAnnulation(m, '')) + '</p>' +
+    '<p class="sec-note" style="margin:8px 0 0">Tu n’as rien à faire : ce ménage n’est plus à ton programme.</p>' +
+    '<button type="button" class="btn btn--sm" style="background:var(--ink);color:#fff;width:100%;margin-top:12px"' +
+      act('annulation-vue', { id: m.id }) + '>J’ai compris</button>' +
+    '</article>';
+}
+
 function viewPrestaMes() {
+  var annul = annulationsPourMoi().map(carteAnnulation).join('');
   var mine = state.missions
-    .filter(function (m) { return m.taker === state.me && m.status !== 'termine'; })
+    .filter(function (m) {
+      return m.taker === state.me && m.status !== 'termine' && m.status !== 'annulee';
+    })
     .map(decorate);
 
   var cards = mine.length ? mine.map(function (m) {
@@ -2726,7 +2860,7 @@ function viewPrestaMes() {
 
   return prestaShell(
     prestaHeader(mine.length + ' mission(s) acceptée(s)', 'Mes missions'),
-    '<div class="stack">' + cards + history + '</div>'
+    '<div class="stack">' + annul + cards + history + '</div>'
   );
 }
 
@@ -2748,6 +2882,9 @@ function viewPrestaDetail() {
     btn = { label: enCours ? 'Un instant…' : 'Prendre cette mission',
       cls: enCours ? 'btn--muted' : 'btn--primary', action: enCours ? '' : 'take',
       note: 'Premier arrivé, premier servi · ' + d.total + ' étapes' };
+  } else if (m.status === 'annulee') {
+    btn = { label: 'Mission annulée', cls: 'btn--muted', action: '',
+      note: m.note || texteAnnulation(m, '') };
   } else if (m.status === 'termine') {
     btn = { label: 'Mission terminée', cls: 'btn--muted', action: '', note: 'Merci ! Paiement le 5 du mois.' };
   } else if (m.status === 'encours') {
@@ -3573,7 +3710,9 @@ function viewOwnerDash() {
   var totalLow = lowByProp.reduce(function (n, x) { return n + x.lows.length; }, 0);
 
   var kpis = [
-    { v: String(state.missions.filter(function (m) { return m.status !== 'termine'; }).length), l: 'missions à venir', c: C.ink },
+    { v: String(state.missions.filter(function (m) {
+        return m.status !== 'termine' && m.status !== 'annulee';   // une annulée n'est plus à venir
+      }).length), l: 'missions à venir', c: C.ink },
     { v: String(openCount), l: 'non prises', c: C.terracotta },
     { v: String(totalLow), l: 'articles sous seuil', c: C.ambre },
     { v: state.agents.reduce(function (n, a) { return n + monthTotal(a.id, CURRENT_MONTH); }, 0) + ' €',
@@ -3891,7 +4030,8 @@ function bandeauTousMenagesManquants() {
 }
 
 function viewOwnerMissions() {
-  var filters = [['all', 'Toutes'], ['dispo', 'Disponibles'], ['prise', 'Acceptées'], ['termine', 'Terminées']];
+  var filters = [['all', 'Toutes'], ['dispo', 'Disponibles'], ['prise', 'Acceptées'],
+    ['termine', 'Terminées'], ['annulee', 'Annulées']];
   var rows = state.missions
     .filter(function (m) { return state.missionFilter === 'all' || state.missionFilter === m.status; })
     .map(decorate);
@@ -3991,12 +4131,18 @@ function resasEnCours() {
    missions saisies à la main, données anciennes, jeu de démonstration — on
    retombe sur la règle métier, qui ne trompe pas : le ménage d'un séjour est
    celui qui tombe le jour du départ, dans ce logement. */
-function missionDuDepart(pid, r) {
+/* `inclureAnnulees` : une mission annulée n'est plus le ménage de ce départ —
+   elle ne doit donc pas empêcher d'en créer un nouveau (session 22). On ne la
+   regarde que lorsqu'on veut justement parler d'elle. */
+function missionDuDepart(pid, r, inclureAnnulees) {
   var cle = resaKey(pid, r);
-  var direct = state.missions.find(function (q) { return q.fromResa === cle; });
+  var vivante = function (q) { return inclureAnnulees || q.status !== 'annulee'; };
+  var direct = state.missions.find(function (q) { return q.fromResa === cle && vivante(q); });
   if (direct) return direct;
 
-  var mm = state.missions.filter(function (q) { return q.prop === pid && q.date === r.end; });
+  var mm = state.missions.filter(function (q) {
+    return q.prop === pid && q.date === r.end && vivante(q);
+  });
   if (!mm.length) return null;
   // S'il y en a plusieurs ce jour-là, le ménage prime sur le reste.
   var premier = state.services[0] ? state.services[0].key : 'menage';
@@ -5509,7 +5655,7 @@ function diagnosticPresta(a) {
   //    à dire POURQUOI c'est zéro (règle 5 : « aucune » n'est pas « erreur »).
   if (!visibles.length) {
     var prises = (state.missions || []).filter(function (m) {
-      return m.status !== 'dispo' && ouverts.indexOf(m.prop) >= 0;
+      return m.status !== 'dispo' && m.status !== 'annulee' && ouverts.indexOf(m.prop) >= 0;
     }).length;
     return { ok: true,
       titre: 'Tout est en règle de ton côté — il n’y a simplement aucune mission à prendre',
@@ -6191,7 +6337,9 @@ function formNewArticle() {
 
 function viewOwnerBiens() {
   var cards = state.props.map(function (p) {
-    var next = state.missions.filter(function (m) { return m.prop === p.id && m.status !== 'termine'; })[0];
+    var next = state.missions.filter(function (m) {
+      return m.prop === p.id && m.status !== 'termine' && m.status !== 'annulee';
+    })[0];
     var rs = rooms(p.id);
     var premier = state.services[0];
     var tags = [
@@ -9002,15 +9150,52 @@ var actions = {
       : 'Tous les départs à venir ont déjà leur mission de ménage.');
   },
 
+  /* SUPPRIMER UNE RÉSERVATION — en disant ce que ça emporte (session 22).
+     L'avertissement ne parlait que de la mission « pas encore prise ». Il ne
+     disait rien des deux autres cas, qui sont pourtant les seuls qui
+     engagent quelqu'un d'autre : une mission déjà prise, et une mission déjà
+     faite. On les nomme avant, et on dit après ce qui a été fait (règle 4). */
   'resa-remove': function (el) {
     var f = resaById(el.dataset.rid);
     if (!f) return;
-    if (!confirm('Supprimer la réservation de ' + f.r.guest + ' ?\n\nLa mission créée à son départ, ' +
-      'si elle n\'a pas encore été prise, sera retirée elle aussi.')) return;
-    retirerResa(f.pid, f.r);
+    var m = missionDuDepart(f.pid, f.r, true);
+    var avertir = 'Supprimer la réservation de ' + f.r.guest + ' ?\n\n';
+    if (m && (m.status === 'prise' || m.status === 'encours')) {
+      avertir += '⚠️ ' + agent(m.taker).name + ' a pris le ménage du ' + fmtDate(m.date) + '.\n' +
+        'Il passera en « Annulée » sur son téléphone, avec le message qui explique pourquoi.\n\n';
+    } else if (m && m.status === 'termine') {
+      avertir += 'ℹ️ Le ménage du ' + fmtDate(m.date) + ' a déjà été fait : il est conservé, ' +
+        'avec son compte rendu et sa rémunération.\n\n';
+    } else if (m) {
+      avertir += 'La mission de ménage du ' + fmtDate(m.date) + ', que personne n\'a prise, ' +
+        'sera retirée elle aussi.\n\n';
+    }
+    avertir += 'Cette suppression est définitive.';
+    if (!confirm(avertir)) return;
+
+    var b = retirerResa(f.pid, f.r, 'La réservation a été supprimée par le propriétaire.');
     save();
     go('#/admin/calendrier');
+    if (b.annulees.length) {
+      alert('Réservation supprimée.\n\n' +
+        // On recopie la note telle quelle : le propriétaire lit MOT POUR MOT
+        // ce que sa prestataire va lire, pas une reformulation.
+        b.annulees.map(function (x) {
+          return '· ' + agent(x.taker).name + ' verra : « ' + (x.note || '').split('\n')[0] + ' »';
+        }).join('\n') + '\n\n' +
+        'Le message part sur son téléphone à la prochaine relecture. Elle peut aussi ' +
+        'appuyer sur ⟳ pour le voir tout de suite.');
+    }
   },
+  /* « J'ai compris » sur une annulation. Range la notification **sur ce
+     téléphone-ci** : un prestataire n'a pas le droit d'effacer une ligne du
+     cahier partagé, et il ne doit pas l'avoir. Le propriétaire supprime la
+     mission pour de bon depuis sa page « Missions » (session 22). */
+  'annulation-vue': function (el) {
+    state.annulVues[el.dataset.id] = true;
+    save(); render();
+  },
+
   'msg-filter': function (el) { state.msgFilter = el.dataset.f; save(); render(); },
 
   /* Messages programmés --------------------------------------------------- */
@@ -9516,7 +9701,7 @@ var actions = {
   'remove-agent': function (el) {
     var id = el.dataset.ag, a = agent(id);
     var enCours = state.missions.filter(function (m) {
-      return m.taker === id && m.status !== 'termine';
+      return m.taker === id && m.status !== 'termine' && m.status !== 'annulee';
     });
     if (enCours.length && !confirm(enCours.length + ' mission(s) en cours lui sont attribuées. ' +
       'Elles repartiront dans les missions disponibles.\n\nSupprimer ' + a.name + ' ?')) return;
