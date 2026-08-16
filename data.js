@@ -229,7 +229,27 @@ var DB = (function () {
     var m = (e && (e.message || e.error_description)) || String(e || '');
     if (/Invalid login credentials/i.test(m)) return 'Adresse e-mail ou mot de passe incorrect.';
     if (/Email not confirmed/i.test(m)) return 'Ce compte n\'a pas encore été confirmé par e-mail.';
-    if (/Failed to fetch|NetworkError|network/i.test(m)) return 'Pas de connexion internet, ou le projet Supabase ne répond pas.';
+    /* « LOAD FAILED » — LE MESSAGE DE SAFARI (session 24, D-134)
+
+       Chaque navigateur a son mot pour « la requête n'est jamais partie » :
+       Chrome et Firefox disent « Failed to fetch », **Safari dit « Load
+       failed »**, et le Safari de l'iPhone aussi. Seul le premier était
+       reconnu ici : sur le Mac et l'iPhone de Marc, l'écran de connexion
+       affichait donc « Load failed » en anglais, sans la moindre indication.
+       C'est la règle 5 prise à l'envers — on n'invente pas de valeur, mais on
+       ne recopie pas non plus un message que personne ne peut comprendre.
+
+       Et la cause la plus fréquente, de loin, est unique : **Supabase met en
+       pause les projets gratuits laissés une semaine sans usage**, et retire
+       alors leur adresse. L'application frappe à une porte qui n'existe plus.
+       Rien n'est perdu — le projet se réveille d'un bouton — mais il faut le
+       dire, sinon le symptôme ressemble à une panne de mot de passe. */
+    if (/Failed to fetch|Load failed|NetworkError|network ?error|ERR_NAME|ERR_INTERNET/i.test(m)) {
+      return 'Le serveur ne répond pas. Deux raisons possibles, dans cet ordre : ' +
+        '① le projet Supabase est en pause (c\'est automatique après une semaine sans usage) — ' +
+        'ouvre supabase.com, connecte-toi, et appuie sur « Restore project » : rien n\'est perdu ; ' +
+        '② ta connexion internet est coupée.';
+    }
     if (/row-level security/i.test(m)) return 'Ce compte n\'a pas le droit d\'écrire ici.';
     if (/JWT|token/i.test(m)) return 'La session a expiré : reconnecte-toi.';
     /* « Cette fonction n'existe pas » veut toujours dire : un script n'a pas

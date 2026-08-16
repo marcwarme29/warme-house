@@ -570,6 +570,9 @@ function initialState() {
     // Ce sont des attentes de réponse, pas des données : `load()` les remet à zéro.
     icalEnCours: null,
     icalBilan: {},
+    // La relève automatique en cours (session 24, D-133) : une attente de
+    // réponse, elle non plus ne s'enregistre pas.
+    icalAutoEnCours: false,
 
     // Préférences d'affichage
     missionFilter: 'all',
@@ -688,6 +691,7 @@ function load() {
   state.migEnCours = false;
   state.majEnCours = false;           // le bouton « ⟳ » du prestataire (session 19)
   state.icalEnCours = null;           // un relevé de calendrier en cours (session 20)
+  state.icalAutoEnCours = false;      // la relève automatique en cours (session 24)
   state.mMsg = '';
   state.migMsg = '';
   state.photoPlein = null;            // une photo ouverte en grand n'est pas une donnée
@@ -1501,6 +1505,125 @@ function plateformeDuLien(url) {
   return 'iCal';
 }
 
+/* ==========================================================================
+   RELEVER LES CALENDRIERS — À LA MAIN ET TOUT SEUL (session 24, D-133)
+
+   Jusqu'ici la relève n'existait **que** sur le clic de « Relever maintenant ».
+   Rien d'autre ne l'appelait : ni l'ouverture de l'application, ni le retour au
+   premier plan, ni aucune horloge. Le §4 du document promettait pourtant « les
+   séjours entrent tout seuls », et Marc l'a signalé le 16 août : il importait
+   ses séjours à la main, un logement après l'autre.
+
+   C'est le corollaire de la règle 20, une fois de plus : **une donnée fabriquée
+   sur un geste a besoin que quelque chose refasse le geste.**
+
+   Pourquoi PAS un cron côté serveur, qui relèverait même application fermée :
+   il faudrait que `api/ical.js` écrive dans Supabase à la place du propriétaire,
+   donc qu'il porte la clé `service_role` — interdit (règle 2, D-60). La fusion,
+   la création des ménages et le rattrapage vivent tous dans `app.js`, du côté du
+   navigateur connecté. On relève donc quand l'application est ouverte, ce qui
+   couvre le cas réel : Marc ouvre MAISON WARME, ses séjours sont déjà là.
+
+   Deux garde-fous :
+   · **jamais deux relevés en même temps** — `state.icalEnCours` est un verrou
+     unique, et les logements passent l'un après l'autre ;
+   · **pas plus d'un relevé par heure et par logement** — c'est la cadence à
+     laquelle les plateformes rafraîchissent leur propre calendrier ; relever
+     plus souvent ne rapporterait rien et se ferait mal voir d'Airbnb.
+   ========================================================================== */
+
+/* Le délai minimum entre deux relevés automatiques d'un même logement. */
+var ICAL_DELAI = 60 * 60 * 1000;                      // une heure
+
+/* Relève tous les liens d'UN logement, l'un après l'autre, et pose le compte
+   rendu dans `state.icalBilan[pid]`. Rend une promesse, pour que l'appelant
+   puisse enchaîner. C'est le corps de l'ancien bouton, sorti tel quel pour que
+   la main et l'automatique fassent **exactement** la même chose (règle 13 :
+   deux chemins qui divergent, c'est un écran de maquette qui s'ignore). */
+function releverIcalDe(pid) {
+  var liens = state.extraFeeds[pid] || [];
+  if (!liens.length) return Promise.resolve(null);
+
+  state.icalEnCours = pid;
+  state.icalBilan[pid] = null;
+  render();
+
+  var total = { ajoutees: 0, majs: 0, annulees: 0, inchangees: 0, rattrapees: 0 };
+  var soucis = [];
+
+  return liens.reduce(function (chaine, lien) {
+    return chaine.then(function () {
+      return fetch('/api/ical?url=' + encodeURIComponent(lien))
+        .then(function (r) {
+          return r.text().then(function (corps) {
+            if (!r.ok) {
+              var dit = '';
+              try { dit = JSON.parse(corps).erreur; } catch (e) { dit = ''; }
+              throw new Error(dit || 'Le relevé a échoué (code ' + r.status + ').');
+            }
+            return corps;
+          });
+        })
+        .then(function (ics) {
+          var lot = analyserIcs(ics, plateformeDuLien(lien));
+          var b = fusionnerResas(pid, lot, 'ical');
+          ['ajoutees', 'majs', 'annulees', 'inchangees', 'rattrapees'].forEach(function (k) { total[k] += b[k]; });
+        })
+        .catch(function (e) {
+          soucis.push(plateformeDuLien(lien) + ' : ' + (e.message || 'raison inconnue'));
+        });
+    });
+  }, Promise.resolve()).then(function () {
+    state.icalEnCours = null;
+    var bilan = { quand: Date.now(), total: total, soucis: soucis };
+    state.icalBilan[pid] = bilan;
+    save();                                  // save() pousse aussi vers le cahier partagé
+    render();
+    return bilan;
+  });
+}
+
+/* LA RELÈVE AUTOMATIQUE. Appelée à trois moments, tous ceux où Marc a
+   l'application sous les yeux : à l'ouverture, juste après sa connexion, et
+   au retour au premier plan (l'onglet qu'on revient consulter).
+
+   Elle ne relève que les logements **dont le dernier relevé date de plus
+   d'une heure**. `icalBilan[pid].quand` porte cette date ; il est remis à
+   `null` quand un lien est ajouté ou retiré, ce qui déclenche alors une
+   relève immédiate — exactement ce qu'on veut quand Marc vient de coller son
+   adresse de calendrier.
+
+   Réservée au propriétaire : le prestataire n'a ni les liens ni le droit
+   d'écrire des séjours. */
+function releveAutoIcal() {
+  if (state.auth !== 'owner' || state.icalEnCours) return Promise.resolve(0);
+
+  var maintenant = Date.now();
+  var aRelever = state.props.filter(function (p) {
+    if (!(state.extraFeeds[p.id] || []).length) return false;
+    var bilan = state.icalBilan[p.id];
+    return !bilan || !bilan.quand || (maintenant - bilan.quand) > ICAL_DELAI;
+  });
+  if (!aRelever.length) return Promise.resolve(0);
+
+  state.icalAutoEnCours = true;
+  render();
+
+  return aRelever.reduce(function (chaine, p) {
+    return chaine.then(function () { return releverIcalDe(p.id); });
+  }, Promise.resolve()).then(function () {
+    state.icalAutoEnCours = false;
+    render();
+    return aRelever.length;
+  }).catch(function () {
+    // Un relevé qui échoue ne doit pas bloquer l'application : chaque souci
+    // est déjà écrit dans le compte rendu du logement concerné (règle 19).
+    state.icalAutoEnCours = false;
+    render();
+    return 0;
+  });
+}
+
 /* Une date iCal → 'AAAA-MM-JJ'. Deux formes existent : `20260810` (une
    journée entière, c'est le cas des séjours) et `20260810T140000Z` (un
    instant). Seul le jour nous intéresse. */
@@ -1708,7 +1831,12 @@ function entrerAvecProfil(p) {
   save();
   location.replace(homePath());
   render();
-  if (state.auth === 'owner') relireInvitations();
+  if (state.auth === 'owner') {
+    relireInvitations();
+    // Les calendriers sont relevés dès l'entrée : Marc ne doit plus avoir à
+    // demander l'import de ses séjours (session 24, D-133).
+    releveAutoIcal();
+  }
 }
 
 /* Les invitations encore en attente, relues depuis le cahier. Le propriétaire
@@ -1781,6 +1909,21 @@ function photoCount(m) {
 /* --------------------------------------------------------------------------
    Séjours en cours, départs signalés, logement prêt
    -------------------------------------------------------------------------- */
+
+/** « il y a 5 minutes », « à 09:05 », « le 14/08 à 09:05 » — en français
+    courant, jamais un nombre brut de millisecondes (session 24). */
+function quandReleve(ts) {
+  if (!ts) return 'inconnu';
+  var d = new Date(ts), ecart = Date.now() - ts;
+  var hm = ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2);
+  if (ecart < 60000) return 'à l’instant';
+  if (ecart < 3600000) return 'il y a ' + Math.round(ecart / 60000) + ' minute(s)';
+  var auj = new Date();
+  var memeJour = d.getFullYear() === auj.getFullYear() && d.getMonth() === auj.getMonth() &&
+    d.getDate() === auj.getDate();
+  if (memeJour) return 'aujourd’hui à ' + hm;
+  return 'le ' + ('0' + d.getDate()).slice(-2) + '/' + ('0' + (d.getMonth() + 1)).slice(-2) + ' à ' + hm;
+}
 
 /** Heure de l'horloge, au format 09:05. */
 function nowHM() {
@@ -8042,6 +8185,11 @@ function bienIcal(pid) {
         ? '<ul class="sec-note" style="margin:8px 0 0;padding-left:18px">' +
           bilan.soucis.map(function (s) { return '<li>' + esc(s) + '</li>'; }).join('') + '</ul>'
         : '') +
+      /* L'HEURE DU RELEVÉ (session 24, D-133). Sans elle, un compte rendu
+         « rien de nouveau » vieux de trois jours est indistinguable d'un
+         relevé de l'instant : Marc croirait que rien ne se relève plus. */
+      '<p class="sec-note" style="margin:8px 0 0;opacity:.85">Dernier relevé ' +
+        esc(quandReleve(bilan.quand)) + '.</p>' +
       '</div>';
   }
 
@@ -8053,10 +8201,20 @@ function bienIcal(pid) {
        il relève pour de vrai — mais il dit toujours honnêtement ce que l'iCal
        ne sait pas donner : ni le nom du voyageur, ni le montant (D-114). */
     '<p class="sec-note" style="margin:6px 0 0">Colle ici l’adresse du calendrier publiée par Airbnb ' +
-      'ou Booking.com pour ce logement, puis appuie sur « Relever maintenant » : les séjours entrent ' +
-      'et les missions de ménage se créent toutes seules. ' +
+      'ou Booking.com pour ce logement. Les séjours entrent et les missions de ménage se créent ' +
+      'toutes seules. ' +
       '<strong>Les calendriers ne donnent que les dates</strong> — ni le nom du voyageur, ni le ' +
       'montant, que les plateformes ne publient pas. C’est Beds24 qui les apportera.</p>' +
+
+    /* Dire que c'est automatique, sinon personne ne le sait (session 24,
+       D-133). Le bouton reste, mais il n'est plus la seule façon. */
+    (liens.length
+      ? '<p class="sec-note" style="margin:8px 0 0;padding:10px 12px;border-radius:12px;' +
+          'background:var(--green-bg);color:var(--green-t)"><strong>C’est automatique.</strong> ' +
+          'Les calendriers sont relevés <strong>chaque fois que tu ouvres MAISON WARME</strong> et ' +
+          'quand tu reviens sur l’onglet, au maximum une fois par heure — c’est la cadence à laquelle ' +
+          'Airbnb et Booking rafraîchissent les leurs. Le bouton ci-dessous sert à ne pas attendre.</p>'
+      : '') +
 
     '<div class="stack" style="margin-top:16px">' + (liens.length ? liens.map(function (u, i) {
       return '<div class="feed feed--new">' +
@@ -9402,47 +9560,16 @@ var actions = {
        chacun : un lien expiré ne doit pas faire croire que les autres ont
        échoué, ni l'inverse (règle 19) ;
      · on **dit toujours ce qu'on a trouvé**, y compris « rien de nouveau ».
-       Un bouton muet passe pour un bouton en panne (règle 18, D-94). */
+       Un bouton muet passe pour un bouton en panne (règle 18, D-94).
+
+     Session 24 (D-133) : le corps est parti dans `releverIcalDe()`, que la
+     relève automatique appelle aussi. Le bouton reste — relever à la demande
+     doit toujours être possible, et c'est lui qui affiche « Relevé en cours ».
+     Un seul corps pour les deux chemins : deux copies auraient divergé. */
   'relever-ical': function (el) {
     var pid = el.dataset.pid;
-    var liens = state.extraFeeds[pid] || [];
-    if (!liens.length || state.icalEnCours) return;
-
-    state.icalEnCours = pid;
-    state.icalBilan[pid] = null;
-    render();
-
-    var total = { ajoutees: 0, majs: 0, annulees: 0, inchangees: 0, rattrapees: 0 };
-    var soucis = [];
-
-    liens.reduce(function (chaine, lien) {
-      return chaine.then(function () {
-        return fetch('/api/ical?url=' + encodeURIComponent(lien))
-          .then(function (r) {
-            return r.text().then(function (corps) {
-              if (!r.ok) {
-                var dit = '';
-                try { dit = JSON.parse(corps).erreur; } catch (e) { dit = ''; }
-                throw new Error(dit || 'Le relevé a échoué (code ' + r.status + ').');
-              }
-              return corps;
-            });
-          })
-          .then(function (ics) {
-            var lot = analyserIcs(ics, plateformeDuLien(lien));
-            var b = fusionnerResas(pid, lot, 'ical');
-            ['ajoutees', 'majs', 'annulees', 'inchangees', 'rattrapees'].forEach(function (k) { total[k] += b[k]; });
-          })
-          .catch(function (e) {
-            soucis.push(plateformeDuLien(lien) + ' : ' + (e.message || 'raison inconnue'));
-          });
-      });
-    }, Promise.resolve()).then(function () {
-      state.icalEnCours = null;
-      state.icalBilan[pid] = { quand: Date.now(), total: total, soucis: soucis };
-      save();                                  // save() pousse aussi vers le cahier partagé
-      render();
-    });
+    if (state.icalEnCours) return;
+    releverIcalDe(pid);
   },
 
   /* Biens : création et suppression ------------------------------------- */
@@ -10767,6 +10894,21 @@ document.addEventListener('keydown', function (e) {
 
 window.addEventListener('hashchange', render);
 
+/* LE RETOUR AU PREMIER PLAN RELÈVE AUSSI LES CALENDRIERS (session 24, D-133).
+
+   `DB.surveillerRetour()` relit déjà le cahier partagé à ce moment-là — c'est
+   le filet de sécurité de la session 19. Mais relire le cahier ne fait entrer
+   aucun séjour neuf : les calendriers d'Airbnb et de Booking sont ailleurs, et
+   personne n'allait les chercher hors du bouton.
+
+   C'est le moment naturel : l'onglet MAISON WARME laissé ouvert depuis ce matin
+   et qu'on revient consulter à midi. `releveAutoIcal()` décide elle-même s'il y
+   a lieu de relever (pas plus d'une fois par heure et par logement). */
+document.addEventListener('visibilitychange', function () {
+  if (document.visibilityState !== 'visible') return;
+  releveAutoIcal();
+});
+
 // Sauvegarde de sécurité : la frappe en cours n'est pas perdue en quittant la page.
 window.addEventListener('beforeunload', save);
 
@@ -10805,7 +10947,12 @@ if (cahierPret) {
         // un lien précis (un livret, une mission).
         if (location.hash === '#/login' || !location.hash) location.replace(homePath());
         render();
-        if (state.auth === 'owner') relireInvitations();
+        if (state.auth === 'owner') {
+          relireInvitations();
+          // Session ouverte d'hier : les calendriers se relèvent sans rien
+          // demander, avant même que Marc regarde ses missions (D-133).
+          releveAutoIcal();
+        }
       });
     })
     .catch(function () { /* hors ligne : on garde ce qui est dans le navigateur */ });
