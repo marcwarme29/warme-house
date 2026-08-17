@@ -697,6 +697,25 @@ function load() {
   state.photoPlein = null;            // une photo ouverte en grand n'est pas une donnée
   state.apercuSejour = null;          // un aperçu n'est pas une donnée non plus
   state.sejourNet = null;             // une demande en cours ne survit pas à la page
+
+  /* LE CALENDRIER ROUVRE SUR AUJOURD'HUI (session 24, D-135)
+
+     Signalé le 16 août : *« j'ai réouvert mon app et mon calendrier est
+     complètement vide, mais les missions n'ont pas disparu. »* Rien n'avait
+     disparu : le planning affiche **31 jours à partir de `state.planStart`**,
+     et cette position était **enregistrée**. Posée au premier lancement, ou
+     déplacée un jour d'un clic sur « ← 7 jours », elle ne revenait plus
+     jamais d'elle-même. Des semaines plus tard, le calendrier s'ouvrait encore
+     sur cette fenêtre-là — vide, forcément — pendant que la liste des missions,
+     qui ne dépend d'aucune fenêtre, restait pleine. D'où deux écrans qui se
+     contredisent, et la peur d'avoir tout perdu.
+
+     C'est la **règle 7** : un état d'écran n'est pas une donnée et ne
+     s'enregistre pas. La position d'un calendrier en est un — comme un filtre
+     ou un onglet ouvert. `load()` la remet donc sur aujourd'hui, à la même
+     valeur que le bouton « Aujourd'hui » (trois jours de recul, pour voir les
+     départs de la veille). */
+  state.planStart = jourPlus(TODAY, -3);
   if (state.bienvenue) state.bienvenue.enCours = false;
   if (state.inv) state.inv.enCours = false;
 
