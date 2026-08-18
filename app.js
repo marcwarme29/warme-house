@@ -1160,6 +1160,65 @@ function montantResa(pid, r) {
 function montantEstime(r) { return r.montant === null || r.montant === undefined || r.montant === ''; }
 
 /** Met une réservation brute (formulaire, iCal, Beds24) au format commun. */
+/* ==========================================================================
+   RATTRAPER LES NOMS DÉJÀ EFFACÉS (session 24, D-141)
+
+   Corriger la cause ne rend pas ce qui a été perdu. Le corollaire de la
+   règle 20 s'applique une quatrième fois : **une donnée abîmée a besoin d'un
+   rattrapage**, et non d'un simple correctif pour l'avenir.
+
+   Où le nom a-t-il pu survivre ? Dans la **mission de ménage**. Quand le
+   voyageur se déclare, `enregistrer_voyageur()` (script 07) recopie son nom et
+   son effectif sur la mission de son départ et sur le `next` de la veille —
+   c'est ce que lit la prestataire. Or `fusionnerResas()` n'écrivait que sur le
+   **séjour** : les missions n'ont pas été touchées par l'écrasement.
+
+   On relit donc le nom depuis la mission quand le séjour l'a perdu. Sans
+   jamais inventer : si la mission porte elle aussi « Voyageur », on ne touche
+   à rien (règle 5).
+   ========================================================================== */
+function restaurerNomsVoyageurs() {
+  var repares = [];
+
+  state.props.forEach(function (p) {
+    resasOf(p.id).forEach(function (r) {
+      if (!nomGeneriqueResa(r.guest) && r.guests > 1) return;   // rien à réparer
+
+      // 1. La mission du départ porte le voyageur sortant.
+      var m = missionDuDepart(p.id, r);
+      var src = (m && m.res) ? m.res : null;
+
+      // 2. À défaut, la mission de la veille porte le voyageur qui arrive.
+      if (!src || nomGeneriqueResa(src.guest)) {
+        state.missions.forEach(function (x) {
+          if (x.prop !== p.id || x.date !== r.start || !x.next) return;
+          if (!nomGeneriqueResa(x.next.guest)) src = x.next;
+        });
+      }
+      if (!src) return;
+
+      var avant = { guest: r.guest, guests: r.guests };
+      if (nomGeneriqueResa(r.guest) && !nomGeneriqueResa(src.guest)) r.guest = src.guest;
+      if ((!r.guests || r.guests <= 1) && src.guests > 1) r.guests = src.guests;
+
+      if (r.guest !== avant.guest || r.guests !== avant.guests) {
+        repares.push({ pid: p.id, nom: r.guest, start: r.start });
+      }
+    });
+  });
+
+  return repares;
+}
+
+/* UN NOM DE REMPLISSAGE N'EST PAS UN NOM (session 24, D-141).
+   « Voyageur » est ce que l'application écrit quand elle ne sait pas — jamais
+   ce qu'une plateforme transmet. Le reconnaître permet de ne jamais laisser
+   une synchronisation remplacer un vrai nom par celui-là. */
+function nomGeneriqueResa(n) {
+  var s = String(n || '').trim();
+  return !s || /^(voyageur|guest|reserved|closed|not available)$/i.test(s);
+}
+
 function normaliserResa(brut, source, pid) {
   var r = {
     id: brut.id || '',
@@ -1467,9 +1526,25 @@ function fusionnerResas(pid, lot, source) {
       return;
     }
 
-    var change = ['plat', 'guest', 'guests', 'start', 'end', 'montant'].some(function (k) {
+    /* CE QUE LE LOT APPORTE VRAIMENT (session 24, D-141)
+
+       `normaliserResa()` **complète** ce qui manque : un séjour sans nom
+       devient « Voyageur », un séjour sans effectif devient 1. Ces valeurs de
+       remplissage sont indistinguables d'une vraie information une fois
+       normalisées — et elles écrasaient ce que le voyageur avait saisi.
+
+       On regarde donc le **brut**, pas le normalisé : le lot n'a apporté un
+       nom que si le calendrier en portait un, et un effectif que s'il en
+       portait un. Un calendrier iCal n'en porte jamais (D-114). */
+    var nomFourni = !nomGeneriqueResa(brut.guest);
+    var effectifFourni = parseInt(brut.guests, 10) > 0;
+
+    var change = ['plat', 'start', 'end'].some(function (k) {
       return incoming[k] !== null && connue[k] !== incoming[k];
-    });
+    }) ||
+      (nomFourni && connue.guest !== incoming.guest) ||
+      (effectifFourni && connue.guests !== incoming.guests) ||
+      (incoming.montant !== null && connue.montant !== incoming.montant);
     if (!change) { bilan.inchangees++; return; }
 
     // Les dates ont bougé : la mission de départ doit suivre. Si elle avait
@@ -1482,12 +1557,20 @@ function fusionnerResas(pid, lot, source) {
         ' : une nouvelle mission a été créée à cette date.');
       bilan.missionsAnnulees += bd.annulees.length;
     }
-    ['plat', 'guest', 'guests', 'start', 'end', 'uid', 'source'].forEach(function (k) { connue[k] = incoming[k]; });
+    ['plat', 'start', 'end', 'uid', 'source'].forEach(function (k) { connue[k] = incoming[k]; });
     if (incoming.montant !== null) connue.montant = incoming.montant;
 
-    // Ce que le voyageur a saisi lui-même ne doit jamais être effacé par une
-    // synchronisation : la plateforme ne le connaît pas (D-48). On ne recopie
-    // donc que les valeurs réellement apportées par le lot.
+    /* Ce que le voyageur a saisi lui-même ne doit jamais être effacé par une
+       synchronisation : la plateforme ne le connaît pas (D-48, D-91).
+
+       LE NOM ET L'EFFECTIF ÉTAIENT LES DEUX EXCEPTIONS (session 24, D-141) :
+       ils étaient recopiés **sans condition**, donc remplacés par « Voyageur »
+       et par 1 à chaque relevé. Le défaut dormait depuis D-114 ; il ne se
+       déclenchait qu'au clic sur « Relever maintenant ». En rendant la relève
+       automatique (D-133), on l'a rendu **systématique** : le nom disparaissait
+       à la première ouverture de l'application qui suivait la saisie. */
+    if (nomFourni || !connue.guest) connue.guest = incoming.guest;
+    if (effectifFourni || !connue.guests) connue.guests = incoming.guests;
     ['tel', 'tel4', 'mail', 'arriveePrevue'].forEach(function (k) {
       if (incoming[k]) connue[k] = incoming[k];
     });
@@ -1504,6 +1587,10 @@ function fusionnerResas(pid, lot, source) {
      qu'un import précédent s'est cassé en route — n'en auraient jamais eu :
      rien, dans cette fonction, ne repasse derrière un séjour connu. */
   bilan.rattrapees = creerMissionsManquantes(pid).length;
+  /* Et on repêche les noms qu'un relevé précédent avait effacés (D-141) : le
+     défaut a tourné entre le matin et le soir du 16 août, il faut repasser
+     derrière lui. Sans effet une fois tout réparé. */
+  bilan.nomsRepares = restaurerNomsVoyageurs().length;
   return bilan;
 }
 
@@ -1581,7 +1668,7 @@ function releverIcalDe(pid) {
   state.icalBilan[pid] = null;
   render();
 
-  var total = { ajoutees: 0, majs: 0, annulees: 0, inchangees: 0, rattrapees: 0 };
+  var total = { ajoutees: 0, majs: 0, annulees: 0, inchangees: 0, rattrapees: 0, nomsRepares: 0 };
   var soucis = [];
 
   return liens.reduce(function (chaine, lien) {
@@ -1600,7 +1687,7 @@ function releverIcalDe(pid) {
         .then(function (ics) {
           var lot = analyserIcs(ics, plateformeDuLien(lien));
           var b = fusionnerResas(pid, lot, 'ical');
-          ['ajoutees', 'majs', 'annulees', 'inchangees', 'rattrapees'].forEach(function (k) { total[k] += b[k]; });
+          ['ajoutees', 'majs', 'annulees', 'inchangees', 'rattrapees', 'nomsRepares'].forEach(function (k) { total[k] += (b[k] || 0); });
         })
         .catch(function (e) {
           soucis.push(plateformeDuLien(lien) + ' : ' + (e.message || 'raison inconnue'));
@@ -1943,6 +2030,7 @@ function entrerAvecProfil(p) {
   render();
   if (state.auth === 'owner') {
     relireInvitations();
+    if (restaurerNomsVoyageurs().length) save();     // D-141
     // Les calendriers sont relevés dès l'entrée : Marc ne doit plus avoir à
     // demander l'import de ses séjours (session 24, D-133).
     releveAutoIcal();
@@ -8458,6 +8546,12 @@ function bienIcal(pid) {
           'ont été rattrapés</strong> : ces séjours étaient déjà enregistrés, mais leur mission de ' +
           'ménage n’avait jamais été créée. Elle l’est maintenant.</p>'
         : '') +
+      /* Une réparation doit se voir, sinon elle passe pour un hasard (D-141). */
+      ((t.nomsRepares || 0)
+        ? '<p class="sec-note" style="margin:5px 0 0"><strong>' + t.nomsRepares + ' nom(s) de voyageur ' +
+          'ont été retrouvés</strong> : un relevé précédent les avait remplacés par « Voyageur ». ' +
+          'Ils ont été repêchés depuis la mission de ménage correspondante.</p>'
+        : '') +
       (bilan.soucis.length
         ? '<ul class="sec-note" style="margin:8px 0 0;padding-left:18px">' +
           bilan.soucis.map(function (s) { return '<li>' + esc(s) + '</li>'; }).join('') + '</ul>'
@@ -11269,6 +11363,10 @@ if (cahierPret) {
         render();
         if (state.auth === 'owner') {
           relireInvitations();
+          /* Les noms effacés par le défaut du 16 août sont repêchés AVANT le
+             relevé (D-141) : le relevé lui-même ne les abîme plus, mais on ne
+             veut pas faire attendre la réparation. */
+          if (restaurerNomsVoyageurs().length) save();
           // Session ouverte d'hier : les calendriers se relèvent sans rien
           // demander, avant même que Marc regarde ses missions (D-133).
           releveAutoIcal();
