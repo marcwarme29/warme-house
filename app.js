@@ -313,8 +313,11 @@ var T = {
   bvTitre:      ['Retrouvez votre séjour', 'Find your booking'],
   bvP:          ['Vos dates suffisent : indiquez le jour de votre arrivée et celui de votre départ.',
                  'Your dates are enough: enter your arrival day and your departure day.'],
+  bvPBien:      ['Votre date d’arrivée suffit.', 'Your arrival date is enough.'],
   bvDate:       ['Date de votre arrivée', 'Your arrival date'],
   bvFin:        ['Date de votre départ', 'Your departure date'],
+  /* Sur un lien par logement, le départ ne sert plus qu'à affiner (D-140). */
+  bvFinFac:     ['Date de votre départ (facultatif)', 'Your departure date (optional)'],
   bvNomTitre:   ['Votre nom (facultatif)', 'Your name (optional)'],
   bvNomAide:    ['Seulement si deux séjours se ressemblent. Vous pouvez laisser vide.',
                  'Only useful if two bookings look alike. You may leave this empty.'],
@@ -7067,6 +7070,7 @@ function viewOwnerBiens() {
     '</div>' + messageCahier() + form +
     '<div class="grid-cards" style="margin-top:22px">' +
       (cards || '<p class="empty">Aucun bien. Ajoutez le premier ci-dessus.</p>') + '</div>' +
+    carteLiensParLogement() +
     carteLienUnique() +
     carteConnexions());
 }
@@ -7091,10 +7095,67 @@ function texteBienvenue() {
   return 'Bonjour,\n\n' +
     'Voici votre livret d’accueil :\n' +
     appUrl() + '#/bienvenue\n\n' +
-    'Indiquez votre nom et votre date d’arrivée : vous retrouverez l’adresse, ' +
+    'Indiquez les dates de votre séjour : vous retrouverez l’adresse, ' +
     'les horaires, le code d’accès et le Wi-Fi pendant votre séjour, ainsi que ' +
     'nos conseils sur place.\n\n' +
     'À très bientôt !';
+}
+
+/* ==========================================================================
+   UN LIEN PAR LOGEMENT, RASSEMBLÉS AU MÊME ENDROIT (session 24, D-140)
+
+   Demandé le 16 août : *« pour le lien à envoyer au voyageur, ça serait bien
+   d'envoyer un lien par logement, comme ça ça évite qu'il se trompe de
+   logement. Comme ça il donne les dates de son séjour et il a accès à son
+   livret, ça évite le biais de deux séjours dans deux logements différents aux
+   mêmes dates. »*
+
+   Le raisonnement est juste, et le lien existait déjà (D-132) — mais **enfoui**
+   dans l'onglet « Livret d'accueil » de chaque logement, un écran où l'on ne va
+   pas quand on prépare ses messages automatiques. Pendant ce temps, la page
+   « Biens & connexions » mettait en avant le **lien général**, celui qui a
+   justement le défaut que le propriétaire décrit.
+
+   On inverse donc la hiérarchie : les liens par logement sont **rassemblés
+   ici**, un par ligne, copiables d'un clic ; le lien général reste, en second,
+   avec la mention de ce qu'il coûte. Rien n'est supprimé.
+   ========================================================================== */
+function carteLiensParLogement() {
+  var biens = state.props.filter(function (p) { return !p.gone; });
+  if (!biens.length) return '';
+
+  return '<div class="card" style="margin-top:22px;padding:22px;border-left:4px solid var(--vert)">' +
+    '<h2 style="font:700 16px Figtree,sans-serif;margin:0 0 4px">Un lien par logement — à préférer</h2>' +
+    '<p class="sec-note" style="margin:0 0 14px">Colle le lien d’un logement dans les messages ' +
+      'automatiques de <strong>l’annonce de ce logement</strong>, sur Airbnb comme sur Booking. Le ' +
+      'voyageur n’a plus qu’à donner <strong>ses dates</strong> : il voit tout de suite le nom de la ' +
+      'maison qu’il a réservée, et deux séjours aux mêmes dates dans deux maisons différentes ne ' +
+      'peuvent plus se confondre.</p>' +
+
+    '<div class="stack">' + biens.map(function (p) {
+      var lien = lienBien(p.id);
+      return '<div class="feed" style="align-items:center">' +
+        vignetteBien(p.id, p.color, 's') +
+        '<div style="flex:1;min-width:200px">' +
+          '<div style="font:600 13.5px Figtree,sans-serif">' + esc(p.name) + '</div>' +
+          '<div class="url">' + esc(lien) + '</div>' +
+        '</div>' +
+        '<div style="display:flex;gap:6px;flex-wrap:wrap;flex:none">' +
+          '<button type="button" class="btn btn--xs" style="background:var(--terra);color:#fff"' +
+            act('copier-lien', { url: lien }) + '>Copier</button>' +
+          '<button type="button" class="btn btn--xs" style="background:var(--cream);color:var(--ink-soft)"' +
+            act('copier-message-bien', { pid: p.id }) + '>Message tout prêt</button>' +
+          '<button type="button" class="btn btn--xs" style="background:var(--cream);color:var(--ink-soft)"' +
+            act('nav', { path: '#/bienvenue/' + p.id }) + '>👁</button>' +
+        '</div>' +
+      '</div>';
+    }).join('') + '</div>' +
+
+    '<p class="sec-note" style="margin-top:14px">💡 <strong>Avec ce lien, la date de départ n’est ' +
+      'même plus obligatoire</strong> : le logement étant déjà connu, la seule date d’arrivée suffit ' +
+      'à retrouver le bon séjour — deux voyageurs ne peuvent pas arriver le même jour dans la même ' +
+      'maison.</p>' +
+    '</div>';
 }
 
 function carteLienUnique() {
@@ -7102,10 +7163,12 @@ function carteLienUnique() {
   return '<div class="card" style="margin-top:22px;padding:22px;border-left:4px solid var(--terra)">' +
     '<h2 style="font:700 16px Figtree,sans-serif;margin:0 0 4px">Le lien à donner à tous les voyageurs</h2>' +
     '<p class="sec-note" style="margin:0 0 12px">Un seul lien, valable pour <strong>tous</strong> les ' +
-      'logements et tous les séjours : c’est celui à coller dans les messages automatiques d’Airbnb ' +
-      'et de Booking, une fois pour toutes. Le voyageur donne son nom et sa date d’arrivée, et il ' +
-      'tombe sur le livret de son logement. Son téléphone s’en souvient : les fois suivantes, ' +
-      'le livret s’ouvre tout seul.</p>' +
+      'logements et tous les séjours. Le voyageur donne <strong>ses deux dates</strong> et tombe sur ' +
+      'le livret de son logement ; son téléphone s’en souvient, et les fois suivantes le livret ' +
+      's’ouvre tout seul. <strong>Préfère les liens par logement ci-dessus</strong> : ils évitent ' +
+      'le seul cas ambigu, celui de deux séjours aux mêmes dates dans deux maisons différentes — ' +
+      'ici, il faut alors demander au voyageur laquelle est la sienne. Garde ce lien pour ce qui ' +
+      'n’est pas propre à une annonce.</p>' +
     '<input class="inp num" style="font-size:12.5px" readonly value="' + esc(lien) + '" data-fid="lien-bienvenue">' +
     '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">' +
       '<button type="button" class="btn btn--xs" style="background:var(--terra);color:#fff"' +
@@ -7116,10 +7179,12 @@ function carteLienUnique() {
         act('nav', { path: '#/bienvenue' }) + '>👁 Voir ce que le voyageur voit</button>' +
     '</div>' +
     '<p class="sec-note" style="margin-top:12px">À savoir, pour choisir en connaissance de cause : ' +
-      'ce lien identifie par le <strong>nom + la date d’arrivée</strong>. Quelqu’un qui connaîtrait ' +
-      'les deux pourrait ouvrir le livret de ce voyageur. Quand vous écrivez à une personne en ' +
-      'particulier, préférez le <strong>lien personnel</strong> de sa réservation — il n’a pas ce ' +
-      'défaut, et le voyageur n’a rien à taper.</p>' +
+      'ce lien identifie par les <strong>dates du séjour</strong> — le nom ne peut plus servir, les ' +
+      'calendriers d’Airbnb et de Booking ne le transmettent pas. Quelqu’un qui connaîtrait ces ' +
+      'dates pourrait donc ouvrir le livret. Le <strong>code d’accès et le Wi-Fi restent protégés ' +
+      'à part</strong> : ils ne s’affichent que pendant le séjour. Et quand vous écrivez à une ' +
+      'personne en particulier, le <strong>lien personnel</strong> de sa réservation reste le ' +
+      'meilleur — il n’a pas ce défaut, et le voyageur n’a rien à taper.</p>' +
     '</div>';
 }
 
@@ -7149,7 +7214,7 @@ function texteBienvenueBien(pid) {
   return 'Bonjour,\n\n' +
     'Voici votre livret d’accueil pour ' + p.name + ' :\n' +
     lienBien(pid) + '\n\n' +
-    'Indiquez votre nom et vos dates de séjour : vous y retrouverez l’adresse, ' +
+    'Indiquez votre date d’arrivée : vous y retrouverez l’adresse, ' +
     'les horaires, le code d’accès et le Wi-Fi pendant votre séjour, ainsi que ' +
     'nos conseils sur place.\n\n' +
     'À très bientôt !';
@@ -7173,9 +7238,11 @@ function carteLienBien(pid, b) {
       '<button type="button" class="btn btn--xs" style="background:var(--cream);color:var(--ink-soft)"' +
         act('nav', { path: '#/bienvenue/' + pid }) + '>👁 Voir ce que le voyageur voit</button>' +
     '</div>' +
-    '<p class="sec-note" style="margin-top:12px">Même limite que le lien général : il identifie par ' +
-      'le <strong>nom + les dates</strong>. Pour écrire à une personne en particulier, le ' +
-      '<strong>lien personnel</strong> de sa réservation reste préférable — il n’a pas ce défaut.</p>' +
+    '<p class="sec-note" style="margin-top:12px">Le voyageur n’a que sa <strong>date d’arrivée</strong> ' +
+      'à donner : le logement étant déjà connu, elle suffit. Quelqu’un qui connaîtrait cette date ' +
+      'pourrait ouvrir le livret — le code d’accès et le Wi-Fi, eux, restent protégés à part. Pour ' +
+      'écrire à une personne en particulier, le <strong>lien personnel</strong> de sa réservation ' +
+      'reste préférable : il n’a pas ce défaut.</p>' +
     '</div>';
 }
 
@@ -7789,7 +7856,7 @@ function bvRecherche() {
     '<section class="lv-section">' +
       '<div class="bv-card">' +
         '<h2 class="bv-h">' + esc(t('bvTitre')) + '</h2>' +
-        '<p class="bv-p">' + esc(t('bvP')) + '</p>' +
+        '<p class="bv-p">' + esc(bien ? t('bvPBien') : t('bvP')) + '</p>' +
 
         /* Quand le lien nomme le logement, on le DIT : le voyageur doit
            reconnaître la maison qu'il a réservée, sinon il se demande s'il est
@@ -7810,7 +7877,8 @@ function bvRecherche() {
            discriminant qu'une seule, et c'est la seule chose que le voyageur
            et le propriétaire connaissent tous les deux sans dépendre d'une
            plateforme. */
-        '<label class="lab" style="margin-top:14px" for="bv-fin">' + esc(t('bvFin')) + '</label>' +
+        '<label class="lab" style="margin-top:14px" for="bv-fin">' +
+          esc(bien ? t('bvFinFac') : t('bvFin')) + '</label>' +
         '<input class="inp" id="bv-fin" type="date" value="' + esc(b.fin || '') + '" ' +
           'data-fid="bv-fin" data-ch="bv-fin">' +
 
@@ -10239,8 +10307,12 @@ var actions = {
        Le nom était obligatoire ; depuis l'iCal aucun séjour n'en porte, et la
        porte était fermée pour tout le monde. */
     if (!b.date) { b.erreur = t('bvErrDate'); save(); render(); return; }
-    if (!b.fin) { b.erreur = t('bvErrFin'); save(); render(); return; }
-    if (b.fin <= b.date) { b.erreur = t('bvErrOrdre'); save(); render(); return; }
+    /* Le départ n'est exigé que sur le LIEN GÉNÉRAL (session 24, D-140).
+       Quand le lien désigne déjà le logement, la date d'arrivée suffit : deux
+       voyageurs ne peuvent pas arriver le même jour dans la même maison. Une
+       information de moins à taper, sur un écran que le voyageur découvre. */
+    if (!bienDuLien() && !b.fin) { b.erreur = t('bvErrFin'); save(); render(); return; }
+    if (b.fin && b.fin <= b.date) { b.erreur = t('bvErrOrdre'); save(); render(); return; }
     b.erreur = '';
 
     /* Le lien peut désigner un logement (session 23, D-132) : on ne cherche
