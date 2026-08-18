@@ -311,20 +311,27 @@ var T = {
   // Porte d'entrée
   bvSous:       ['Vous arrivez dans un logement MAISON WARME', 'You are arriving at a MAISON WARME property'],
   bvTitre:      ['Retrouvez votre séjour', 'Find your booking'],
-  bvP:          ['Deux informations suffisent : votre nom, tel que vous l’avez donné au moment de réserver, et la date de votre arrivée.',
-                 'Two details are enough: your name, as given when you booked, and your arrival date.'],
+  bvP:          ['Vos dates suffisent : indiquez le jour de votre arrivée et celui de votre départ.',
+                 'Your dates are enough: enter your arrival day and your departure day.'],
   bvDate:       ['Date de votre arrivée', 'Your arrival date'],
-  bvFin:        ['Date de votre départ (facultatif)', 'Your departure date (optional)'],
-  bvNomTitre:   ['Votre nom', 'Your name'],
+  bvFin:        ['Date de votre départ', 'Your departure date'],
+  bvNomTitre:   ['Votre nom (facultatif)', 'Your name (optional)'],
+  bvNomAide:    ['Seulement si deux séjours se ressemblent. Vous pouvez laisser vide.',
+                 'Only useful if two bookings look alike. You may leave this empty.'],
   bvErrNomCourt: ['Indiquez votre nom (au moins 3 lettres).', 'Please enter your name (at least 3 letters).'],
+  bvErrFin:     ['Indiquez aussi la date de votre départ.', 'Please also enter your departure date.'],
+  bvErrOrdre:   ['La date de départ doit être après celle d’arrivée.', 'The departure date must be after the arrival date.'],
   bvCherche:    ['Recherche…', 'Searching…'],
   bvTel:        ['4 derniers chiffres de votre téléphone', 'Last 4 digits of your phone number'],
   bvContinuer:  ['Continuer', 'Continue'],
   bvSaisPas:    ['Je ne sais pas quoi mettre →', 'I don’t know what to enter →'],
   bvErrDate:    ['Indiquez d’abord la date de votre arrivée.', 'Please enter your arrival date first.'],
   bvErrTel:     ['Il faut les 4 derniers chiffres de votre téléphone.', 'We need the last 4 digits of your phone number.'],
-  bvErrRien:    ['Aucun séjour ne correspond. Vérifiez l’orthographe de votre nom et la date, ou passez par « Je ne sais pas quoi mettre ».',
-                 'No booking matches. Check the spelling of your name and the date, or use “I don’t know what to enter”.'],
+  /* Le message ne parle plus d'orthographe du nom : le nom est facultatif
+     depuis D-139, et le renvoyer vers une faute de frappe qu'il n'a pas faite
+     ferait chercher au mauvais endroit (règle 5). */
+  bvErrRien:    ['Aucun séjour ne correspond à ces dates. Vérifiez le jour de votre arrivée et celui de votre départ — ce sont les dates de la réservation, pas celles de votre voyage. Sinon, passez par « Je ne sais pas quoi mettre ».',
+                 'No booking matches these dates. Check your arrival and departure days — these are the booking dates, not your travel dates. Otherwise, use “I don’t know what to enter”.'],
   bvChoixT:     ['Lequel est le vôtre ?', 'Which one is yours?'],
   bvChoixP:     ['Plusieurs séjours correspondent. Choisissez votre logement.',
                  'Several bookings match. Please choose your property.'],
@@ -573,6 +580,9 @@ function initialState() {
     // La relève automatique en cours (session 24, D-133) : une attente de
     // réponse, elle non plus ne s'enregistre pas.
     icalAutoEnCours: false,
+    // Les outils de mise en service dépliés (session 24, D-138) : un état
+    // d'écran, replié à chaque ouverture.
+    outilsOuverts: false,
 
     // Préférences d'affichage
     missionFilter: 'all',
@@ -692,6 +702,7 @@ function load() {
   state.majEnCours = false;           // le bouton « ⟳ » du prestataire (session 19)
   state.icalEnCours = null;           // un relevé de calendrier en cours (session 20)
   state.icalAutoEnCours = false;      // la relève automatique en cours (session 24)
+  state.outilsOuverts = false;        // les outils de mise en service (session 24, D-138)
   state.mMsg = '';
   state.migMsg = '';
   state.photoPlein = null;            // une photo ouverte en grand n'est pas une donnée
@@ -1750,6 +1761,83 @@ function nuitsDansMois(r, mois) {
   return n;
 }
 
+/* ==========================================================================
+   LES NUITS RÉELLEMENT OCCUPÉES — JAMAIS PLUS DE 100 % (session 24, D-136)
+
+   Signalé le 16 août : *« dans les statistiques j'ai appartement cosy avec un
+   taux d'occupation à 110 %, ce n'est pas possible. »* Il a raison, et le
+   chiffre était bien faux.
+
+   `statsMois()` faisait la **somme** des nuits séjour par séjour. Deux séjours
+   qui se chevauchent comptent alors la même nuit **deux fois**, et un mois de
+   31 jours peut afficher 34 nuits. Le taux n'a plus aucun sens, et les revenus
+   du mois sont gonflés d'autant.
+
+   D'où viennent ces chevauchements ? De **D-125**, très probablement : le
+   calendrier de Booking ne distingue pas une réservation d'une période fermée,
+   donc on prend tout. Or quand un logement est branché sur Airbnb **et** sur
+   Booking, une réservation Airbnb va bloquer les mêmes dates chez Booking — et
+   ce blocage entre chez nous comme un **second séjour**. La contrepartie de
+   D-125 était assumée (« un ménage de trop, visible donc supprimable »), mais
+   son effet sur les statistiques n'avait pas été vu.
+
+   Deux réponses, et il faut les deux :
+   · **compter les jours distincts** plutôt que de les additionner — un jour
+     occupé deux fois reste un jour ;
+   · **le DIRE.** Plafonner sans rien dire aurait caché un vrai doublon, qui
+     fausse aussi les revenus et crée un ménage en trop (règle 5 : avant
+     d'écrire qu'une donnée est bonne, vérifier ; et règle 13 : un écran qui a
+     l'air juste est plus dangereux qu'un écran absent). C'est
+     `chevauchements()` qui le dit, en nommant les séjours en cause.
+   ========================================================================== */
+
+/** Les jours distincts occupés par une liste de séjours, dans un mois donné. */
+function nuitsOccupeesMois(liste, mois) {
+  var jours = {};
+  liste.forEach(function (r) {
+    if (r.statut === 'annule') return;
+    for (var j = r.start; j < r.end; j = jourPlus(j, 1)) if (moisDe(j) === mois) jours[j] = true;
+  });
+  return Object.keys(jours).length;
+}
+
+/** Les jours distincts occupés dans une fenêtre [debut, debut+nbJours[. */
+function nuitsOccupeesFenetre(liste, debut, nbJours) {
+  var fin = jourPlus(debut, nbJours);
+  var jours = {};
+  liste.forEach(function (r) {
+    if (r.statut === 'annule') return;
+    for (var j = r.start; j < r.end; j = jourPlus(j, 1)) {
+      if (j >= debut && j < fin) jours[j] = true;
+    }
+  });
+  return Object.keys(jours).length;
+}
+
+/* Les paires de séjours qui se chevauchent dans un logement. Rendu à
+   l'affichage pour être NOMMÉ : « Voyageur (12→16 août) et Voyageur (12→16
+   août) occupent les mêmes nuits ». C'est presque toujours la même réservation
+   arrivée deux fois, par Airbnb et par Booking. */
+function chevauchements(pid) {
+  var l = resasOf(pid).filter(function (r) { return r.statut !== 'annule'; });
+  var paires = [];
+  for (var i = 0; i < l.length; i++) {
+    for (var j = i + 1; j < l.length; j++) {
+      if (l[i].start < l[j].end && l[j].start < l[i].end) paires.push([l[i], l[j]]);
+    }
+  }
+  return paires;
+}
+
+/** Tous les chevauchements, tous logements confondus. */
+function tousChevauchements() {
+  var out = [];
+  state.props.forEach(function (p) {
+    chevauchements(p.id).forEach(function (paire) { out.push({ pid: p.id, paire: paire }); });
+  });
+  return out;
+}
+
 /* Articles de stock : liste à plat, noms de catégories, et regroupement. */
 function arts() { return state.articles; }
 function groups() {
@@ -2653,10 +2741,11 @@ function lowsFor(pid) {
    aucune photo n'a été choisie (session 23, D-129). Un repli, toujours :
    sans lui, la liste des missions serait trouée jusqu'à ce que les quatre
    logements aient leur photo. */
-function vignetteBien(pid, couleur) {
+function vignetteBien(pid, couleur, taille) {
   var url = state.photosBien[pid];
   if (url) {
-    return '<img class="vignette" src="' + esc(url) + '" alt="">';
+    return '<img class="vignette' + (taille ? ' vignette--' + taille : '') + '" src="' +
+      esc(url) + '" alt="">';
   }
   return '<span class="dot" style="width:7px;height:7px;flex:none;background:' +
     (couleur || prop(pid).color) + '"></span>';
@@ -4131,7 +4220,7 @@ function viewOwnerDash() {
         '<div class="det">' + esc(a.det) + '</div></div>';
     }).join('') + '</div>' +
 
-    blocDemenagement() +
+    blocOutils() +
 
     blocAcces(attente) +
 
@@ -4508,9 +4597,49 @@ function etatResa(x) {
   };
 }
 
+/* ==========================================================================
+   LES OUTILS DE MISE EN SERVICE, REPLIÉS (session 24, D-138)
+
+   Demandé le 16 août : *« les encarts "mise en service" et "repartir de zéro",
+   tu les gardes mais plus visibles. »* Les deux ont servi une fois, à
+   l'installation ; ils occupaient depuis le bas de chaque tableau de bord, et
+   l'un d'eux porte un bouton qui **efface tout**.
+
+   **Rien n'est supprimé** — c'est la règle du projet, et ces deux outils
+   restent nécessaires : « Déménager mes données » se relance sans risque, et
+   « Repartir de zéro » servira le jour où il faudra tout reprendre. Ils
+   passent simplement derrière un **lien discret**, replié par défaut.
+
+   L'ouverture est un **état d'écran** : elle ne s'enregistre pas et repart
+   fermée à chaque ouverture de l'application (règle 7, comme D-135). Le
+   contraire ferait réapparaître le bouton rouge sans qu'on l'ait demandé.
+   ========================================================================== */
+function blocOutils() {
+  if (typeof DB === 'undefined' || !DB.estDispo()) return '';
+  var p = DB.profil();
+  if (!p || p.role !== 'owner') return '';
+
+  /* Une exception, et une seule : tant que les logements de démonstration sont
+     là, l'encadré s'ouvre de lui-même. C'est le seul cas où le message a
+     quelque chose d'urgent à dire — sinon on part avec des voyageurs inventés
+     dans ses vraies statistiques. */
+  var urgent = resteDeDemo();
+  var ouvert = state.outilsOuverts || urgent;
+
+  return '<div style="margin-top:20px">' +
+    (urgent ? '' :
+      '<button type="button" class="btn btn--xs" style="background:transparent;color:var(--muted);' +
+        'padding-left:0"' + act('toggle-outils') + '>' +
+        (ouvert ? '▾' : '▸') + ' Outils de mise en service' +
+      '</button>') +
+    (ouvert ? blocDemenagement() : '') +
+    '</div>';
+}
+
 /* Le déménagement des données vers le grand cahier partagé (§19.6).
    N'apparaît que pour un propriétaire connecté avec un vrai compte, et
-   disparaît de lui-même une fois que la base contient les biens. */
+   disparaît de lui-même une fois que la base contient les biens.
+   Depuis la session 24 (D-138), il est replié dans `blocOutils()`. */
 function blocDemenagement() {
   if (typeof DB === 'undefined' || !DB.estDispo()) return '';
   var p = DB.profil();
@@ -4518,7 +4647,7 @@ function blocDemenagement() {
 
   var fini = /^✅/.test(state.migMsg || '');
 
-  return '<div class="card" style="margin-top:20px;border-left:4px solid var(--terra)">' +
+  return '<div class="card" style="margin-top:12px;border-left:4px solid var(--terra)">' +
     '<h2 class="sec-title" style="margin:0 0 6px">Mise en service — déménager mes données</h2>' +
     '<p class="page-sub" style="margin:0 0 14px">' +
       'Tes logements, réservations et missions vivent encore dans ce navigateur. ' +
@@ -5045,11 +5174,12 @@ function viewOwnerCal() {
         (iso2 === TODAY ? ' plan-cell--today' : '') + '"></div>';
     }
 
-    var nuitsOcc = 0;
+    // Jours distincts occupés dans la fenêtre affichée : additionner séjour par
+    // séjour faisait dépasser 100 % dès qu'ils se chevauchaient (D-136).
+    var nuitsOcc = nuitsOccupeesFenetre(resasOf(pid), start, PLAN_JOURS);
     var barres = resasOf(pid).map(function (r) {
       if (r.end <= start || r.start > fin) return '';          // hors de la fenêtre
       var i0 = nights(start, r.start), i1 = nights(start, r.end);
-      for (var n = Math.max(0, i0); n < Math.min(PLAN_JOURS, i1); n++) nuitsOcc++;
 
       var coupeG = i0 < 0, coupeD = i1 > PLAN_JOURS;
       var g = Math.max(0, i0), dte = Math.min(PLAN_JOURS, i1);
@@ -5069,7 +5199,10 @@ function viewOwnerCal() {
     return '<div class="plan-row">' +
       '<div class="plan-name">' +
         '<button type="button" class="plan-prop"' + act('nav', { path: '#/admin/biens/' + pid }) + '>' +
-          '<span class="dot" style="background:' + p.color + '"></span>' +
+          /* La photo du logement plutôt que la pastille quand elle existe
+             (session 24, D-137) : on reconnaît la maison d'un coup d'œil, et
+             `vignetteBien()` garde la pastille en repli. */
+          vignetteBien(pid, p.color, 's') +
           '<span class="grow"><span class="plan-prop-n">' + esc(p.short) + '</span>' +
           '<span class="plan-prop-s num">' + taux + ' % occupé</span></span></button>' +
       '</div>' +
@@ -5720,19 +5853,28 @@ function moisDispo() {
 function statsMois(mois) {
   var jours = nbJoursMois(mois);
   return state.props.map(function (p) {
-    var nuits = 0, sejours = 0, revenus = 0, estimes = 0;
+    var nuitsCumul = 0, sejours = 0, revenus = 0, estimes = 0;
+    var duMois = [];
     resasOf(p.id).forEach(function (r) {
       var n = nuitsDansMois(r, mois);
       if (!n) return;
-      nuits += n; sejours++;
+      duMois.push(r);
+      nuitsCumul += n; sejours++;
       var total = nights(r.start, r.end) || 1;
       revenus += Math.round(montantResa(p.id, r) * n / total);   // au prorata des nuits du mois
       if (montantEstime(r)) estimes++;
     });
     var depenses = ledger().filter(function (l) { return l.month === mois && l.prop === p.id; })
       .reduce(function (n, l) { return n + l.price; }, 0);
+
+    /* LE TAUX SE CALCULE SUR LES JOURS DISTINCTS (D-136) : deux séjours qui se
+       chevauchent occupent la même nuit une seule fois. `nuitsCumul` est gardé
+       à part — l'écart entre les deux est exactement ce qui est compté deux
+       fois, et c'est ce qu'on affiche pour le dire. */
+    var nuits = nuitsOccupeesMois(duMois, mois);
     return {
       p: p, nuits: nuits, jours: jours, taux: Math.round(nuits / jours * 100),
+      doublons: Math.max(0, nuitsCumul - nuits),
       sejours: sejours, revenus: revenus, depenses: depenses, net: revenus - depenses,
       estimes: estimes, adr: nuits ? Math.round(revenus / nuits) : 0
     };
@@ -5844,6 +5986,38 @@ function detailStatBien(l, mois) {
     '</div>';
 }
 
+/* DIRE LES SÉJOURS QUI SE CHEVAUCHENT (session 24, D-136)
+
+   Le taux d'occupation ne peut plus dépasser 100 % — mais s'arrêter là aurait
+   **caché** le doublon, qui gonfle aussi les revenus du mois et crée un ménage
+   de trop. On le nomme donc, avec les dates, et on dit quoi en faire. */
+function bandeauChevauchements() {
+  var l = tousChevauchements();
+  if (!l.length) return '';
+
+  var lignes = l.slice(0, 6).map(function (x) {
+    var a = x.paire[0], b = x.paire[1];
+    return '<li><strong>' + esc(prop(x.pid).short) + '</strong> — ' +
+      esc(a.guest) + ' (' + esc(fmtDate(a.start)) + ' → ' + esc(fmtDate(a.end)) + ', ' + esc(a.plat) + ')' +
+      ' et ' + esc(b.guest) + ' (' + esc(fmtDate(b.start)) + ' → ' + esc(fmtDate(b.end)) + ', ' + esc(b.plat) + ')</li>';
+  }).join('');
+
+  return '<div style="margin-top:14px;border-radius:16px;padding:14px 16px;background:var(--amber-bg);' +
+      'border-left:3px solid var(--amber-t)">' +
+    '<div style="font:700 13.5px Figtree,sans-serif;color:var(--amber-t)">⚠️ ' + l.length +
+      ' séjour(s) occupent les mêmes nuits qu\'un autre</div>' +
+    '<p class="sec-note" style="margin:6px 0 0">C\'est presque toujours <strong>la même réservation ' +
+      'arrivée deux fois</strong> : quand un logement est branché sur Airbnb <em>et</em> sur Booking, ' +
+      'une réservation prise sur l\'un bloque les mêmes dates sur l\'autre — et Booking ne dit pas la ' +
+      'différence entre « réservé » et « fermé ». Le doublon <strong>gonfle tes revenus et crée un ' +
+      'ménage en trop</strong> : ouvre le séjour à supprimer et supprime-le, la mission suivra.</p>' +
+    '<ul class="sec-note" style="margin:8px 0 0;padding-left:18px">' + lignes + '</ul>' +
+    (l.length > 6 ? '<p class="sec-note" style="margin:6px 0 0">… et ' + (l.length - 6) + ' autre(s).</p>' : '') +
+    '<p class="sec-note" style="margin:8px 0 0;opacity:.85">Le taux d\'occupation affiché ci-dessus ne ' +
+      'compte <strong>chaque nuit qu\'une fois</strong> : il est juste, même avec ces doublons.</p>' +
+    '</div>';
+}
+
 function viewOwnerStats() {
   var mois = state.statMonth;
   var lignes = statsMois(mois);
@@ -5896,6 +6070,8 @@ function viewOwnerStats() {
     (tot.estimes ? '<p class="sec-note" style="margin-top:12px">⚠︎ ' + tot.estimes + ' séjour(s) sans montant réel : ' +
       'le revenu est calculé au prix par nuit du logement. Corrigez-le sur la fiche de la réservation, ' +
       'ou attendez la connexion Beds24 qui apportera les montants exacts.</p>' : '') +
+
+    bandeauChevauchements() +
 
     '<h2 class="sec-title" style="margin-top:26px">Par logement</h2>' +
     '<div class="card" style="padding:0;overflow:hidden">' +
@@ -6834,7 +7010,16 @@ function viewOwnerBiens() {
     return '<button type="button" class="bien-card" style="--accent:' + p.color + '"' +
       act('open-bien', { id: p.id }) + '>' +
       '<div style="display:flex;gap:14px;align-items:center">' +
-        '<div class="bien-thumb stripe">PHOTO<br>BIEN</div>' +
+        /* LA VRAIE PHOTO DU LOGEMENT (session 24, D-137). C'était jusqu'ici
+           un carré rayé portant le mot « PHOTO BIEN » — un reste de maquette,
+           alors que la photo existait déjà depuis D-129 et s'affichait dans
+           les missions et les statistiques. Repli sur le carré de couleur du
+           logement, jamais sur un texte qui promet une image (règle 13). */
+        (state.photosBien[p.id]
+          ? '<img class="bien-thumb" src="' + esc(state.photosBien[p.id]) + '" alt="" ' +
+            'style="object-fit:cover">'
+          : '<div class="bien-thumb" style="background:' + p.tint + ';color:' + p.color + ';' +
+            'font:700 20px Figtree,sans-serif">' + esc(p.short.slice(0, 2).toUpperCase()) + '</div>') +
         '<div style="min-width:0"><div style="font:700 18px/1.2 Figtree,sans-serif">' + esc(p.name) + '</div>' +
         '<div style="font:500 12.5px Figtree,sans-serif;color:var(--muted);margin-top:3px">' +
           esc([(state.info[p.id] || {}).capacity, (state.info[p.id] || {}).surface, p.city].filter(Boolean).join(' · ')) + '</div></div>' +
@@ -7620,21 +7805,26 @@ function bvRecherche() {
         '<input class="inp" id="bv-date" type="date" value="' + esc(b.date) + '" ' +
           'data-fid="bv-date" data-ch="bv-date">' +
 
-        /* La date de DÉPART (session 23). Facultative, et c'est voulu : elle ne
-           sert qu'à départager deux séjours du même voyageur. L'exiger ferait
-           échouer ceux qui ne s'en souviennent pas. */
+        /* LA DATE DE DÉPART DEVIENT OBLIGATOIRE (session 24, D-139), parce que
+           c'est elle qui remplace le nom. Deux dates, c'est bien plus
+           discriminant qu'une seule, et c'est la seule chose que le voyageur
+           et le propriétaire connaissent tous les deux sans dépendre d'une
+           plateforme. */
         '<label class="lab" style="margin-top:14px" for="bv-fin">' + esc(t('bvFin')) + '</label>' +
         '<input class="inp" id="bv-fin" type="date" value="' + esc(b.fin || '') + '" ' +
           'data-fid="bv-fin" data-ch="bv-fin">' +
 
-        /* LE NOM, ET NON PLUS LES 4 CHIFFRES DU TÉLÉPHONE (session 18, D-90).
-           Ces 4 chiffres, presque aucune plateforme ne les transmet : personne
-           ne pouvait donc se retrouver, et le propriétaire a constaté à juste
-           titre qu'« on ne lui demande aucune info ». Le nom, lui, figure
-           toujours sur la réservation. */
+        /* LE NOM DEVIENT FACULTATIF (session 24, D-139). Il était obligatoire
+           depuis D-90 — mais depuis que les séjours arrivent par iCal (D-114),
+           ils s'appellent TOUS « Voyageur » : les plateformes ne publient pas
+           le nom. Exiger un nom qu'aucune réservation ne porte fermait la porte
+           à tout le monde. Il reste proposé : le propriétaire peut l'avoir
+           saisi à la main (D-118), et il départage alors deux séjours qui se
+           ressemblent. */
         '<label class="lab" style="margin-top:14px" for="bv-nom">' + esc(t('bvNomTitre')) + '</label>' +
         '<input class="inp" id="bv-nom" type="text" autocomplete="name" ' +
           'placeholder="' + esc(t('bvNomPh')) + '" value="' + esc(b.nom) + '" data-fid="bv-nom" data-in="bv-nom">' +
+        '<p class="bv-aide">' + esc(t('bvNomAide')) + '</p>' +
 
         (b.erreur ? '<p class="bv-err">' + esc(b.erreur) + '</p>' : '') +
 
@@ -9592,6 +9782,10 @@ var actions = {
   },
 
   /* Biens : création et suppression ------------------------------------- */
+  /* Déplier les outils de mise en service (session 24, D-138). Pas de `save()` :
+     l'ouverture est un état d'écran et ne doit pas survivre au rechargement. */
+  'toggle-outils': function () { state.outilsOuverts = !state.outilsOuverts; render(); },
+
   'toggle-new-bien': function () { state.showNewBien = !state.showNewBien; save(); render(); },
   'nb-color': function (el) { state.nb.color = el.dataset.c; save(); render(); },
   'create-bien': function () {
@@ -10041,8 +10235,12 @@ var actions = {
      navigateur si le réseau manque, ou si le script 07 n'est pas encore collé. */
   'bv-chercher': function () {
     var b = state.bienvenue;
+    /* LES DEUX DATES, ET LE NOM EN PLUS SI ON L'A (session 24, D-139).
+       Le nom était obligatoire ; depuis l'iCal aucun séjour n'en porte, et la
+       porte était fermée pour tout le monde. */
     if (!b.date) { b.erreur = t('bvErrDate'); save(); render(); return; }
-    if ((b.nom || '').trim().length < 3) { b.erreur = t('bvErrNomCourt'); save(); render(); return; }
+    if (!b.fin) { b.erreur = t('bvErrFin'); save(); render(); return; }
+    if (b.fin <= b.date) { b.erreur = t('bvErrOrdre'); save(); render(); return; }
     b.erreur = '';
 
     /* Le lien peut désigner un logement (session 23, D-132) : on ne cherche
@@ -10064,16 +10262,22 @@ var actions = {
     };
 
     var localement = function () {
-      // Repli : les séjours déjà présents sur cet appareil. Le nom d'abord,
-      // les 4 chiffres ensuite pour ne pas perdre l'ancien parcours.
-      var n = nomSimple(b.nom);
-      var parNom = restreindre(allResas().filter(function (x) {
+      /* Repli : les séjours déjà présents sur cet appareil. On cherche par
+         DATES (D-139) ; le nom, s'il a été saisi, ne fait qu'affiner — et s'il
+         ne correspond à rien on garde le résultat des dates plutôt que de
+         renvoyer « je ne trouve rien » (même principe que `affiner`). */
+      var parDates = restreindre(allResas().filter(function (x) {
         var r = x.r;
         if (r.statut === 'annule' || r.end < TODAY) return false;
-        if (nomSimple(r.guest).indexOf(n) < 0) return false;
+        if (b.fin && r.end !== b.fin) return false;
         return r.start === b.date || (r.start <= b.date && b.date < r.end);
       }));
-      return affiner(parNom.length ? parNom : restreindre(trouverSejour(b.date, b.tel4)));
+      var n = (b.nom || '').trim().length >= 3 ? nomSimple(b.nom) : '';
+      if (n && parDates.length > 1) {
+        var parNom = parDates.filter(function (x) { return nomSimple(x.r.guest).indexOf(n) >= 0; });
+        if (parNom.length) return parNom;
+      }
+      return affiner(parDates);
     };
 
     var suite = function (trouves) {
@@ -10091,7 +10295,32 @@ var actions = {
 
     b.enCours = true;
     render();
-    DB.chercherSejour(b.nom, b.date)
+    /* LA RECHERCHE PAR DATES D'ABORD (session 24, D-139), et le nom en repli.
+       Deux raisons de garder l'ancien chemin plutôt que de le remplacer :
+       tant que le script 10 n'est pas collé, `chercher_sejour_dates` n'existe
+       pas et l'appel échoue — il faut alors que la porte continue de
+       fonctionner pour les séjours dont le nom EST connu (saisi à la main,
+       D-118) ; et un voyageur qui donne son nom doit être trouvé même si ses
+       dates sont approximatives. Règle 19 : une fonction facultative ne casse
+       jamais le reste. */
+    var duBienId = duBien ? duBien.id : null;
+    var parNomSiPossible = function () {
+      if ((b.nom || '').trim().length < 3) return Promise.resolve([]);
+      return DB.chercherSejour(b.nom, b.date).catch(function () { return []; });
+    };
+
+    DB.chercherSejourDates(b.date, b.fin, duBienId)
+      .catch(function (e) {
+        /* Le script 10 n'est pas collé : on le DIT au propriétaire dans la
+           console d'erreur habituelle, et on se rabat sur le nom. Le voyageur,
+           lui, ne doit pas lire un message technique. */
+        if (typeof console !== 'undefined' && console.warn) console.warn(e && e.message);
+        return parNomSiPossible();
+      })
+      .then(function (lignes) {
+        if (!lignes.length) return parNomSiPossible();
+        return lignes;
+      })
       .then(function (lignes) {
         if (!lignes.length) { suite(localement()); return; }
         // Un seul séjour : on l'installe et on ouvre. Plusieurs : on fait choisir.

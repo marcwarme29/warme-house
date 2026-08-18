@@ -256,7 +256,12 @@ var DB = (function () {
        été collé. On nomme LEQUEL — il y en a plusieurs depuis le lot 3, et un
        message qui désigne le mauvais fait perdre du temps (session 18). */
     if (/schema cache|Could not find the (function|table)/i.test(m)) {
-      var script = /sejour_par_lien|chercher_sejour|enregistrer_voyageur|signaler_depart|nom_simple/i.test(m)
+      /* `chercher_sejour_dates` doit être testé AVANT `chercher_sejour`, qui
+         est contenu dedans : sinon le message nomme le script 07 alors que
+         c'est le 10 qui manque, et on cherche au mauvais endroit (D-139). */
+      var script = /chercher_sejour_dates/i.test(m)
+        ? '« 10-recherche-par-dates.sql »'
+        : /sejour_par_lien|chercher_sejour|enregistrer_voyageur|signaler_depart|nom_simple/i.test(m)
         ? '« 07-livret-voyageur.sql »'
         : /deposer_avis|\bavis\b/i.test(m) ? '« 08-avis.sql »'
           : /demander_acces|menage_fini|prestataires|stocks|reglages|acces/i.test(m) ? '« 09-lot4.sql »'
@@ -1263,6 +1268,28 @@ var DB = (function () {
     });
   }
 
+  /* RETROUVER SON SÉJOUR PAR SES DATES (session 24, D-139)
+
+     `chercher_sejour` exige un nom d'au moins 3 caractères. Or depuis l'iCal
+     tous les séjours s'appellent « Voyageur » : plus personne ne pouvait
+     entrer. On cherche donc par arrivée + départ, avec le logement quand le
+     lien le désigne (D-132).
+
+     Script `supabase/10-recherche-par-dates.sql`. Tant qu'il n'est pas collé,
+     l'appel échoue avec « Could not find the function » — `messageClair()` le
+     traduit en nommant le fichier, et l'appelant se rabat sur la recherche par
+     nom (règle 19 : une table ou une fonction facultative ne casse rien, et
+     son absence se DIT). */
+  function chercherSejourDates(jour, fin, bien) {
+    if (!dispo) return Promise.resolve([]);
+    return client.rpc('chercher_sejour_dates', {
+      jour: jour, fin: fin || null, p_bien: bien || null
+    }).then(function (r) {
+      if (r.error) throw new Error(messageClair(r.error));
+      return r.data || [];
+    });
+  }
+
   /* Le voyageur laisse ses coordonnées. La fonction met aussi à jour les
      missions concernées : c'est ainsi que la prestataire apprend qui arrive
      derrière et à quelle heure. */
@@ -1908,6 +1935,7 @@ var DB = (function () {
     // Le livret du voyageur (lot 3) — appelable sans compte.
     sejourParLien: sejourParLien,
     chercherSejour: chercherSejour,
+    chercherSejourDates: chercherSejourDates,
     enregistrerVoyageur: enregistrerVoyageur,
     signalerDepart: signalerDepart,
     pousser: pousser,

@@ -1729,6 +1729,11 @@ textarea.inp { min-height: 90px; resize: vertical; line-height: 1.5; }
   background: var(--fill4);
 }
 .vignette--l { width: 56px; height: 42px; border-radius: 10px; }
+/* Le calendrier : colonne de 176 px, la vignette doit laisser la place au nom (D-137). */
+.vignette--s { width: 28px; height: 22px; border-radius: 6px; }
+
+/* L'aide sous un champ facultatif de la page d'accueil voyageur (D-139). */
+.bv-aide { font: 500 12px Figtree, sans-serif; color: var(--muted2); margin: 6px 0 0; }
 
 .checkbox-sq { width: 16px; height: 16px; border-radius: 5px; border: 1.5px solid rgba(36,30,26,.2); flex: none; }
 .checkbox-sq--on {
