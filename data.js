@@ -530,6 +530,30 @@ var DB = (function () {
 
   var ETATS_MISSION = ['dispo', 'prise', 'encours', 'termine', 'annulee'];
 
+  /* LE PROPRIÉTAIRE N'EFFACE PLUS LE TRAVAIL DU PRESTATAIRE (session 25, D-142)
+
+     C'était la règle 16 (D-91) jamais appliquée aux missions, et elle coûtait
+     très cher. Cet envoi partait avec TOUTES les missions de l'ordinateur du
+     propriétaire, à chaque enregistrement, et il portait trois colonnes que
+     seul le PRESTATAIRE remplit : `provider_id` (à qui la mission appartient),
+     `taker_legacy` (son nom) et `report` (son compte rendu).
+
+     Quand le propriétaire ne savait pas nommer le preneur — sa fiche pas encore
+     reliée au compte, ou simplement une copie d'écran en retard de quelques
+     secondes sur ce que la prestataire venait de faire —, il envoyait
+     `provider_id: null`. Le cahier obéissait. Et comme les règles de lecture
+     de Supabase disent « un prestataire ne voit que les missions dont
+     `provider_id` est le sien », la mission **disparaissait purement et
+     simplement de son téléphone** ; côté propriétaire elle restait « terminée »
+     mais sans nom, donc invisible au registre de paie — « 0 mission ».
+
+     Trois symptômes, une seule cause. On retire donc ces trois colonnes d'ici :
+     elles partent maintenant par une mise à jour ciblée, ligne par ligne, qui
+     n'écrit que ce qu'on sait vraiment (voir `missionPreneur`). Ce qui n'est
+     pas fourni reste intact — c'est tout l'objet de la règle 16.
+
+     `status` reste ici : c'est le propriétaire qui crée une mission et qui
+     l'annule (D-119). Une annulation doit donc pouvoir partir. */
   function missionVersBase(m) {
     return {
       id: m.id,
@@ -540,18 +564,34 @@ var DB = (function () {
       window_label: m.windowLabel || '',
       price: m.price || 0,
       status: ETATS_MISSION.indexOf(m.status) >= 0 ? m.status : 'dispo',
-      provider_id: uuidDuPrestataire(m.taker),
-      taker_legacy: m.taker || null,
       guest: (m.res && m.res.guest) || '',
       guests: (m.res && m.res.guests) || null,
       urgent: m.urgent || '',
       note: m.note || '',
       turnover: !!m.turnover,
       next_guest: m.next || null,
-      report: (state.reports && state.reports[m.id]) || null,
       review: m.review || null,
       redo: m.redo || ''
     };
+  }
+
+  /* Les colonnes du PRENEUR, envoyées seulement quand on les connaît.
+
+     Une par ligne, jamais en lot : dans un envoi groupé, une clé absente d'une
+     ligne vaut NULL et non « on n'y touche pas » (règle 21, D-113). C'est
+     précisément le piège qu'on cherche à éviter ici, il serait absurde d'y
+     retomber par la porte d'à côté. Même forme que `majVoyageurs`.
+
+     Rien à envoyer quand personne n'a pris la mission : le cahier garde ce
+     qu'il a, et une mission neuve naît sans preneur, ce qui est correct. */
+  function missionPreneur(m) {
+    if (!m || !m.id || !m.taker) return null;
+    var maj = { taker_legacy: m.taker };
+    var uid = uuidDuPrestataire(m.taker);
+    if (uid) maj.provider_id = uid;
+    var rapport = state.reports && state.reports[m.id];
+    if (rapport) maj.report = rapport;
+    return { id: m.id, maj: maj };
   }
 
   /* Tant que les prestataires n'ont pas de compte, on ne peut pas remplir
@@ -621,6 +661,14 @@ var DB = (function () {
     return rid ? 'av_' + rid + '_' + v.kind : v.id;
   }
 
+  /* MÊME DÉFAUT QUE LES MISSIONS, UNE TABLE PLUS LOIN (session 25, D-142).
+     `deposer_avis()` (script 08) désigne elle-même, côté serveur, la personne
+     qui a fait le ménage noté. Renvoyer ici `provider_id: null` parce que
+     l'ordinateur du propriétaire n'a pas su la nommer effaçait ce travail —
+     et `avis_presta` filtrant sur `provider_id`, **la note disparaissait de
+     l'écran du prestataire**. C'est exactement le symptôme « elle ne voit pas
+     ses commentaires » de la session 20, dont on n'avait vu qu'une cause
+     (D-110). Même remède : ces deux colonnes sortent de l'envoi groupé. */
   function avisVersBase(v) {
     var rid = idDuSejour(v.resa);
     return {
@@ -631,11 +679,18 @@ var DB = (function () {
       kind: v.kind === 'sejour' ? 'sejour' : 'menage',
       stars: v.stars,
       texte: v.texte || '',
-      provider_id: uuidDuPrestataire(v.agent),
-      taker_legacy: v.agent || null,
       guest: v.guest || '',
       date_label: v.dateLabel || ''
     };
+  }
+
+  /** Qui a fait le ménage noté — envoyé seulement quand on le sait. */
+  function avisPresta(v) {
+    if (!v || !v.agent) return null;
+    var maj = { taker_legacy: v.agent };
+    var uid = uuidDuPrestataire(v.agent);
+    if (uid) maj.provider_id = uid;
+    return { id: idAvis(v, idDuSejour(v.resa)), maj: maj };
   }
 
   function avisDepuisBase(lignes) {
@@ -937,10 +992,26 @@ var DB = (function () {
     return trouve || 'Direct';
   }
 
+  /* SOUS QUEL NOM AFFICHER LE PRENEUR D'UNE MISSION ?
+
+     REPLI SUR LE COMPTE (session 25, D-142). On ne cherchait que dans les
+     FICHES, et on rendait `null` dès qu'aucune fiche ne portait cet
+     identifiant de compte. Résultat, sur l'ordinateur du propriétaire dont la
+     fiche n'était pas (ou plus) reliée au compte : la mission revenait du
+     cahier « terminée » et **sans personne**, donc absente du registre de
+     paie — « 0 mission effectuée », alors que le ménage avait bien été fait.
+
+     Le compte, lui, est toujours là : `state.comptes` vient d'être relu, et
+     `lireTout()` le lit AVANT les missions, exprès. On y retombe donc, avec
+     exactement la règle d'`identifiantDeCompte()` — la même règle partout,
+     sinon les deux moitiés de l'application ne parlent plus de la même
+     personne. Mieux vaut un nom repêché qu'un travail invisible (règle 5). */
   function prenomDuCompte(uid) {
     if (!uid) return null;
     var a = (state.agents || []).filter(function (x) { return x.uid === uid; })[0];
-    return a ? a.id : null;
+    if (a) return a.id;
+    var c = (state.comptes || []).filter(function (x) { return x.uid === uid; })[0];
+    return c ? (c.legacy_id || c.nom || c.email || null) : null;
   }
 
   /* --- les comptes --- */
@@ -1134,12 +1205,20 @@ var DB = (function () {
   /* Avancement d'une mission déjà prise : démarrage, fin, compte rendu. */
   function majMission(m) {
     if (!dispo || !profil || !m) return Promise.resolve();
-    return client.from('missions').update({
+    var maj = {
       status: ETATS_MISSION.indexOf(m.status) >= 0 ? m.status : 'dispo',
       report: (state.reports && state.reports[m.id]) || null,
       done_at: m.status === 'termine' ? new Date().toISOString() : null,
       updated_at: new Date().toISOString()
-    }).eq('id', m.id).then(function (r) {
+    };
+    /* LE NOM VOYAGE AVEC LA MISSION (session 25, D-142). `prendre_mission`
+       n'inscrit que `provider_id`, un identifiant technique : pour le
+       traduire en « Sofia », l'ordinateur du propriétaire devait retrouver
+       lui-même le compte, et il n'y arrivait pas toujours. Le prestataire
+       écrit donc son nom dans la ligne, une fois pour toutes — cette colonne
+       est faite pour ça (`taker_legacy`, script 02). */
+    if (m.taker) maj.taker_legacy = m.taker;
+    return client.from('missions').update(maj).eq('id', m.id).then(function (r) {
       if (r.error) derniereErreur = messageClair(r.error);
       return !r.error;
     });
@@ -1171,6 +1250,23 @@ var DB = (function () {
   }
 
   function supprimerMission(id) { return supprimerLigne('missions', id); }
+
+  /* DÉTACHER UNE MISSION DE SON PRENEUR (session 25, D-142).
+     Depuis que le propriétaire n'écrase plus les colonnes du prestataire, un
+     retrait doit être DIT au cahier — sinon il revient à la première
+     relecture. C'est la règle 12, appliquée à des colonnes plutôt qu'à une
+     ligne : ce qu'on efface, il faut l'effacer là-bas aussi. */
+  function detacherMission(id) {
+    if (!dispo || !profil || !id) return Promise.resolve(true);
+    return client.from('missions')
+      .update({ provider_id: null, taker_legacy: null, updated_at: new Date().toISOString() })
+      .eq('id', id)
+      .then(function (r) {
+        if (r && r.error) { derniereErreur = messageClair(r.error); return false; }
+        return true;
+      })
+      .catch(function (e) { derniereErreur = messageClair(e); return false; });
+  }
   function supprimerResa(id) { return supprimerLigne('reservations', id); }
   function supprimerBien(id) { return supprimerLigne('properties', id); }
 
@@ -1632,15 +1728,23 @@ var DB = (function () {
      les réservations dont un voyageur a rempli le livret en portent.
      On rend le même objet `{ error }` qu'un upsert, pour que la chaîne
      d'étapes n'ait pas à savoir laquelle des deux formes elle appelle. */
-  function majVoyageurs(lignes) {
-    return lignes.reduce(function (chaine, v) {
-      return chaine.then(function (bilan) {
-        if (bilan && bilan.error) return bilan;               // on s'arrête au premier refus
-        return client.from('reservations').update(v.maj).eq('id', v.id)
-          .then(function (r) { return (r && r.error) ? r : bilan; });
-      });
-    }, Promise.resolve({}));
+  function majUneParUne(table) {
+    return function (lignes) {
+      return lignes.reduce(function (chaine, v) {
+        return chaine.then(function (bilan) {
+          if (bilan && bilan.error) return bilan;             // on s'arrête au premier refus
+          return client.from(table).update(v.maj).eq('id', v.id)
+            .then(function (r) { return (r && r.error) ? r : bilan; });
+        });
+      }, Promise.resolve({}));
+    };
   }
+
+  var majVoyageurs = majUneParUne('reservations');
+
+  /* Le nom du preneur et son compte rendu (session 25, D-142). Même forme, et
+     pour exactement la même raison : n'écrire que les colonnes qu'on connaît. */
+  var majPreneurs = majUneParUne('missions');
 
   /* LE FILET : DEUX FOIS LA MÊME LIGNE DANS UN LOT (session 20, D-116)
 
@@ -1683,12 +1787,14 @@ var DB = (function () {
         if (v) voyageurs.push(v);
       });
     });
-    var missions = (state.missions || [])
-      .filter(function (m) { return m.id && m.date && bienExiste(m.prop); })
-      .map(missionVersBase);
-    var avis = (state.avis || [])
-      .filter(function (v) { return v.id && v.stars && bienExiste(v.pid); })
-      .map(avisVersBase);
+    var missionsVivantes = (state.missions || [])
+      .filter(function (m) { return m.id && m.date && bienExiste(m.prop); });
+    var missions = missionsVivantes.map(missionVersBase);
+    var preneurs = missionsVivantes.map(missionPreneur).filter(Boolean);
+    var avisVivants = (state.avis || [])
+      .filter(function (v) { return v.id && v.stars && bienExiste(v.pid); });
+    var avis = avisVivants.map(avisVersBase);
+    var avisAgents = avisVivants.map(avisPresta).filter(Boolean);
     var fiches = (state.agents || [])
       .filter(function (a) { return a.id && !a.gone; })
       .map(function (a) { return prestataireVersBase(a, moi); });
@@ -1712,12 +1818,20 @@ var DB = (function () {
       { nom: 'les codes d\'accès', table: 'property_secrets', lignes: secrets, cle: ['property_id'] },
       { nom: 'les réservations', table: 'reservations', lignes: resas, cle: ['id'] },
       { nom: 'les missions', table: 'missions', lignes: missions, cle: ['id'] },
+      /* QUI A PRIS QUOI (session 25, D-142). Après les missions — la ligne doit
+         exister avant qu'on lui pose un preneur — et une par une, pour n'écrire
+         que ce qu'on sait. Facultative : si elle échoue, les missions sont déjà
+         parties, et son refus est dit au lieu d'être avalé (règle 4). */
+      { nom: 'qui a pris les missions', table: 'missions', lignes: preneurs,
+        cle: ['id'], envoi: majPreneurs, facultative: true },
       /* La seconde passe des réservations (D-113). Placée APRÈS les missions :
          chaque ligne y est mise à jour séparément, avec ses seules colonnes,
          et si l'une échoue on veut que les missions soient déjà parties. */
       { nom: 'les coordonnées des voyageurs', table: 'reservations',
         lignes: voyageurs, envoi: majVoyageurs },
       { nom: 'les avis des voyageurs', table: 'avis', lignes: avis, facultative: true, cle: ['id'] },
+      { nom: 'qui a fait le ménage noté', table: 'avis', lignes: avisAgents,
+        cle: ['id'], envoi: majUneParUne('avis'), facultative: true },
       // Le lot 4 (script 09). Facultatives pour la même raison que les avis :
       // tant que le script n'est pas collé, rien d'autre ne doit en souffrir.
       { nom: 'les fiches des prestataires', table: 'prestataires', lignes: fiches, facultative: true, cle: ['id'] },
@@ -1925,6 +2039,7 @@ var DB = (function () {
     majComptesLies: majComptesLies,
     prendreMission: prendreMission,
     majMission: majMission,
+    detacherMission: detacherMission,
     supprimerMission: supprimerMission,
     supprimerResa: supprimerResa,
     supprimerBien: supprimerBien,

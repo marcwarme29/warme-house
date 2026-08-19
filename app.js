@@ -1063,6 +1063,14 @@ function agent(id) {
   return state.agents.find(function (a) { return a.id === id; }) ||
     { id: id, name: id || 'Prestataire supprimé', init: '··', role: '', since: '', note: '—', email: '', iban: '—', avatarBg: '#EFEAE2', avatarFg: '#8A7D72', roleBg: '#EFEAE2', roleFg: '#8A7D72', props: [], gone: true };
 }
+/* LE NOM DE QUI A PRIS LA MISSION (session 25, D-143).
+   Un seul point de vérité : `m.taker` est une CLÉ de fiche, jamais un nom, et
+   il peut manquer alors que la mission n'est plus libre — c'est exactement le
+   défaut de D-142. On ne dit alors pas « Prestataire supprimé », ce qui serait
+   faux : on dit que personne n'y est rattaché (règle 5). */
+function nomPreneur(m) {
+  return m && m.taker ? agent(m.taker).name : 'personne pour l’instant';
+}
 function service(key) {
   return state.services.find(function (s) { return s.key === key; }) ||
     { key: key, label: 'Prestation supprimée', duration: '', gone: true };
@@ -3081,8 +3089,14 @@ function decorate(m) {
     hasRes: !!(m.res && parseInt(m.res.guests, 10) > 0),
     guestsLabel: m.res && parseInt(m.res.guests, 10) > 0
       ? m.res.guests + (m.res.guests > 1 ? ' voyageurs' : ' voyageur') : '',
-    statusLabel: m.status === 'prise' && m.taker ? 'Acceptée · ' + m.taker
-      : m.status === 'termine' && m.taker ? 'Faite · ' + m.taker
+    /* LE PRÉNOM, PAS L'IDENTIFIANT (session 25, D-143). On affichait `m.taker`
+       tel quel : c'est une CLÉ, pas un nom. Les prestataires de démonstration
+       s'appelaient « Sofia » des deux côtés, ce qui a caché le défaut pendant
+       vingt-cinq sessions ; une fiche réellement créée porte `asofia_lwc9`, et
+       c'est ce que le propriétaire lisait — « Faite · asofia_lwc9 ». Autant
+       dire « faite par personne ». `agent()` rend toujours quelque chose. */
+    statusLabel: m.status === 'prise' && m.taker ? 'Acceptée · ' + nomPreneur(m)
+      : m.status === 'termine' && m.taker ? 'Faite · ' + nomPreneur(m)
         : st.label,
     statusCls: st.cls,
     total: total, done: done,
@@ -3738,14 +3752,25 @@ function viewPrestaGains() {
       '</article>';
   }).join('');
 
+  /* LE MOIS ÉTAIT ÉCRIT EN DUR (session 25). « Mois en cours · juillet 2026 »
+     et « 5 août 2026 » étaient deux restes de maquette : ils ne bougeaient
+     pas, et en août ils faisaient croire au prestataire qu'il lisait le mois
+     précédent — donc que ses missions du mois n'étaient pas comptées. Elles
+     l'étaient : c'est l'étiquette qui mentait (règle 5, corollaire D-128). */
+  var moisCourant = MONTHS.filter(function (m) { return m.key === CURRENT_MONTH; })[0] || MONTHS[0];
+  var versement = new Date(
+    parseInt(CURRENT_MONTH.slice(0, 4), 10),
+    parseInt(CURRENT_MONTH.slice(5, 7), 10), 5);
+
   var body = '<div class="stack" style="gap:14px">' +
     '<article class="card" style="border-radius:22px">' +
-      '<div style="font:600 12px Figtree,sans-serif;color:var(--muted)">Mois en cours · juillet 2026</div>' +
+      '<div style="font:600 12px Figtree,sans-serif;color:var(--muted)">Mois en cours · ' + esc(moisCourant.label.toLowerCase()) + '</div>' +
       '<div class="gain-big num">' + current + ' €</div>' +
-      '<div class="num" style="font:500 13px Figtree,sans-serif;color:var(--muted);margin-top:4px">' + currentCount + ' missions terminées ce mois</div>' +
+      '<div class="num" style="font:500 13px Figtree,sans-serif;color:var(--muted);margin-top:4px">' + currentCount + ' mission(s) terminée(s) ce mois</div>' +
       '<div style="height:1px;background:rgba(36,30,26,.08);margin:14px 0"></div>' +
       '<div style="display:flex;justify-content:space-between;font:500 13px Figtree,sans-serif;color:var(--ink-soft2)">' +
-        '<span>Versement prévu</span><span class="num" style="font-weight:700">5 août 2026</span></div>' +
+        '<span>Versement prévu</span><span class="num" style="font-weight:700">5 ' +
+          esc(MOIS_LONGS[versement.getMonth()]) + ' ' + versement.getFullYear() + '</span></div>' +
     '</article>' + months + '</div>';
 
   return prestaShell(prestaHeader(agent(me).name, 'Mes gains'), body);
@@ -4246,9 +4271,9 @@ function viewOwnerDash() {
         t.arrive.guest + ' arrive' + (t.arrive.arriveePrevue || inf.checkin ? ' à ' + (t.arrive.arriveePrevue || inf.checkin) : '') + '. ' +
         (!m ? 'Aucune mission de ménage n’est prévue.'
           : m.status === 'dispo' ? 'Mission encore non prise.'
-            : m.status === 'termine' ? 'Ménage terminé par ' + m.taker + '.'
-              : m.status === 'encours' ? 'Ménage en cours par ' + m.taker + '.'
-                : 'Acceptée par ' + m.taker + '.') });
+            : m.status === 'termine' ? 'Ménage terminé par ' + nomPreneur(m) + '.'
+              : m.status === 'encours' ? 'Ménage en cours par ' + nomPreneur(m) + '.'
+                : 'Acceptée par ' + nomPreneur(m) + '.') });
   });
 
   alerts.push({ cls: 'alert--amber', dot: C.ambre, kind: 'Stock bas',
@@ -4677,9 +4702,9 @@ function etatResa(x) {
   // Où en est le ménage prévu au départ ?
   var menage = !m ? { l: 'Pas de ménage', c: 'badge--soft' }
     : m.status === 'dispo' ? { l: 'Ménage non pris', c: 'badge--terra' }
-      : m.status === 'termine' ? { l: 'Ménage fait · ' + m.taker, c: 'badge--green' }
-        : m.status === 'encours' ? { l: 'Ménage en cours · ' + m.taker, c: 'badge--amber' }
-          : { l: 'Ménage pris · ' + m.taker, c: 'badge--blue' };
+      : m.status === 'termine' ? { l: 'Ménage fait · ' + nomPreneur(m), c: 'badge--green' }
+        : m.status === 'encours' ? { l: 'Ménage en cours · ' + nomPreneur(m), c: 'badge--amber' }
+          : { l: 'Ménage pris · ' + nomPreneur(m), c: 'badge--blue' };
 
   return {
     pid: pid, r: r, mission: m, sejour: sejour, menage: menage,
@@ -5156,6 +5181,17 @@ function viewOwnerMission() {
         '</div>';
     }).join('') + '</div></div>';
 
+  /* QUI A FAIT CETTE MISSION — ET COMMENT LE CORRIGER (session 25, D-142)
+
+     Il n'existait aucun moyen de le dire à la main. Tant que la chaîne
+     fonctionnait, ce n'était pas gênant ; le jour où une mission est revenue
+     du cahier sans preneur, le propriétaire n'avait **aucun geste** pour
+     réparer — ni pour payer la personne qui l'avait pourtant faite.
+     Règle 20 : chaque geste doit avoir son inverse, et l'inverse doit être
+     écrit. Attribuer réinscrit aussi la mission dans le compte du prestataire,
+     donc la lui rend visible sur son téléphone. */
+  var quiCard = carteQuiAFait(m, ag, fini);
+
   /* Note libre, visible par le prestataire dans le détail de sa mission. */
   var noteCard = '<div class="card" style="padding:20px">' +
     '<h2 style="font:700 16px Figtree,sans-serif;margin:0">Note pour le prestataire</h2>' +
@@ -5211,12 +5247,50 @@ function viewOwnerMission() {
         '<h2 class="sec-title" style="margin:0">Checklist exécutée</h2>' + checklist +
       '</section>' +
       '<section style="flex:1;min-width:min(100%,280px);display:flex;flex-direction:column;gap:14px">' +
-        problemesCard + noteCard + suivi + recap + decision +
+        problemesCard + noteCard + suivi + recap + quiCard + decision +
         (state.migMsg ? '<p class="sec-note">' + esc(state.migMsg) + '</p>' : '') +
         '<button type="button" class="btn-danger-xs" style="align-self:flex-start"' +
           act('remove-mission', { id: m.id }) + '>Supprimer cette mission</button>' +
       '</section>' +
     '</div>' + releve + vueGrandePhoto());
+}
+
+/** La personne à qui la mission est attribuée, et de quoi la corriger. */
+function carteQuiAFait(m, ag, fini) {
+  var candidats = (state.agents || []).filter(function (a) {
+    return a.id && !a.gone && a.kind !== 'cles';
+  });
+
+  /* Sur une mission terminée, l'encadré « Mission réalisée par » dit déjà qui
+     c'est, avec sa photo et ses chiffres : répéter le titre ici serait du
+     bruit (leçon de la session 19). On ne garde alors que ce qu'il n'a pas —
+     de quoi corriger. Le titre revient dès que quelque chose cloche. */
+  var discret = fini && !!ag;
+
+  var puces = candidats.map(function (a) {
+    var on = m.taker === a.id;
+    return '<button type="button" class="perm-chip" aria-pressed="' + on + '" style="--accent:' + C.vert + '"' +
+      act('attribuer-mission', { id: m.id, ag: a.id }) + '>' +
+      '<span class="checkbox-sq' + (on ? ' checkbox-sq--on' : '') + '" style="--accent:' + C.vert + '"></span>' +
+      esc(a.name) + '</button>';
+  }).join('');
+
+  return '<div class="card" style="padding:20px">' +
+    (discret ? '' : '<h2 style="font:700 16px Figtree,sans-serif;margin:0">Qui a fait cette mission&nbsp;?</h2>') +
+    '<p class="sec-note" style="margin:' + (discret ? '0' : '4px 0 0') + '">' +
+      (ag ? 'Ce n’est pas la bonne personne&nbsp;? Corrige ici — c’est elle ou lui qui sera payé.'
+          : m.status === 'dispo'
+            ? 'Personne pour l’instant — elle attend d’être prise sur un téléphone. C’est normal.'
+            : '<strong>Personne n’y est rattaché</strong>, alors que la mission n’est plus libre. Elle ' +
+              'n’apparaît donc dans les gains de personne. Choisis la personne qui l’a faite&nbsp;: ' +
+              'elle la retrouvera sur son téléphone et sera payée.') +
+    '</p>' +
+    (candidats.length
+      ? '<div class="chiprow" style="margin-top:12px;gap:8px">' + puces + '</div>' +
+        (m.taker ? '<button type="button" class="btn btn--xs" style="margin-top:12px;background:var(--cream);color:var(--ink-soft)"' +
+          act('attribuer-mission', { id: m.id, ag: '' }) + '>Ne l’attribuer à personne</button>' : '')
+      : '<p class="sec-note" style="margin-top:10px">Aucun prestataire enregistré.</p>') +
+  '</div>';
 }
 
 /* --- Prestataires -------------------------------------------------------- */
@@ -8839,6 +8913,12 @@ function take(id) {
         state.priseEnCours = null;
         m.status = 'prise';
         m.taker = state.me;
+        /* ON INSCRIT SON NOM DANS LA LIGNE (session 25, D-142). La fonction
+           `prendre_mission` de Supabase n'y pose qu'un identifiant technique.
+           Le propriétaire devait le retraduire lui-même en « Sofia », et
+           quand il n'y arrivait pas la mission lui revenait terminée mais
+           sans personne — ni « acceptée par », ni rémunération à verser. */
+        if (typeof DB !== 'undefined' && DB.estDispo()) DB.majMission(m);
         save();
         go('#/app/missions/' + id);
       })
@@ -9747,6 +9827,38 @@ var actions = {
 
     var m = mid ? mission(mid) : null;
     if (m && typeof DB !== 'undefined' && DB.estDispo() && DB.profil()) DB.majMission(m);
+  },
+
+  /* ATTRIBUER UNE MISSION À LA MAIN (session 25, D-142).
+     Le geste de réparation quand une mission revient du cahier sans preneur.
+     Il fait trois choses, et il faut les trois : il inscrit la personne dans
+     la ligne (donc au registre de paie), il rend la mission visible sur son
+     téléphone — c'est `provider_id` que les règles de Supabase regardent —,
+     et il remet le statut d'accord avec la réalité, parce qu'une mission
+     « libre » avec un preneur n'a aucun sens et resterait dans le pool. */
+  'attribuer-mission': function (el) {
+    var m = mission(el.dataset.id);
+    if (!m) return;
+    var qui = el.dataset.ag || '';
+
+    if (!qui || m.taker === qui) {
+      if (!m.taker) return;
+      if (!confirm('Retirer ' + agent(m.taker).name + ' de cette mission ?\n\n' +
+                   'Elle disparaîtra de ses gains, et redeviendra libre si elle n\'est pas terminée.')) return;
+      m.taker = null;
+      if (m.status === 'prise' || m.status === 'encours') m.status = 'dispo';
+      state.done = state.done.filter(function (x) { return x.mid !== m.id; });
+      save();
+      // Le cahier ne devine pas un retrait : il faut le lui dire (règle 12).
+      if (typeof DB !== 'undefined' && DB.estDispo() && DB.profil()) DB.detacherMission(m.id);
+      render();
+      return;
+    }
+
+    m.taker = qui;
+    if (m.status === 'dispo') m.status = 'prise';
+    save();
+    render();
   },
 
   /* SUPPRIMER UNE MISSION (session 16).
