@@ -576,6 +576,13 @@ function initialState() {
     problems: [],
     lastDone: null,
     extraFeeds: {},
+    /* LES SÉJOURS iCAL SUPPRIMÉS À LA MAIN (session 26, D-146).
+       `{ logement: { uid: true } }`. Un séjour effacé par le propriétaire
+       réapparaissait à la relève suivante — il est toujours dans le calendrier
+       de la plateforme, et rien ne se souvenait qu'on n'en voulait pas. C'est
+       la règle 12 (« une suppression doit être dite ») appliquée à la source :
+       la dire au cahier partagé ne suffit pas si la source la réécrit. */
+    icalOublies: {},
     // Le relevé iCal en cours et son compte rendu, par logement (D-114).
     // Ce sont des attentes de réponse, pas des données : `load()` les remet à zéro.
     icalEnCours: null,
@@ -924,6 +931,7 @@ function upgrade() {
   if (!state.planStart) state.planStart = premierJourDuMois(TODAY);
   if (state.planProps === undefined) state.planProps = null;
   if (!state.statMonth) state.statMonth = CURRENT_MONTH;
+  if (!state.icalOublies || typeof state.icalOublies !== 'object') state.icalOublies = {};
   if (!state.msgFilter) state.msgFilter = 'encours';
   if (state.nr.montant === undefined) state.nr.montant = '';
   if (Array.isArray(state.planProps)) {
@@ -1509,11 +1517,34 @@ function retirerResa(pid, resa, motif) {
    Règle de rapprochement : l'identifiant d'origine (uid). À défaut, un séjour
    qui a les mêmes dates dans le même logement est considéré comme le même.
    Rend le détail de ce qui a été fait, pour l'afficher au propriétaire. */
-function fusionnerResas(pid, lot, source) {
-  var bilan = { ajoutees: 0, majs: 0, annulees: 0, inchangees: 0, rattrapees: 0, missionsAnnulees: 0 };
+/* CE SÉJOUR-LÀ, LE PROPRIÉTAIRE N'EN VEUT PLUS (session 26, D-146).
+   Le calendrier de la plateforme, lui, continue de le publier : sans mémoire
+   de la suppression, la relève suivante le recrée une heure plus tard. */
+function sejourOublie(pid, uid) {
+  return !!(uid && state.icalOublies[pid] && state.icalOublies[pid][uid]);
+}
+
+function oublierSejourIcal(pid, resa) {
+  if (!resa || !resa.uid || resa.source !== 'ical') return false;
+  if (!state.icalOublies[pid]) state.icalOublies[pid] = {};
+  state.icalOublies[pid][resa.uid] = true;
+  return true;
+}
+
+/** `plat` : la plateforme du lot, pour ne juger disparu que ce qui vient d'elle. */
+function fusionnerResas(pid, lot, source, plat) {
+  var bilan = { ajoutees: 0, majs: 0, annulees: 0, inchangees: 0, rattrapees: 0,
+                missionsAnnulees: 0, disparues: 0, ignorees: 0 };
+  var vusDansLeLot = {};
 
   lot.forEach(function (brut) {
     var incoming = normaliserResa(brut, source, pid);
+    if (incoming.uid) vusDansLeLot[incoming.uid] = true;
+
+    /* Un séjour supprimé à la main ne revient pas (D-146). On ne le compte pas
+       non plus comme « inchangé » : il est écarté, et le bilan le dit. */
+    if (source === 'ical' && sejourOublie(pid, incoming.uid)) { bilan.ignorees++; return; }
+
     var connue = resasOf(pid).find(function (x) {
       return (incoming.uid && x.uid === incoming.uid) ||
         (!incoming.uid && x.start === incoming.start && x.end === incoming.end);
@@ -1585,6 +1616,44 @@ function fusionnerResas(pid, lot, source) {
     if (datesBougent) { state.resas[pid] = resasOf(pid).concat([connue]); creerMissionDepart(pid, connue); }
     bilan.majs++;
   });
+
+  /* CE QUI A DISPARU DU CALENDRIER A ÉTÉ ANNULÉ (session 26, D-145)
+
+     Signalé : *« j'ai eu une annulation sur Booking, ça n'a pas mis à jour
+     dans le calendrier et ça n'a pas non plus annulé la mission. »* Exact.
+     Cette fonction ne regardait **que ce que le lot apporte** : un séjour
+     annulé chez Airbnb ou Booking ne s'annonce pas, **il disparaît du
+     calendrier**, tout simplement. Le `statut === 'annule'` traité plus haut
+     n'arrive jamais par iCal — `analyserIcs()` écrit toujours « confirme ».
+     Rien, nulle part, ne repassait derrière les séjours déjà connus : c'est le
+     corollaire de la règle 20, pour la quatrième fois.
+
+     CE QU'ON NE FAIT SURTOUT PAS : conclure « disparu » à la légère. Quatre
+     garde-fous, parce qu'effacer une vraie réservation serait bien pire que
+     d'en garder une annulée (règle 15) :
+       · seulement les séjours de **cette plateforme-ci** — le lot d'Airbnb ne
+         dit rien de Booking, et les deux calendriers sont relevés séparément ;
+       · seulement ceux qui portent un **identifiant** (`uid`) : sans lui on ne
+         peut pas affirmer qu'ils manquent ;
+       · seulement ceux **à venir** : les calendriers cessent de publier les
+         séjours passés, leur absence ne veut donc rien dire ;
+       · et **jamais sur un lot vide** : un calendrier qui répond vide, c'est
+         presque toujours un lien expiré ou une panne de la plateforme, pas
+         quatre annulations d'un coup.
+
+     `retirerResa()` fait le reste, et il le fait déjà bien (D-119) : mission
+     libre supprimée, mission prise **annulée avec un mot** sur le téléphone de
+     la prestataire, mission terminée jamais touchée. */
+  if (source === 'ical' && plat && lot.length) {
+    resasOf(pid).slice().forEach(function (r) {
+      if (r.source !== 'ical' || r.plat !== plat || !r.uid) return;
+      if (vusDansLeLot[r.uid]) return;
+      if (r.start <= TODAY) return;               // en cours ou passé : on ne touche pas
+      var b = retirerResa(pid, r, 'La réservation a été annulée sur ' + plat + '.');
+      bilan.disparues++;
+      bilan.missionsAnnulees += b.annulees.length;
+    });
+  }
 
   state.resas[pid] = resasOf(pid).sort(function (a, b) {
     return a.start < b.start ? -1 : a.start > b.start ? 1 : 0;
@@ -1676,7 +1745,8 @@ function releverIcalDe(pid) {
   state.icalBilan[pid] = null;
   render();
 
-  var total = { ajoutees: 0, majs: 0, annulees: 0, inchangees: 0, rattrapees: 0, nomsRepares: 0 };
+  var total = { ajoutees: 0, majs: 0, annulees: 0, inchangees: 0, rattrapees: 0,
+                nomsRepares: 0, disparues: 0, ignorees: 0, missionsAnnulees: 0 };
   var soucis = [];
 
   return liens.reduce(function (chaine, lien) {
@@ -1693,9 +1763,13 @@ function releverIcalDe(pid) {
           });
         })
         .then(function (ics) {
-          var lot = analyserIcs(ics, plateformeDuLien(lien));
-          var b = fusionnerResas(pid, lot, 'ical');
-          ['ajoutees', 'majs', 'annulees', 'inchangees', 'rattrapees', 'nomsRepares'].forEach(function (k) { total[k] += (b[k] || 0); });
+          var plat = plateformeDuLien(lien);
+          var lot = analyserIcs(ics, plat);
+          // La plateforme est passée à part : sur un lot vide, elle est la
+          // seule chose qui dirait de quels séjours on parle (D-145).
+          var b = fusionnerResas(pid, lot, 'ical', plat);
+          ['ajoutees', 'majs', 'annulees', 'inchangees', 'rattrapees', 'nomsRepares',
+           'disparues', 'ignorees', 'missionsAnnulees'].forEach(function (k) { total[k] += (b[k] || 0); });
         })
         .catch(function (e) {
           soucis.push(plateformeDuLien(lien) + ' : ' + (e.message || 'raison inconnue'));
@@ -3448,6 +3522,18 @@ function viewPrestaDetail() {
               ? 'Le code d’accès et le Wi-Fi ne s’affichent pas. Préviens le propriétaire : soit il ne les a pas encore ' +
                 'renseignés sur la fiche du logement, soit le cahier partagé ne t’autorise pas encore à les lire ' +
                 '(script « 06-code-porte-prestataire.sql »).'
+              /* Une mission terminée referme la lecture des codes côté cahier
+                 (script 06). Depuis D-147 on ne les efface plus de ce
+                 téléphone — mais si la mission a été terminée ailleurs, ils
+                 n'y ont jamais été. Le dire, plutôt que de promettre une prise
+                 qui a déjà eu lieu (règle 5). */
+              : m.status === 'termine'
+              ? 'Cette mission est <strong>terminée</strong> : le cahier partagé ne montre le code d’accès et ' +
+                'le Wi-Fi que pendant une mission en cours. S’il te les faut à nouveau, demande-les au ' +
+                'propriétaire — ou reprends une mission sur ce logement.'
+              : m.status === 'annulee'
+              ? 'Cette mission a été <strong>annulée</strong> : il n’y a plus de raison d’entrer dans ce logement. ' +
+                'Le code d’accès n’est donc plus affiché.'
               : 'Le code d’accès et le Wi-Fi apparaîtront ici <strong>dès que tu auras pris cette mission</strong>. ' +
                 (m.date < TODAY
                   ? 'Cette mission était prévue le ' + esc(m.dateLabel.toLowerCase()) + ', mais elle reste à prendre : ' +
@@ -8003,9 +8089,37 @@ function bvCoque(contenu, sousTitre) {
    Lu depuis la route, jamais recopié dans l'état : une vue est une fonction
    pure, et un lien qui laisserait une trace dans l'état ferait croire au
    voyageur suivant qu'il arrive dans la même maison. */
+/* L'IDENTIFIANT du logement désigné par le lien — lu depuis la ROUTE SEULE.
+
+   LE LIEN PAR LOGEMENT NE MARCHAIT QUE CHEZ LE PROPRIÉTAIRE (session 26, D-144).
+   Signalé : *« quand je copie le lien pour Appartement Cosy, le logiciel demande
+   quand même au voyageur de quel appartement il s'agit. »* Exact, et la cause
+   est nette : `bienDuLien()` cherchait le logement dans `state.props` — or
+   **le téléphone du voyageur ne contient rien de ce projet**. Il n'a pas de
+   compte, il ne peut pas lire la liste des logements, et `state.props` n'y
+   contient que la démonstration. La recherche ne trouvait donc jamais rien,
+   rendait `null`, et le lien par logement se comportait exactement comme le
+   lien général : date de départ exigée, et écran de choix entre deux maisons.
+
+   Ça n'a pas été vu en session 24 parce que la vérification a été faite depuis
+   le bouton « 👁 Voir ce que le voyageur voit », c'est-à-dire dans le
+   navigateur du **propriétaire**, où `state.props` est plein. **Vérifier un
+   parcours de voyageur depuis l'écran du propriétaire ne prouve rien** : c'est
+   la même leçon que la règle 22 (« une liste vide » est la forme que prend
+   « tu n'as pas le droit »).
+
+   On sépare donc les deux questions : **quel logement le lien désigne** — la
+   route le sait toujours, c'est la seule source légitime — et **qu'est-ce
+   qu'on sait de lui** (son nom, sa couleur), qui ne sert qu'à l'affichage et
+   peut manquer sans conséquence. */
+function bienDuLienId() {
+  return (route.name === 'bienvenue' && route.id) ? route.id : null;
+}
+
 function bienDuLien() {
-  if (route.name !== 'bienvenue' || !route.id) return null;
-  var p = (state.props || []).find(function (x) { return x.id === route.id && !x.gone; });
+  var id = bienDuLienId();
+  if (!id) return null;
+  var p = (state.props || []).find(function (x) { return x.id === id && !x.gone; });
   return p || null;
 }
 
@@ -8013,12 +8127,20 @@ function bienDuLien() {
 function bvRecherche() {
   var b = state.bienvenue;
   var bien = bienDuLien();
+  /* Le lien peut désigner un logement dont ce téléphone ne sait rien (D-144) :
+     on ne peut alors pas afficher son nom, mais la recherche est bien
+     restreinte à lui, et la date de départ reste facultative. */
+  var cible = bienDuLienId();
 
   return bvCoque(
     '<section class="lv-section">' +
       '<div class="bv-card">' +
         '<h2 class="bv-h">' + esc(t('bvTitre')) + '</h2>' +
-        '<p class="bv-p">' + esc(bien ? t('bvPBien') : t('bvP')) + '</p>' +
+        /* La phrase suit ce que le formulaire fait vraiment, donc l'identifiant
+           du lien — pas la fiche, que le téléphone du voyageur n'a pas (D-144).
+           Promettre « votre date d'arrivée suffit » puis exiger le départ, ou
+           l'inverse, c'est la règle 5 par son bord « étiquette » (D-128). */
+        '<p class="bv-p">' + esc(cible ? t('bvPBien') : t('bvP')) + '</p>' +
 
         /* Quand le lien nomme le logement, on le DIT : le voyageur doit
            reconnaître la maison qu'il a réservée, sinon il se demande s'il est
@@ -8040,7 +8162,7 @@ function bvRecherche() {
            et le propriétaire connaissent tous les deux sans dépendre d'une
            plateforme. */
         '<label class="lab" style="margin-top:14px" for="bv-fin">' +
-          esc(bien ? t('bvFinFac') : t('bvFin')) + '</label>' +
+          esc(cible ? t('bvFinFac') : t('bvFin')) + '</label>' +
         '<input class="inp" id="bv-fin" type="date" value="' + esc(b.fin || '') + '" ' +
           'data-fid="bv-fin" data-ch="bv-fin">' +
 
@@ -8592,7 +8714,8 @@ function bienIcal(pid) {
   if (bilan) {
     var t = bilan.total;
     var rattrapees = t.rattrapees || 0;      // les relevés d'avant la session 21 n'ont pas ce compte
-    var rien = !t.ajoutees && !t.majs && !t.annulees && !rattrapees;
+    var disparues = t.disparues || 0;        // annulations sur la plateforme (D-145)
+    var rien = !t.ajoutees && !t.majs && !t.annulees && !rattrapees && !disparues;
     var ok = !bilan.soucis.length;
     compteRendu = '<div style="margin-top:14px;border-radius:16px;padding:13px 15px;background:' +
       (ok ? 'var(--green-bg)' : 'var(--amber-bg)') + ';border-left:3px solid ' +
@@ -8601,7 +8724,8 @@ function bienIcal(pid) {
         (ok ? '✓ ' : '⚠️ ') +
         (rien
           ? 'Relevé effectué — rien de nouveau'
-          : t.ajoutees + ' séjour(s) ajouté(s), ' + t.majs + ' modifié(s), ' + t.annulees + ' annulé(s)') +
+          : t.ajoutees + ' séjour(s) ajouté(s), ' + t.majs + ' modifié(s), ' +
+            (t.annulees + disparues) + ' annulé(s)') +
       '</div>' +
       (rien && ok
         ? '<p class="sec-note" style="margin:5px 0 0">Les ' + t.inchangees + ' séjour(s) du calendrier ' +
@@ -8619,6 +8743,27 @@ function bienIcal(pid) {
         ? '<p class="sec-note" style="margin:5px 0 0"><strong>' + rattrapees + ' ménage(s) manquant(s) ' +
           'ont été rattrapés</strong> : ces séjours étaient déjà enregistrés, mais leur mission de ' +
           'ménage n’avait jamais été créée. Elle l’est maintenant.</p>'
+        : '') +
+      /* UNE ANNULATION DOIT SE DIRE, ET NOMMER SES CONSÉQUENCES (D-145, règle 4).
+         Un séjour qui s'efface tout seul de l'écran est le genre de chose qui
+         fait douter de tout le reste : on écrit ce qui a été retiré, et ce que
+         la prestataire va lire de son côté. */
+      (disparues
+        ? '<p class="sec-note" style="margin:5px 0 0"><strong>' + disparues + ' séjour(s) ont été ' +
+          'annulés sur la plateforme</strong> : ils ne figurent plus dans le calendrier. Ils ont ' +
+          'été retirés d’ici' +
+          ((t.missionsAnnulees || 0)
+            ? ', et <strong>' + t.missionsAnnulees + ' ménage(s) déjà pris ont été annulés avec un ' +
+              'message</strong> sur le téléphone de la personne — jamais escamotés.'
+            : ', avec leur ménage.') +
+          '</p>'
+        : '') +
+      /* Ce que le propriétaire a supprimé à la main ne doit pas revenir, et il
+         doit savoir que la relève l'a bien laissé de côté (D-146). */
+      ((t.ignorees || 0)
+        ? '<p class="sec-note" style="margin:5px 0 0">' + t.ignorees + ' séjour(s) du calendrier ont ' +
+          'été <strong>laissés de côté</strong> : tu les avais supprimés à la main. Ils ne ' +
+          'reviendront pas, même s’ils restent publiés par la plateforme.</p>'
         : '') +
       /* Une réparation doit se voir, sinon elle passe pour un hasard (D-141). */
       ((t.nomsRepares || 0)
@@ -10257,9 +10402,16 @@ var actions = {
     avertir += 'Cette suppression est définitive.';
     if (!confirm(avertir)) return;
 
+    /* Et on retient qu'on n'en veut plus : sinon la relève le recrée dans
+       l'heure, puisqu'il est toujours publié par la plateforme (D-146). */
+    var oublie = oublierSejourIcal(f.pid, f.r);
     var b = retirerResa(f.pid, f.r, 'La réservation a été supprimée par le propriétaire.');
     save();
     go('#/admin/calendrier');
+    if (!b.annulees.length && oublie) {
+      alert('Réservation supprimée.\n\nElle vient d\'un calendrier de plateforme : ' +
+        'elle y figure peut-être encore, mais MAISON WARME ne la reprendra plus.');
+    }
     if (b.annulees.length) {
       alert('Réservation supprimée.\n\n' +
         // On recopie la note telle quelle : le propriétaire lit MOT POUR MOT
@@ -10384,8 +10536,13 @@ var actions = {
         'sera retirée elle aussi.\n\n';
     }
     if (!confirm(avertir + 'Cette suppression est définitive.')) return;
+    var oublie2 = oublierSejourIcal(pid, r);          // D-146 : il ne doit pas revenir
     retirerResa(pid, r, 'La réservation a été supprimée par le propriétaire.');
     save(); render();
+    if (oublie2) {
+      alert('Réservation supprimée.\n\nElle vient d\'un calendrier de plateforme : ' +
+        'elle y figure peut-être encore, mais MAISON WARME ne la reprendra plus.');
+    }
   },
 
   /* Livret d'accueil ------------------------------------------------------ */
@@ -10517,7 +10674,7 @@ var actions = {
        Quand le lien désigne déjà le logement, la date d'arrivée suffit : deux
        voyageurs ne peuvent pas arriver le même jour dans la même maison. Une
        information de moins à taper, sur un écran que le voyageur découvre. */
-    if (!bienDuLien() && !b.fin) { b.erreur = t('bvErrFin'); save(); render(); return; }
+    if (!bienDuLienId() && !b.fin) { b.erreur = t('bvErrFin'); save(); render(); return; }
     if (b.fin && b.fin <= b.date) { b.erreur = t('bvErrOrdre'); save(); render(); return; }
     b.erreur = '';
 
@@ -10526,9 +10683,9 @@ var actions = {
        maisons différentes ne peuvent plus se croiser — c'est la règle 15 (ne
        jamais deviner qui regarde), et le lien par bien la sert mieux que le
        lien unique. */
-    var duBien = bienDuLien();
+    var duBienId = bienDuLienId();
     var restreindre = function (liste) {
-      return duBien ? liste.filter(function (x) { return x.pid === duBien.id; }) : liste;
+      return duBienId ? liste.filter(function (x) { return x.pid === duBienId; }) : liste;
     };
     /* La date de départ, si elle est donnée, départage. Si elle ne correspond à
        rien on ne l'impose pas : mieux vaut proposer un choix que renvoyer « je
@@ -10546,7 +10703,10 @@ var actions = {
          renvoyer « je ne trouve rien » (même principe que `affiner`). */
       var parDates = restreindre(allResas().filter(function (x) {
         var r = x.r;
-        if (r.statut === 'annule' || r.end < TODAY) return false;
+        /* Deux jours de battement après le départ (session 26) : le voyageur
+           qui veut relire une adresse le lendemain doit encore se retrouver.
+           Même durée que côté serveur, sinon les deux chemins se contredisent. */
+        if (r.statut === 'annule' || r.end < jourPlus(TODAY, -2)) return false;
         if (b.fin && r.end !== b.fin) return false;
         return r.start === b.date || (r.start <= b.date && b.date < r.end);
       }));
@@ -10581,7 +10741,6 @@ var actions = {
        D-118) ; et un voyageur qui donne son nom doit être trouvé même si ses
        dates sont approximatives. Règle 19 : une fonction facultative ne casse
        jamais le reste. */
-    var duBienId = duBien ? duBien.id : null;
     var parNomSiPossible = function () {
       if ((b.nom || '').trim().length < 3) return Promise.resolve([]);
       return DB.chercherSejour(b.nom, b.date).catch(function () { return []; });

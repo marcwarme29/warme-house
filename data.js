@@ -341,8 +341,34 @@ var DB = (function () {
       return { id: l.id, name: l.name, short: l.short, city: l.city, address: l.address, color: l.color, tint: l.tint };
     }).concat(enAttente);
     lignes.forEach(function (l) {
-      var s = parId[l.id] || {};
-      state.info[l.id] = Object.assign({}, l.info || {}, { code: s.code || '', wifi: s.wifi || '' });
+      /* « LE CAHIER NE M'A RIEN ENVOYÉ » ≠ « IL N'Y A RIEN » (session 26, D-147)
+
+         Signalé : *« sur la plateforme du prestataire, le prestataire ne voit
+         pas le code Wi-Fi et le code d'entrée si la prestation était à une date
+         antérieure. »* La session 20 avait conclu que la date n'y était pour
+         rien (D-115) — c'est vrai, et ce n'était pas la bonne question.
+
+         La règle `secrets_presta` (script 06) n'ouvre `property_secrets` qu'à
+         qui tient une mission **`prise` ou `encours`** sur ce logement. Dès que
+         la mission passe à **`termine`**, la lecture se referme — et cette
+         ligne **recopiait alors une chaîne vide par-dessus le code déjà lu**.
+         Le code s'affichait pendant la mission, puis disparaissait de son
+         téléphone, y compris hors ligne. Même chose si le lien fiche/compte
+         casse (D-142) : plus de mission à son nom, donc plus de secrets.
+
+         C'est la règle 3 (le cahier ne vide jamais le navigateur) et la
+         règle 5 (« la table est vide » et « je n'ai pas le droit de la lire »
+         sont deux réponses différentes) au même endroit.
+
+         On distingue donc les deux cas : **aucune ligne** pour ce logement — on
+         garde ce qu'on avait, la personne l'a lu légitimement ; **une ligne
+         avec un code vide** — le propriétaire l'a effacé, on suit. */
+      var s = parId[l.id];
+      var ancien = state.info[l.id] || {};
+      var secrets = s
+        ? { code: s.code || '', wifi: s.wifi || '' }
+        : { code: ancien.code || '', wifi: ancien.wifi || '' };
+      state.info[l.id] = Object.assign({}, l.info || {}, secrets);
       state.notes[l.id] = l.notes || '';
       state.tariffs[l.id] = l.tarifs || {};
       state.durations[l.id] = l.durations || {};
@@ -855,7 +881,12 @@ var DB = (function () {
        septième occurrence de la règle 14 évitée d'avance. */
     'horsStock',
     // Session 23 (D-129) : la vignette de chaque logement, en clair dans le jsonb.
-    'photosBien'];
+    'photosBien',
+    /* Session 26 (D-146) : les séjours iCal que le propriétaire a supprimés à
+       la main. Sans cette liste, la relève les recrée à l'heure suivante — et
+       elle doit voyager, sinon le doublon supprimé sur l'ordinateur revient
+       depuis le téléphone (règle 14). */
+    'icalOublies'];
 
   /* Deux clés ne doivent JAMAIS être remplacées par une liste vide : sans
      prestation ni article, l'application n'a plus rien à afficher et
