@@ -886,7 +886,18 @@ var DB = (function () {
        la main. Sans cette liste, la relève les recrée à l'heure suivante — et
        elle doit voyager, sinon le doublon supprimé sur l'ordinateur revient
        depuis le téléphone (règle 14). */
-    'icalOublies'];
+    'icalOublies',
+    /* Session 27 (D-150) : les réglages de l'envoi d'e-mails — est-ce
+       branché, l'adresse qui envoie, faut-il prévenir tout seul.
+       ⚠️ AUCUNE CLÉ SECRÈTE ICI : la clé du service d'envoi vit chez Vercel,
+       dans une variable d'environnement, et ne descend jamais dans un
+       navigateur (règle 2, même esprit que D-60). */
+    'mailReglages',
+    /* Session 27 (D-151) : les missions déjà annoncées, `{ missionId: { at,
+       a: [adresses] } }`. Doit voyager, sinon rouvrir l'application sur un
+       autre appareil renverrait une seconde fois le même e-mail à tout le
+       monde — septième occurrence de la règle 14 évitée d'avance. */
+    'mailsEnvoyes'];
 
   /* Deux clés ne doivent JAMAIS être remplacées par une liste vide : sans
      prestation ni article, l'application n'a plus rien à afficher et
@@ -2029,6 +2040,80 @@ var DB = (function () {
     });
   }
 
+  /* ----------------------------------------------------------------------
+     7. LE FACTEUR — prévenir les prestataires par e-mail (session 27, D-150)
+
+     Le courrier ne part pas d'ici : un navigateur n'a pas le droit d'envoyer
+     un e-mail, et la clé qu'il faudrait pour cela n'a rien à faire dans une
+     page web. On se contente donc de **frapper à la porte de `/api/mail`**,
+     le petit programme qui tourne chez Vercel, en lui tendant le jeton de la
+     session en cours — c'est lui qui vérifie que le demandeur est bien le
+     propriétaire, et lui seul qui connaît la clé.
+
+     ⚠️ CETTE FONCTION NE PASSE PAS PAR `pousser()`. Envoyer un e-mail n'est
+     pas une écriture dans le cahier partagé : rien ne s'y range, rien n'est
+     regroupé, rien n'est réessayé. On veut la réponse tout de suite, et on
+     veut pouvoir la DIRE (règle 4) — y compris « la clé n'est pas encore
+     posée », qui est le cas de figure normal tant que Marc n'a pas fait
+     l'étape du §34.
+     ---------------------------------------------------------------------- */
+
+  function jetonDeSession() {
+    if (!dispo) return Promise.resolve('');
+    return client.auth.getSession()
+      .then(function (r) { return (r && r.data && r.data.session && r.data.session.access_token) || ''; })
+      .catch(function () { return ''; });
+  }
+
+  /* `envois` : [{ email, nom, sujet, texte, html }].
+     `expediteur` : { nom, email, repondreA }.
+     Rend `{ fournisseur, expediteur, envoyes: [...], echecs: [{ email, nom,
+     raison }] }`, ou lève une erreur dont le message est **déjà en français
+     et déjà compréhensible** — c'est `/api/mail` qui le rédige, pour que la
+     traduction des refus du service d'envoi vive au même endroit. */
+  function envoyerMail(expediteur, envois) {
+    if (!dispo) return Promise.reject(new Error(derniereErreur || 'Connexion indisponible.'));
+    if (!profil) return Promise.reject(new Error('Il faut être connecté pour envoyer des e-mails.'));
+    if (profil.role !== 'owner') {
+      return Promise.reject(new Error('Seul le compte du propriétaire peut prévenir les prestataires.'));
+    }
+    if (!Array.isArray(envois) || !envois.length) {
+      return Promise.reject(new Error('Il n’y a personne à prévenir.'));
+    }
+
+    return jetonDeSession().then(function (jeton) {
+      if (!jeton) throw new Error('Ta connexion a expiré. Recharge la page et reconnecte-toi.');
+      return fetch('/api/mail', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jeton: jeton, expediteur: expediteur || {}, envois: envois })
+      });
+    }).then(function (r) {
+      return r.text().then(function (corps) {
+        var j = null;
+        try { j = JSON.parse(corps); } catch (e) { j = null; }
+        if (!r.ok) {
+          /* UNE PAGE D'ERREUR N'EST PAS UNE RÉPONSE. Si `/api/mail` n'existe
+             pas encore en ligne — publication pas faite —, Vercel rend du
+             HTML avec un code 404, et `j` est nul. On le dit franchement au
+             lieu d'afficher « undefined » (règle 5). */
+          var e2 = new Error(
+            (j && j.erreur) ||
+            (r.status === 404
+              ? 'Le facteur n’est pas encore en ligne : la publication (git push) n’a pas été faite ' +
+                'depuis l’ajout de cette fonctionnalité.'
+              : 'L’envoi a échoué (code ' + r.status + ').')
+          );
+          e2.code = (j && j.code) || '';
+          e2.statut = r.status;
+          throw e2;
+        }
+        if (!j) throw new Error('La réponse du facteur est illisible.');
+        return j;
+      });
+    });
+  }
+
   /* ---------------------------------------------------------------------- */
 
   return {
@@ -2107,7 +2192,8 @@ var DB = (function () {
     supprimerFiche: function (id) { return supprimerLigne('prestataires', id); },
     ecouter: ecouter,
     taire: taire,
-    demenager: demenager
+    demenager: demenager,
+    envoyerMail: envoyerMail
   };
 
 })();

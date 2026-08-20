@@ -594,6 +594,35 @@ function initialState() {
     // d'écran, replié à chaque ouverture.
     outilsOuverts: false,
 
+    /* PRÉVENIR LES PRESTATAIRES PAR E-MAIL (session 27, D-150)
+
+       `actif` : Marc a fait l'étape du §34 (compte d'envoi créé, clé posée
+       chez Vercel) et veut s'en servir. Faux au départ : tant que la clé
+       n'existe pas, proposer le bouton serait un écran de maquette (règle 13).
+       `auto`  : faut-il prévenir tout seul quand une relève de calendrier
+       fabrique de nouveaux ménages ? Faux au départ, exprès — on essaie
+       d'abord à la main, on automatise quand ça marche (règle 16 : rendre un
+       geste automatique multiplie la fréquence de tous ses défauts).
+       `expNom` / `expMail` : ce que les prestataires liront comme expéditeur.
+       L'adresse doit être **validée chez le service d'envoi**, sinon rien ne
+       part et le message le dira.
+       `copie` : Marc reçoit une copie de chaque annonce, pour vérifier de ses
+       yeux ce qui est parti.
+
+       Déclarée ici **et** complétée dans `upgrade()` — les deux endroits,
+       règle 9 (D-121) —, et rangée dans les réglages partagés (`CLES_REGLAGES`
+       de data.js) : aucun script SQL nouveau à coller. */
+    mailReglages: { actif: false, auto: false, expNom: 'MAISON WARME', expMail: '', copie: false },
+    /* Les missions déjà annoncées : `{ missionId: { at, a: [adresses] } }`.
+       C'est ce qui empêche d'envoyer deux fois la même annonce, et ça voyage
+       dans le cahier partagé — sinon l'ordinateur du bureau et celui du salon
+       préviendraient chacun de leur côté (règle 14). */
+    mailsEnvoyes: {},
+    // Un envoi en cours et son compte rendu : des attentes de réponse, pas des
+    // données. `load()` les remet à zéro (règle 7).
+    mailEnCours: false,
+    mailBilan: null,
+
     // Préférences d'affichage
     missionFilter: 'all',
     stockScope: 'all',
@@ -713,6 +742,8 @@ function load() {
   state.icalEnCours = null;           // un relevé de calendrier en cours (session 20)
   state.icalAutoEnCours = false;      // la relève automatique en cours (session 24)
   state.outilsOuverts = false;        // les outils de mise en service (session 24, D-138)
+  state.mailEnCours = false;          // un envoi d'e-mails en cours (session 27, D-150)
+  state.mailBilan = null;             // le compte rendu du dernier envoi
   state.mMsg = '';
   state.migMsg = '';
   state.photoPlein = null;            // une photo ouverte en grand n'est pas une donnée
@@ -978,6 +1009,28 @@ function upgrade() {
   if (Array.isArray(state.coursesProps)) {
     state.coursesProps = state.coursesProps.filter(function (pid) { return !prop(pid).gone; });
   }
+
+  /* Session 27 — les réglages de l'envoi d'e-mails (D-150). Les deux endroits,
+     règle 9 : sans cette ligne, un navigateur ouvert avec des données d'avant
+     la session 27 relirait les réglages du cahier partagé, puis les jetterait
+     au rechargement suivant. */
+  if (!state.mailReglages || typeof state.mailReglages !== 'object') {
+    state.mailReglages = { actif: false, auto: false, expNom: 'MAISON WARME', expMail: '', copie: false };
+  }
+  var mr = state.mailReglages;
+  if (typeof mr.actif !== 'boolean') mr.actif = false;
+  if (typeof mr.auto !== 'boolean') mr.auto = false;
+  if (typeof mr.copie !== 'boolean') mr.copie = false;
+  if (typeof mr.expNom !== 'string' || !mr.expNom) mr.expNom = 'MAISON WARME';
+  if (typeof mr.expMail !== 'string') mr.expMail = '';
+
+  /* Les annonces déjà parties (D-151). On oublie celles dont la mission
+     n'existe plus, sinon la liste enfle sans fin et finit par peser dans les
+     réglages partagés — même précaution que pour `annulVues` juste au-dessus. */
+  if (!state.mailsEnvoyes || typeof state.mailsEnvoyes !== 'object') state.mailsEnvoyes = {};
+  Object.keys(state.mailsEnvoyes).forEach(function (id) {
+    if (!state.missions.some(function (m) { return m.id === id; })) delete state.mailsEnvoyes[id];
+  });
 
   reconstruireReady();
 }
@@ -1852,6 +1905,11 @@ function releveAutoIcal() {
   }, Promise.resolve()).then(function () {
     state.icalAutoEnCours = false;
     render();
+    /* PRÉVENIR LES PRESTATAIRES (session 27, D-152). Une seule annonce pour
+       TOUS les logements relevés, et pas une par logement : Sofia qui travaille
+       dans trois maisons recevrait sinon trois lettres à la suite. C'est aussi
+       pourquoi l'appel est ici, après la chaîne, et non dans `releverIcalDe()`. */
+    annoncerAutomatiquement();
     return aRelever.length;
   }).catch(function () {
     // Un relevé qui échoue ne doit pas bloquer l'application : chaque souci
@@ -2967,6 +3025,400 @@ function act(name, params) {
     out += ' data-' + k + '="' + esc(params[k]) + '"';
   });
   return out;
+}
+
+/* ==========================================================================
+   PRÉVENIR LES PRESTATAIRES QU'UNE MISSION EST DISPONIBLE (session 27, D-150)
+   ==========================================================================
+
+   LE PROBLÈME, EN UNE PHRASE. Une mission créée par un relevé de calendrier
+   attend sur un serveur que quelqu'un pense à ouvrir l'application. Rien ne
+   part chez personne. Le tableau du 20 août l'a dit sans détour : **20 des
+   22 missions du cahier partagé n'avaient été prises par personne, dont sept
+   déjà passées**. Personne n'avait été prévenu, voilà tout.
+
+   CE QU'ON FABRIQUE ICI, ET CE QU'ON NE FABRIQUE PAS. On fabrique la lettre :
+   à qui elle s'adresse, ce qu'elle raconte, et le souvenir de l'avoir envoyée.
+   On ne poste rien — c'est `/api/mail`, chez Vercel, qui poste, parce qu'un
+   navigateur ne le peut pas et parce que la clé du service d'envoi n'a rien à
+   faire dans une page web.
+
+   TROIS RÈGLES DU §6 SONT EN JEU, ET ELLES ONT DICTÉ LA FORME :
+
+   · **Règle 13** — un écran de maquette qui a l'air de marcher est plus
+     dangereux qu'un écran absent. Tant que la clé n'est pas posée chez Vercel,
+     le bouton « Prévenir » n'est pas offert : à sa place, une phrase dit ce
+     qui manque et où le faire. Un bouton qui n'enverrait rien en silence
+     serait la quinzième occurrence de cette règle.
+
+   · **Règle 4** — une écriture refusée doit se VOIR. Chaque envoi rend le
+     détail : qui a été prévenu, qui ne l'a pas été, et pourquoi, en français.
+     Un e-mail qui n'est pas parti est exactement aussi grave qu'une donnée
+     perdue, et se remarque encore moins.
+
+   · **Règle 14** — ce qui n'existe que sur un appareil n'existe pour personne.
+     Le souvenir « cette mission a déjà été annoncée » voyage dans le cahier
+     partagé (`mailsEnvoyes`, rangé dans les réglages) : sinon l'ordinateur du
+     bureau et celui du salon enverraient chacun leur annonce, et Sofia
+     recevrait deux fois la même lettre.
+
+   POURQUOI PAS UN SEUL E-MAIL À TOUT LE MONDE. Chaque prestataire ne voit que
+   les logements qu'on lui a confiés et les prestations qu'on lui a cochées
+   (D-28, D-53, D-109). Une lettre commune raconterait à Sofia des missions
+   qu'elle n'a pas le droit de prendre, et lui ferait croire à une panne quand
+   elle ne les retrouverait pas sur son téléphone. Une lettre par personne,
+   donc, avec ses missions à elle — et les adresses ne se voient pas entre
+   elles, ce qui est aussi la règle élémentaire de politesse.
+
+   POURQUOI L'ADRESSE DU SITE EST LUE DANS LA PAGE ET NON ÉCRITE EN DUR. Le
+   lien mis dans la lettre doit mener là où l'application tourne vraiment : en
+   ligne chez Vercel, mais aussi sur le petit serveur local quand on met au
+   point. Un lien en dur enverrait la prestataire sur le site public depuis un
+   essai local, et on croirait la lettre fausse.
+   ========================================================================== */
+
+/** Une adresse e-mail a-t-elle une forme plausible ? Volontairement souple :
+    on refuse ce qui ne peut manifestement pas marcher, jamais plus. */
+function mailValide(v) {
+  return typeof v === 'string' && /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(v.trim());
+}
+
+/** L'envoi est-il utilisable ? Trois conditions, et il faut les trois : Marc
+    l'a activé, il a écrit l'adresse qui envoie, et elle est plausible. */
+function mailBranche() {
+  var r = state.mailReglages || {};
+  return !!r.actif && mailValide(r.expMail);
+}
+
+/** L'expéditeur, tel que `/api/mail` l'attend. */
+function mailExpediteur() {
+  var r = state.mailReglages || {};
+  return {
+    nom: (r.expNom || 'MAISON WARME').trim(),
+    email: (r.expMail || '').trim().toLowerCase(),
+    // Répondre à une annonce doit arriver chez Marc, pas dans le vide.
+    repondreA: (r.expMail || '').trim().toLowerCase()
+  };
+}
+
+/** Où tourne l'application, vue depuis ce navigateur. */
+function adresseDeLApplication() {
+  if (typeof location === 'undefined') return '';
+  return location.origin + location.pathname.replace(/index\.html$/, '');
+}
+
+/** Les prestataires qu'on peut prévenir POUR CETTE MISSION : ceux à qui le
+    logement est confié, dont la prestation est cochée, et qui ont une adresse
+    e-mail sur leur fiche. La remise des clés ne passe pas par les missions. */
+function prestatairesAPrevenir(m) {
+  return (state.agents || []).filter(function (a) {
+    if (!a || a.gone || a.kind === 'cles') return false;
+    if (!mailValide(a.email)) return false;
+    return mayTakeMission(a.id, m);
+  });
+}
+
+/** Cette mission mérite-t-elle une annonce ? Libre, pas annulée, et pas déjà
+    passée — annoncer le ménage d'avant-hier ne ferait que semer le doute. */
+function missionAnnoncable(m) {
+  return !!m && m.status === 'dispo' && m.date >= TODAY;
+}
+
+/** A-t-elle déjà été annoncée, et quand ? */
+function annonceFaite(m) {
+  return (state.mailsEnvoyes || {})[m && m.id] || null;
+}
+
+/** Les missions libres que personne n'a encore annoncées, et pour lesquelles
+    il existe au moins quelqu'un à prévenir. Une mission sans destinataire
+    possible n'est pas « à annoncer » : c'est un logement non confié ou une
+    fiche sans adresse, et c'est un autre problème — celui du panneau de
+    diagnostic (D-111), qui le dit déjà mieux que nous. */
+function missionsAAnnoncer() {
+  return (state.missions || []).filter(function (m) {
+    if (!missionAnnoncable(m) || annonceFaite(m)) return false;
+    return prestatairesAPrevenir(m).length > 0;
+  });
+}
+
+/** Les missions libres qu'on ne peut annoncer à personne, et pourquoi. Sert à
+    ne pas laisser croire que « 0 mission à annoncer » veut dire « tout va
+    bien » (règle 5 : ne jamais laisser construire une conclusion fausse). */
+function missionsSansDestinataire() {
+  return (state.missions || []).filter(function (m) {
+    return missionAnnoncable(m) && !annonceFaite(m) && !prestatairesAPrevenir(m).length;
+  });
+}
+
+/* --------------------------------------------------------------------------
+   La lettre
+   --------------------------------------------------------------------------
+   Deux versions du même contenu, et il faut les deux : le **texte brut** pour
+   les boîtes qui n'affichent pas de mise en forme (et pour les filtres à
+   courrier indésirable, qui se méfient d'un message sans texte), et le
+   **HTML** pour que ce soit lisible sur un téléphone.
+   -------------------------------------------------------------------------- */
+
+/* LA DATE, ÉCRITE EN ENTIER (session 27)
+
+   Dans l'application, « Demain » suffit : l'écran est sous les yeux, et la
+   date du jour est dans le bandeau. **Dans un e-mail, non** — il sera peut-être
+   lu le lendemain soir, dans une boîte encombrée, et « demain » ne voudra plus
+   rien dire. On écrit donc toujours le jour de la semaine et la date complète,
+   et on ajoute « aujourd'hui » ou « demain » devant plutôt qu'à la place.
+
+   `jourLabel()` ne convient pas ici : il rend « Demain » **au lieu** de la
+   date, et le premier essai a produit « mardi 25 août 25 août » — le genre de
+   défaut qu'aucune relecture ne voit et qu'une seule exécution montre. */
+function jourEtDateLongue(iso) {
+  var d = new Date(Date.parse(iso + 'T00:00:00Z'));
+  var jour = JOURS[d.getUTCDay()];
+  var complet = jour + ' ' + parseInt(iso.slice(8, 10), 10) + ' ' + MOIS_LONG[parseInt(iso.slice(5, 7), 10) - 1];
+  if (iso === TODAY) return 'aujourd\u2019hui, ' + complet;
+  var demain = new Date(Date.parse(TODAY + 'T00:00:00Z') + 86400000);
+  if (d.getTime() === demain.getTime()) return 'demain, ' + complet;
+  return complet;
+}
+
+/** Une ligne de mission, en texte simple. */
+function ligneMissionTexte(m) {
+  var inf = state.info[m.prop] || {};
+  var l = ['• ' + service(m.type).label + ' — ' + prop(m.prop).name];
+  l.push('  ' + jourEtDateLongue(m.date) + ' · ' +
+    (m.windowLabel || ((inf.checkout || '11:00') + ' → ' + (inf.checkin || '16:00'))) +
+    (m.price ? ' · ' + m.price + ' €' : ''));
+  if (m.turnover) {
+    l.push('  Départ ET arrivée le même jour' +
+      (m.next && m.next.at ? ' — le voyageur suivant arrive à ' + m.next.at : '') + '.');
+  }
+  if (m.note) l.push('  Note : ' + m.note);
+  return l.join('\n');
+}
+
+/** La même ligne, en HTML. Tout ce qui vient de l'état passe par `esc()` —
+    un nom de logement contenant « & » ou « < » casserait la lettre sinon. */
+function ligneMissionHtml(m) {
+  var inf = state.info[m.prop] || {};
+  var sous = [
+    esc(jourEtDateLongue(m.date)),
+    esc(m.windowLabel || ((inf.checkout || '11:00') + ' → ' + (inf.checkin || '16:00')))
+  ];
+  if (m.price) sous.push('<strong>' + esc(m.price + ' €') + '</strong>');
+
+  return '<tr><td style="padding:14px 16px;border:1px solid #E8DFD3;border-radius:10px;' +
+    'background:#FFFDF9">' +
+    '<div style="font:700 15px Helvetica,Arial,sans-serif;color:#2E2A26">' +
+      esc(service(m.type).label + ' — ' + prop(m.prop).name) + '</div>' +
+    '<div style="font:400 14px Helvetica,Arial,sans-serif;color:#6B615A;margin-top:5px">' +
+      sous.join(' &nbsp;·&nbsp; ') + '</div>' +
+    (m.turnover
+      ? '<div style="font:600 13px Helvetica,Arial,sans-serif;color:#B5651D;margin-top:6px">' +
+        'Départ et arrivée le même jour' +
+        (m.next && m.next.at ? ' — le voyageur suivant arrive à ' + esc(m.next.at) : '') +
+        '</div>'
+      : '') +
+    (m.note
+      ? '<div style="font:400 13px Helvetica,Arial,sans-serif;color:#6B615A;margin-top:6px">' +
+        'Note : ' + esc(m.note) + '</div>'
+      : '') +
+    '</td></tr>';
+}
+
+/** La lettre destinée à UNE personne, pour LES missions qui la concernent. */
+function lettreAnnonce(a, missions) {
+  var une = missions.length === 1;
+  var lien = adresseDeLApplication() + (une ? '#/app/missions/' + missions[0].id : '#/app/missions');
+  var prenom = (a.name || '').split(/\s+/)[0] || '';
+
+  var sujet = une
+    ? 'Mission disponible — ' + prop(missions[0].prop).name + ', ' + fmtDate(missions[0].date)
+    : missions.length + ' missions disponibles — MAISON WARME';
+
+  var texte = [
+    'Bonjour' + (prenom ? ' ' + prenom : '') + ',',
+    '',
+    une
+      ? 'Une mission est disponible dans MAISON WARME :'
+      : missions.length + ' missions sont disponibles dans MAISON WARME :',
+    '',
+    missions.map(ligneMissionTexte).join('\n\n'),
+    '',
+    une
+      ? 'Pour la prendre, ouvre MAISON WARME :'
+      : 'Pour les prendre, ouvre MAISON WARME :',
+    lien,
+    '',
+    'La première personne qui prend une mission l’obtient : elle disparaît alors',
+    'de la liste des autres.',
+    '',
+    'Tu peux répondre directement à ce message.',
+    '',
+    '— MAISON WARME'
+  ].join('\n');
+
+  var html =
+    '<div style="background:#F7F1E7;padding:24px 12px">' +
+    '<table role="presentation" cellpadding="0" cellspacing="0" width="100%" ' +
+      'style="max-width:560px;margin:0 auto;background:#FFFDF9;border-radius:14px;' +
+      'border:1px solid #E8DFD3">' +
+    '<tr><td style="padding:24px 22px 6px">' +
+      '<div style="font:700 13px Helvetica,Arial,sans-serif;letter-spacing:.09em;color:#B5651D">' +
+        'MAISON WARME</div>' +
+      '<h1 style="font:700 21px Helvetica,Arial,sans-serif;color:#2E2A26;margin:12px 0 0">' +
+        (une ? 'Une mission est disponible' : missions.length + ' missions sont disponibles') +
+      '</h1>' +
+      '<p style="font:400 15px/1.5 Helvetica,Arial,sans-serif;color:#4A423C;margin:10px 0 0">' +
+        'Bonjour' + (prenom ? ' ' + esc(prenom) : '') + ',</p>' +
+    '</td></tr>' +
+    '<tr><td style="padding:14px 22px 0">' +
+      '<table role="presentation" cellpadding="0" cellspacing="0" width="100%" ' +
+        'style="border-collapse:separate;border-spacing:0 10px">' +
+        missions.map(ligneMissionHtml).join('') +
+      '</table>' +
+    '</td></tr>' +
+    '<tr><td style="padding:16px 22px 4px">' +
+      '<a href="' + esc(lien) + '" style="display:inline-block;background:#B5651D;color:#FFFFFF;' +
+        'font:700 15px Helvetica,Arial,sans-serif;text-decoration:none;padding:13px 22px;' +
+        'border-radius:10px">' + (une ? 'Voir cette mission' : 'Voir les missions') + '</a>' +
+    '</td></tr>' +
+    '<tr><td style="padding:14px 22px 24px">' +
+      '<p style="font:400 13px/1.55 Helvetica,Arial,sans-serif;color:#6B615A;margin:0">' +
+        'La première personne qui prend une mission l’obtient : elle disparaît alors de la liste ' +
+        'des autres. Tu peux répondre directement à ce message.</p>' +
+    '</td></tr>' +
+    '</table></div>';
+
+  return { email: a.email.trim().toLowerCase(), nom: a.name || '', sujet: sujet, texte: texte, html: html };
+}
+
+/** La copie que Marc se fait à lui-même, s'il l'a demandée : le récapitulatif
+    de ce qui vient de partir, pour le vérifier de ses yeux plutôt que de nous
+    croire sur parole (c'est ce qui a manqué trois fois sur la publication). */
+function lettreCopieProprio(lots) {
+  var lignes = lots.map(function (l) {
+    return '• ' + (l.a.name || l.a.email) + ' (' + l.a.email + ') — ' +
+      l.missions.length + ' mission' + (l.missions.length > 1 ? 's' : '') + ' :\n' +
+      l.missions.map(function (m) {
+        return '    ' + fmtDate(m.date) + ' · ' + prop(m.prop).name + ' · ' + service(m.type).label;
+      }).join('\n');
+  }).join('\n');
+
+  var texte = 'Copie de ce qui vient d’être envoyé depuis MAISON WARME :\n\n' + lignes +
+    '\n\nCe message ne part que chez toi.';
+
+  return {
+    email: mailExpediteur().email,
+    nom: mailExpediteur().nom,
+    sujet: 'Copie — ' + lots.length + ' prestataire(s) prévenu(s)',
+    texte: texte,
+    html: '<pre style="font:400 14px/1.6 Helvetica,Arial,sans-serif;color:#2E2A26;' +
+      'white-space:pre-wrap">' + esc(texte) + '</pre>'
+  };
+}
+
+/* --------------------------------------------------------------------------
+   L'envoi
+   -------------------------------------------------------------------------- */
+
+/** Répartit des missions en un lot par prestataire concerné. */
+function repartirParPrestataire(missions) {
+  var par = {};
+  missions.forEach(function (m) {
+    prestatairesAPrevenir(m).forEach(function (a) {
+      if (!par[a.id]) par[a.id] = { a: a, missions: [] };
+      par[a.id].missions.push(m);
+    });
+  });
+  return Object.keys(par).map(function (k) { return par[k]; });
+}
+
+/* PRÉVENIR. Rend une promesse qui ne rejette jamais : le compte rendu est
+   déposé dans `state.mailBilan` et affiché, parce qu'un envoi raté doit se
+   voir et non faire tomber l'écran (règle 4).
+
+   `silencieux` : l'envoi automatique qui suit un relevé de calendrier. Il ne
+   dérange personne quand tout va bien, mais il DIT quand même ce qui s'est mal
+   passé — un automatisme muet est exactement ce que la règle 13 interdit. */
+function prevenirDeCesMissions(missions, silencieux) {
+  if (state.mailEnCours) return Promise.resolve(null);
+
+  var aFaire = (missions || []).filter(missionAnnoncable);
+  var lots = repartirParPrestataire(aFaire);
+  if (!lots.length) {
+    state.mailBilan = { quand: Date.now(), rien: true, envoyes: [], echecs: [] };
+    if (!silencieux) render();
+    return Promise.resolve(state.mailBilan);
+  }
+
+  var envois = lots.map(function (l) { return lettreAnnonce(l.a, l.missions); });
+  if (state.mailReglages.copie) envois.push(lettreCopieProprio(lots));
+
+  state.mailEnCours = true;
+  state.mailBilan = null;
+  render();
+
+  return DB.envoyerMail(mailExpediteur(), envois).then(function (r) {
+    /* ON N'INSCRIT « ANNONCÉE » QUE POUR CE QUI EST VRAIMENT PARTI.
+       Marquer une mission annoncée alors que la lettre a été refusée la
+       ferait disparaître du bandeau pour toujours : personne ne serait
+       prévenu, et plus rien ne le dirait. C'est le défaut de la règle 4 dans
+       sa forme la plus discrète — une réussite affichée sans avoir vérifié
+       (D-95). On croise donc les adresses réellement acceptées. */
+    var partiesA = {};
+    (r.envoyes || []).forEach(function (e) { partiesA[(e.email || '').toLowerCase()] = true; });
+
+    var quand = new Date().toISOString();
+    var comptees = 0;
+    lots.forEach(function (l) {
+      if (!partiesA[(l.a.email || '').trim().toLowerCase()]) return;
+      l.missions.forEach(function (m) {
+        var d = state.mailsEnvoyes[m.id] || { at: quand, a: [] };
+        if (d.a.indexOf(l.a.email) < 0) d.a.push(l.a.email);
+        d.at = quand;
+        state.mailsEnvoyes[m.id] = d;
+      });
+      comptees++;
+    });
+
+    state.mailEnCours = false;
+    state.mailBilan = {
+      quand: Date.now(), silencieux: !!silencieux,
+      prevenus: comptees, missions: aFaire.length,
+      envoyes: r.envoyes || [], echecs: r.echecs || [], fournisseur: r.fournisseur || ''
+    };
+    save();                       // save() pousse aussi vers le cahier partagé
+    render();
+    return state.mailBilan;
+  }).catch(function (e) {
+    state.mailEnCours = false;
+    state.mailBilan = {
+      quand: Date.now(), silencieux: !!silencieux, prevenus: 0, missions: aFaire.length,
+      envoyes: [], echecs: [],
+      erreur: (e && e.message) || 'Raison inconnue.',
+      code: (e && e.code) || ''
+    };
+    render();
+    return state.mailBilan;
+  });
+}
+
+/* L'ANNONCE AUTOMATIQUE, APRÈS UN RELEVÉ DE CALENDRIER (D-152)
+
+   C'est le geste qui manquait vraiment : une mission fabriquée par la relève
+   n'existait que sur l'écran de Marc. Elle ne part que si Marc l'a demandé
+   (`auto`), et **elle ne réveille jamais deux fois la même mission** grâce à
+   `mailsEnvoyes`.
+
+   Attention au corollaire de la règle 20 (D-133) : une donnée fabriquée sur un
+   geste a besoin que quelque chose refasse le geste. Ici l'appelant est
+   `releverIcalDe()`, et il n'y en a qu'un — c'est voulu : tout passe par la
+   relève, à la main comme automatique, puisque `releveAutoIcal()` l'appelle. */
+function annoncerAutomatiquement() {
+  if (state.auth !== 'owner') return Promise.resolve(null);
+  if (!mailBranche() || !state.mailReglages.auto) return Promise.resolve(null);
+  var aFaire = missionsAAnnoncer();
+  if (!aFaire.length) return Promise.resolve(null);
+  return prevenirDeCesMissions(aFaire, true);
 }
 
 /* ==========================================================================
@@ -4726,6 +5178,7 @@ function viewOwnerMissions() {
         (state.showNew ? 'Fermer le formulaire' : '+ Créer une mission') + '</button>' +
     '</div>' + form +
     bandeauTousMenagesManquants() +
+    bandeauMissionsAAnnoncer() +
 
     '<div class="chiprow" style="margin:20px 0 16px">' + filters.map(function (f) {
       return '<button type="button" class="chip" aria-pressed="' + (state.missionFilter === f[0]) + '"' +
@@ -4903,7 +5356,7 @@ function blocDemenagement() {
       'Le second bouton reconstruit une mission de ménage pour chaque départ à venir qui n\'en a ' +
       'plus. Il ne touche ni aux missions existantes, ni à l\'historique de paie.</p>' +
     (state.migMsg
-      ? '<p class="page-sub" style="margin:12px 0 0;color:' + (fini ? 'var(--vert)' : 'var(--terra)') + '">' +
+      ? '<p class="page-sub" style="margin:12px 0 0;color:' + (fini ? 'var(--green-t)' : 'var(--terra)') + '">' +
         esc(state.migMsg) + '</p>'
       : '') +
     '</div>' +
@@ -5369,7 +5822,7 @@ function viewOwnerMission() {
         '<h2 class="sec-title" style="margin:0">Checklist exécutée</h2>' + checklist +
       '</section>' +
       '<section style="flex:1;min-width:min(100%,280px);display:flex;flex-direction:column;gap:14px">' +
-        problemesCard + noteCard + suivi + recap + quiCard + decision +
+        problemesCard + noteCard + suivi + recap + quiCard + carteMailMission(m) + decision +
         (state.migMsg ? '<p class="sec-note">' + esc(state.migMsg) + '</p>' : '') +
         '<button type="button" class="btn-danger-xs" style="align-self:flex-start"' +
           act('remove-mission', { id: m.id }) + '>Supprimer cette mission</button>' +
@@ -6717,7 +7170,280 @@ function messageCahier() {
   if (!state.migMsg) return '';
   var bon = /^✅/.test(state.migMsg);
   return '<p class="page-sub" role="status" style="margin:14px 0 0;color:' +
-    (bon ? 'var(--vert)' : 'var(--terra)') + '">' + esc(state.migMsg) + '</p>';
+    (bon ? 'var(--green-t)' : 'var(--terra)') + '">' + esc(state.migMsg) + '</p>';
+}
+
+/* --------------------------------------------------------------------------
+   LES ÉCRANS DE L'ENVOI D'E-MAILS (session 27, D-150)
+
+   Trois endroits, et un seul sujet vu sous trois angles :
+   · **Prestataires** — le réglage : est-ce branché, qui envoie, faut-il
+     prévenir tout seul. C'est là que Marc pense à ses prestataires.
+   · **Missions** — le bandeau : « ces missions libres n'ont été annoncées à
+     personne », avec le bouton qui répare.
+   · **La fiche d'une mission** — prévenir pour celle-ci seulement, ou relancer.
+
+   Le compte rendu du dernier envoi (`bilanMailHtml`) est le même aux trois
+   endroits : une seule rédaction, pour que les trois ne puissent pas diverger.
+   -------------------------------------------------------------------------- */
+
+/** Le compte rendu du dernier envoi. Rendu vide s'il n'y en a pas eu. */
+function bilanMailHtml() {
+  var b = state.mailBilan;
+  if (!b) return '';
+
+  var cadre = function (couleur, fond, corps) {
+    return '<div class="card" style="margin-top:12px;padding:14px 16px;background:' + fond +
+      ';border-left:3px solid ' + couleur + '">' + corps + '</div>';
+  };
+
+  /* 1. L'envoi n'a pas pu partir du tout. La phrase vient de `/api/mail` : elle
+     est déjà en français et nomme le geste (règle 5). */
+  if (b.erreur) {
+    return cadre('var(--terra)', 'var(--cream)',
+      '<div style="font:700 14px Figtree,sans-serif;color:var(--terra)">Aucun e-mail n’est parti.</div>' +
+      '<p class="sec-note" style="margin:6px 0 0">' + esc(b.erreur) + '</p>');
+  }
+
+  // 2. Il n'y avait personne à prévenir.
+  if (b.rien) {
+    return cadre('var(--muted3)', 'var(--cream)',
+      '<p class="sec-note" style="margin:0">Rien à annoncer&nbsp;: aucune mission libre à venir ' +
+      'n’attend d’être annoncée à quelqu’un.</p>');
+  }
+
+  var ok = b.envoyes.length, ko = b.echecs.length;
+
+  /* 3. Tout est parti. On dit COMBIEN et À QUI : « c'est envoyé » sans nom ne
+     se vérifie pas, et un envoi qu'on ne peut pas vérifier finit par ne plus
+     être cru (c'est ce qui s'est passé trois fois avec la publication). */
+  var liste = b.envoyes.map(function (e) { return esc(e.nom || e.email); }).join(', ');
+
+  if (!ko) {
+    return cadre('var(--green-t)', 'var(--cream)',
+      '<div style="font:700 14px Figtree,sans-serif;color:var(--green-t)">✅ ' + ok +
+        ' e-mail' + (ok > 1 ? 's envoyés' : ' envoyé') + '</div>' +
+      '<p class="sec-note" style="margin:6px 0 0">' + liste +
+        (b.missions ? ' — ' + b.missions + ' mission' + (b.missions > 1 ? 's annoncées' : ' annoncée') : '') +
+        '.</p>');
+  }
+
+  /* 4. Une partie seulement. C'est le cas qui compte : sans ce détail, Marc
+     croirait tout le monde prévenu (règle 4).
+
+     ON SÉPARE LA COPIE DE MARC DES VRAIS DESTINATAIRES. Sa copie qui échoue
+     est un désagrément ; une prestataire non prévenue est un ménage qui ne
+     sera pas fait. Les mélanger ferait lire la phrase « ces personnes-là ne
+     savent pas que la mission existe » à propos de Marc lui-même — une
+     conclusion fausse construite par une étiquette, exactement ce que la
+     règle 5 interdit. */
+  var sienne = mailExpediteur().email;
+  var perdus = b.echecs.filter(function (e) { return (e.email || '').toLowerCase() !== sienne; });
+  var saCopie = b.echecs.length - perdus.length;
+
+  return cadre('var(--amber-t)', 'var(--amber-bg)',
+    '<div style="font:700 14px Figtree,sans-serif;color:var(--amber-t)">' +
+      (ok ? ok + ' e-mail' + (ok > 1 ? 's envoyés' : ' envoyé') + ', ' : '') +
+      ko + ' non ' + (ko > 1 ? 'partis' : 'parti') + '</div>' +
+    (ok ? '<p class="sec-note" style="margin:6px 0 0">Prévenus&nbsp;: ' + liste + '.</p>' : '') +
+    '<ul style="margin:8px 0 0;padding-left:20px">' +
+      b.echecs.map(function (e) {
+        return '<li class="sec-note" style="margin:0"><strong>' + esc(e.nom || e.email) + '</strong>' +
+          ((e.email || '').toLowerCase() === sienne ? ' (ta copie)' : '') + ' — ' + esc(e.raison) + '</li>';
+      }).join('') +
+    '</ul>' +
+    (perdus.length
+      ? '<p class="sec-note" style="margin:8px 0 0"><strong>' +
+        (perdus.length > 1 ? 'Ces personnes-là ne savent pas' : 'Cette personne ne sait pas') +
+        ' que la mission existe.</strong> Un coup de téléphone reste la solution la plus ' +
+        'rapide&nbsp;; la mission reste marquée « à annoncer » pour ' +
+        (perdus.length > 1 ? 'elles' : 'elle') + '.</p>'
+      : '') +
+    (saCopie && !perdus.length
+      ? '<p class="sec-note" style="margin:8px 0 0">Tes prestataires, eux, ont bien été prévenus&nbsp;: ' +
+        'seule ta copie n’est pas arrivée.</p>'
+      : ''));
+}
+
+/** Le réglage complet, affiché sur la page « Prestataires ». */
+function carteMailReglages() {
+  var r = state.mailReglages || {};
+  var branche = mailBranche();
+  var aFaire = missionsAAnnoncer();
+  var sansQui = missionsSansDestinataire();
+  var sansMail = (state.agents || []).filter(function (a) {
+    return a && !a.gone && a.kind !== 'cles' && !mailValide(a.email);
+  });
+
+  var bascule = function (nom, allume, libelle, aide) {
+    return '<div style="margin-top:10px">' +
+      '<button type="button" class="perm-chip" aria-pressed="' + allume + '" style="--accent:' + C.vert + '"' +
+        act(nom) + '>' +
+        '<span class="checkbox-sq' + (allume ? ' checkbox-sq--on' : '') + '" style="--accent:' + C.vert + '"></span>' +
+        esc(libelle) + '</button>' +
+      (aide ? '<p class="sec-note" style="margin:5px 0 0">' + aide + '</p>' : '') +
+      '</div>';
+  };
+
+  return '<div class="card" style="margin-top:22px;padding:20px 22px">' +
+    '<h2 style="font:700 16px Figtree,sans-serif;margin:0">✉️ Prévenir les prestataires par e-mail</h2>' +
+    '<p class="sec-note" style="margin:6px 0 0">Quand une mission de ménage devient disponible, ' +
+      'MAISON WARME peut envoyer un e-mail aux personnes à qui ce logement est confié. Chacune ne ' +
+      'reçoit que <strong>ses</strong> missions, et ne voit pas les adresses des autres.</p>' +
+
+    bascule('mail-actif', !!r.actif, 'Envoyer des e-mails aux prestataires',
+      'À cocher une fois que la clé d’envoi est posée chez Vercel — c’est l’étape §34 du mode ' +
+      'd’emploi, à faire une seule fois. Tant qu’elle ne l’est pas, rien ne partira et le ' +
+      'message te le dira franchement.') +
+
+    (!r.actif ? '' :
+      '<div style="margin-top:14px" class="cols">' +
+        '<div style="flex:1;min-width:200px"><label class="lab" for="mail-exp-nom">Nom affiché</label>' +
+          '<input class="inp" id="mail-exp-nom" type="text" placeholder="MAISON WARME" value="' +
+            esc(r.expNom || '') + '" data-fid="mail-exp-nom" data-in="mail-exp-nom"></div>' +
+        '<div style="flex:2;min-width:240px"><label class="lab" for="mail-exp-mail">Adresse qui envoie</label>' +
+          '<input class="inp" id="mail-exp-mail" type="email" placeholder="toi@exemple.fr" value="' +
+            esc(r.expMail || '') + '" data-fid="mail-exp-mail" data-in="mail-exp-mail"></div>' +
+      '</div>' +
+      '<p class="sec-note" style="margin:6px 0 0">Ce doit être une adresse que tu as ' +
+        '<strong>fait valider</strong> chez le service d’envoi&nbsp;: sans cela il refuse de poster, ' +
+        'pour empêcher n’importe qui d’écrire au nom de n’importe qui. Tes prestataires pourront ' +
+        'répondre directement à cette adresse.</p>' +
+
+      (mailValide(r.expMail) ? '' :
+        '<p class="sec-note" style="margin:8px 0 0;color:var(--terra)"><strong>Il manque l’adresse ' +
+          'qui envoie.</strong> Tant qu’elle n’est pas écrite ici, aucun e-mail ne peut partir.</p>') +
+
+      bascule('mail-auto', !!r.auto, 'Prévenir tout seul quand de nouvelles missions arrivent',
+        'À chaque relevé de tes calendriers, les ménages qui viennent d’être créés sont annoncés ' +
+        'sans que tu aies rien à faire. Laisse-le décoché tant que tu n’as pas vu un premier ' +
+        'envoi réussir&nbsp;: on automatise ce qui marche, jamais ce qu’on espère.') +
+
+      bascule('mail-copie', !!r.copie, 'M’envoyer une copie de ce qui part',
+        'Tu reçois le récapitulatif de chaque envoi, pour le vérifier de tes yeux.')
+    ) +
+
+    (!branche ? '' :
+      '<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:16px">' +
+        '<button type="button" class="btn btn--sm" style="background:var(--terra);color:#fff"' +
+          (state.mailEnCours ? ' disabled' : '') + act('mail-essai') + '>' +
+          (state.mailEnCours ? 'Envoi en cours…' : 'M’envoyer un e-mail d’essai') + '</button>' +
+        (aFaire.length
+          ? '<button type="button" class="btn btn--sm" style="background:var(--green-t);color:#fff"' +
+            (state.mailEnCours ? ' disabled' : '') + act('prevenir-toutes') + '>' +
+            'Annoncer les ' + aFaire.length + ' mission' + (aFaire.length > 1 ? 's' : '') + ' en attente</button>'
+          : '<span class="sec-note">Aucune mission libre n’attend d’être annoncée.</span>') +
+      '</div>') +
+
+    bilanMailHtml() +
+
+    /* CE QUI EMPÊCHERAIT UNE PERSONNE D'ÊTRE PRÉVENUE, DIT D'AVANCE. « Zéro
+       mission à annoncer » peut vouloir dire « tout est annoncé » ou « personne
+       ne peut l'être » : ce sont deux situations opposées, et confondre les
+       deux est exactement le défaut de la règle 22. On les sépare. */
+    (sansMail.length
+      ? '<p class="sec-note" style="margin:12px 0 0;color:var(--amber-t)"><strong>' +
+        sansMail.map(function (a) { return esc(a.name); }).join(', ') +
+        (sansMail.length > 1 ? ' n’ont pas d’adresse e-mail' : ' n’a pas d’adresse e-mail') +
+        '</strong> sur sa fiche&nbsp;: personne ne peut donc lui écrire. Ouvre sa fiche pour ' +
+        'l’ajouter.</p>'
+      : '') +
+    (sansQui.length
+      ? '<p class="sec-note" style="margin:8px 0 0;color:var(--amber-t)"><strong>' + sansQui.length +
+        ' mission' + (sansQui.length > 1 ? 's libres n’ont' : ' libre n’a') +
+        ' personne à qui être annoncée' + (sansQui.length > 1 ? 's' : '') + '.</strong> ' +
+        'Trois causes possibles, et le remède n’est pas le même&nbsp;: le logement n’est confié ' +
+        'à personne, la prestation n’est cochée sur aucune fiche, ou les personnes concernées ' +
+        'n’ont pas d’adresse e-mail. Le panneau sous le nom de chaque prestataire dit laquelle ' +
+        'des trois c’est.</p>'
+      : '') +
+  '</div>';
+}
+
+/** Le bandeau de la page « Missions ». */
+function bandeauMissionsAAnnoncer() {
+  if (state.auth !== 'owner') return '';
+  var aFaire = missionsAAnnoncer();
+  if (!aFaire.length) return bilanMailHtml();
+
+  var passees = aFaire.filter(function (m) { return m.date === TODAY; }).length;
+
+  /* PAS DE BOUTON QUI N'ENVERRAIT RIEN (règle 13). Quand l'envoi n'est pas
+     branché, on dit ce qui manque et où le faire — et on le dit quand même,
+     parce que le vrai problème (« personne n'est prévenu ») existe que l'envoi
+     soit branché ou non. */
+  var action = mailBranche()
+    ? '<button type="button" class="btn btn--sm" style="background:var(--terra);color:#fff"' +
+      (state.mailEnCours ? ' disabled' : '') + act('prevenir-toutes') + '>' +
+      (state.mailEnCours ? 'Envoi en cours…'
+        : 'Prévenir par e-mail (' + aFaire.length + ' mission' + (aFaire.length > 1 ? 's' : '') + ')') +
+      '</button>'
+    : '<button type="button" class="btn btn--sm" style="background:var(--terra);color:#fff"' +
+      act('nav', { path: '#/admin/prestataires' }) + '>Régler l’envoi d’e-mails</button>';
+
+  return '<div class="card" style="margin-top:18px;padding:18px 20px;background:var(--amber-bg);' +
+    'border-left:3px solid var(--amber-t)">' +
+    '<div style="font:700 14px Figtree,sans-serif;color:var(--amber-t)">✉️ ' + aFaire.length +
+      ' mission' + (aFaire.length > 1 ? 's libres n’ont' : ' libre n’a') + ' été annoncée' +
+      (aFaire.length > 1 ? 's' : '') + ' à personne</div>' +
+    '<p class="sec-note" style="margin:6px 0 12px">Elles existent bien, et tes prestataires les ' +
+      'verraient <em>s’ils ouvraient l’application</em>. Mais rien ne les a prévenus' +
+      (passees ? ', et l’une d’elles est pour aujourd’hui' : '') + '. ' +
+      (mailBranche()
+        ? 'Un e-mail par personne, avec ses missions à elle.'
+        : '<strong>L’envoi d’e-mails n’est pas encore réglé</strong>&nbsp;: c’est dans ' +
+          '« Prestataires ».') +
+      '</p>' +
+    '<div style="display:flex;gap:10px;flex-wrap:wrap">' + action + '</div>' +
+    bilanMailHtml() +
+  '</div>';
+}
+
+/** Prévenir pour UNE mission, depuis sa fiche. */
+function carteMailMission(m) {
+  if (!missionAnnoncable(m)) return '';
+  var faite = annonceFaite(m);
+  var qui = prestatairesAPrevenir(m);
+
+  var corps;
+  if (!qui.length) {
+    corps = '<p class="sec-note" style="margin:6px 0 0">Personne ne peut être prévenu pour cette ' +
+      'mission&nbsp;: soit ce logement n’est confié à personne, soit aucune fiche n’a d’adresse ' +
+      'e-mail, soit la prestation n’est cochée sur aucune fiche.</p>';
+  } else if (!mailBranche()) {
+    corps = '<p class="sec-note" style="margin:6px 0 0">L’envoi d’e-mails n’est pas encore réglé. ' +
+      '<button type="button" class="btn btn--xs" style="background:var(--cream);color:var(--ink-soft);' +
+      'margin-top:8px"' + act('nav', { path: '#/admin/prestataires' }) + '>Le régler</button></p>';
+  } else {
+    corps =
+      '<p class="sec-note" style="margin:6px 0 10px">' +
+        (faite
+          ? 'Annoncée le ' + esc(fmtDateHeure(faite.at)) + ' à ' +
+            esc((faite.a || []).join(', ')) + '.'
+          : '<strong>Personne n’a été prévenu.</strong> ' + qui.length + ' personne' +
+            (qui.length > 1 ? 's peuvent' : ' peut') + ' la prendre&nbsp;: ' +
+            qui.map(function (a) { return esc(a.name); }).join(', ') + '.') +
+      '</p>' +
+      '<button type="button" class="btn btn--sm" style="background:' +
+        (faite ? 'var(--cream);color:var(--ink-soft)' : 'var(--terra);color:#fff') + '"' +
+        (state.mailEnCours ? ' disabled' : '') + act('prevenir-mission', { id: m.id }) + '>' +
+        (state.mailEnCours ? 'Envoi en cours…' : faite ? 'Renvoyer l’annonce' : 'Prévenir par e-mail') +
+      '</button>';
+  }
+
+  return '<div class="card" style="padding:20px">' +
+    '<h2 style="font:700 16px Figtree,sans-serif;margin:0">✉️ Prévenir les prestataires</h2>' +
+    corps + bilanMailHtml() +
+  '</div>';
+}
+
+/** « 20 août à 10:13 » à partir d'une date ISO complète. Rend la chaîne telle
+    quelle si elle n'est pas lisible — jamais « Invalid Date » (règle 5). */
+function fmtDateHeure(iso) {
+  var d = new Date(iso);
+  if (isNaN(d.getTime())) return String(iso || '');
+  return d.getDate() + ' ' + MOIS[d.getMonth()] + ' à ' +
+    String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
 }
 
 function viewOwnerAgents() {
@@ -6927,7 +7653,7 @@ function viewOwnerAgents() {
           ';min-height:42px;font-size:13px"' + act('toggle-new-agent') + '>' +
           (state.showNewAgent ? 'Fermer' : '+ Ajouter un prestataire') + '</button>' +
       '</div>' +
-    '</div>' + messageCahier() + form +
+    '</div>' + messageCahier() + form + carteMailReglages() +
 
     '<div class="cols" style="margin-top:22px;gap:12px">' +
       '<div class="kpi" style="min-width:200px"><div class="v num">' +
@@ -7408,7 +8134,7 @@ function carteLiensParLogement() {
   var biens = state.props.filter(function (p) { return !p.gone; });
   if (!biens.length) return '';
 
-  return '<div class="card" style="margin-top:22px;padding:22px;border-left:4px solid var(--vert)">' +
+  return '<div class="card" style="margin-top:22px;padding:22px;border-left:4px solid var(--green-t)">' +
     '<h2 style="font:700 16px Figtree,sans-serif;margin:0 0 4px">Un lien par logement — à préférer</h2>' +
     '<p class="sec-note" style="margin:0 0 14px">Colle le lien d’un logement dans les messages ' +
       'automatiques de <strong>l’annonce de ce logement</strong>, sur Airbnb comme sur Booking. Le ' +
@@ -10233,7 +10959,113 @@ var actions = {
   'relever-ical': function (el) {
     var pid = el.dataset.pid;
     if (state.icalEnCours) return;
-    releverIcalDe(pid);
+    /* Session 27 (D-152) : le relevé fabrique des ménages, et l'annonce part
+       derrière — **une fois le relevé fini**, jamais pendant. Sans cette
+       attente, l'annonce serait rédigée avec les missions d'avant. */
+    releverIcalDe(pid).then(function () { annoncerAutomatiquement(); });
+  },
+
+
+  /* PRÉVENIR LES PRESTATAIRES PAR E-MAIL (session 27, D-150) -------------- */
+
+  /* Les trois bascules. `save()` les envoie au cahier partagé : un réglage qui
+     ne vivrait que sur cet ordinateur redeviendrait faux dès que Marc ouvre
+     l'application ailleurs (règle 14). */
+  'mail-actif': function () {
+    state.mailReglages.actif = !state.mailReglages.actif;
+    // Éteindre l'envoi éteint aussi l'automatique : laisser « prévenir tout
+    // seul » coché alors que rien ne part serait un écran qui ment (règle 13).
+    if (!state.mailReglages.actif) state.mailReglages.auto = false;
+    state.mailBilan = null;
+    save(); render();
+  },
+  'mail-auto': function () {
+    state.mailReglages.auto = !state.mailReglages.auto;
+    save(); render();
+  },
+  'mail-copie': function () {
+    state.mailReglages.copie = !state.mailReglages.copie;
+    save(); render();
+  },
+
+  /* L'ESSAI. Il ne sert pas à « voir si c'est joli » : il sert à découvrir, en
+     une fois et sans déranger personne, les deux refus qu'on rencontrera pour
+     de vrai — la clé mal recopiée, et l'adresse d'expédition pas encore
+     validée. C'est pour cela qu'il passe par le VRAI chemin d'envoi, et non
+     par un raccourci : un essai qui emprunte un autre chemin ne prouve rien
+     (c'est la leçon de D-144, le lien voyageur « éprouvé » depuis l'écran du
+     propriétaire). */
+  'mail-essai': function () {
+    if (state.mailEnCours) return;
+    if (!mailBranche()) {
+      alert('Il manque l’adresse qui envoie les e-mails.\n\n' +
+        'Écris-la juste au-dessus, puis réessaie.');
+      return;
+    }
+    var exp = mailExpediteur();
+    var texte = 'Ceci est un e-mail d’essai envoyé depuis MAISON WARME.\n\n' +
+      'Si tu le lis, tout fonctionne : la clé d’envoi est bonne, et l’adresse « ' + exp.email +
+      ' » est bien validée chez le service d’envoi.\n\n' +
+      'Tes prestataires recevront désormais un message de cette adresse à chaque fois qu’une ' +
+      'mission devient disponible pour eux.\n\n— MAISON WARME';
+
+    state.mailEnCours = true;
+    state.mailBilan = null;
+    render();
+
+    DB.envoyerMail(exp, [{
+      email: exp.email, nom: exp.nom, sujet: 'Essai — MAISON WARME', texte: texte,
+      html: '<pre style="font:400 15px/1.6 Helvetica,Arial,sans-serif;color:#2E2A26;' +
+        'white-space:pre-wrap">' + esc(texte) + '</pre>'
+    }]).then(function (r) {
+      state.mailEnCours = false;
+      state.mailBilan = {
+        quand: Date.now(), prevenus: (r.envoyes || []).length, missions: 0,
+        envoyes: r.envoyes || [], echecs: r.echecs || [], fournisseur: r.fournisseur || ''
+      };
+      render();
+    }).catch(function (e) {
+      state.mailEnCours = false;
+      state.mailBilan = {
+        quand: Date.now(), prevenus: 0, missions: 0, envoyes: [], echecs: [],
+        erreur: (e && e.message) || 'Raison inconnue.', code: (e && e.code) || ''
+      };
+      render();
+    });
+  },
+
+  /* Annoncer TOUTES les missions libres jamais annoncées. */
+  'prevenir-toutes': function () {
+    if (state.mailEnCours) return;
+    var aFaire = missionsAAnnoncer();
+    if (!aFaire.length) return;
+    var lots = repartirParPrestataire(aFaire);
+    /* ON DEMANDE CONFIRMATION, ET ON DIT COMBIEN DE LETTRES PARTENT. Un envoi
+       d'e-mails ne se rattrape pas : une fois posté, c'est posté. Le nombre
+       est la seule chose qui permette de repérer une bêtise avant qu'elle
+       parte — trois lettres attendues, dix-sept annoncées, on annule. */
+    if (!confirm('Prévenir ' + lots.length + ' prestataire(s) pour ' + aFaire.length +
+      ' mission(s) ?\n\nChacun ne recevra que les missions qu’il peut prendre.\n' +
+      'Un e-mail envoyé ne peut pas être repris.')) return;
+    prevenirDeCesMissions(aFaire, false);
+  },
+
+  /* Annoncer UNE mission, depuis sa fiche. Fonctionne aussi en renvoi : c'est
+     le geste à faire quand une annonce est partie mais que personne n'a pris
+     la mission, et il ne doit surtout pas être interdit sous prétexte que
+     `mailsEnvoyes` en garde le souvenir. */
+  'prevenir-mission': function (el) {
+    if (state.mailEnCours) return;
+    var m = mission(el.dataset.id);
+    if (!m) return;
+    var qui = prestatairesAPrevenir(m);
+    if (!qui.length) return;
+    var deja = annonceFaite(m);
+    if (!confirm((deja ? 'Renvoyer l’annonce' : 'Prévenir') + ' ' + qui.length +
+      ' personne(s) pour le ' + service(m.type).label.toLowerCase() + ' du ' + fmtDate(m.date) +
+      ' — ' + prop(m.prop).name + ' ?\n\n' +
+      qui.map(function (a) { return '· ' + a.name + ' (' + a.email + ')'; }).join('\n'))) return;
+    prevenirDeCesMissions([m], false);
   },
 
   /* Biens : création et suppression ------------------------------------- */
@@ -11348,6 +12180,13 @@ var inputs = {
   'na-name': function (el) { state.na.name = el.value; },
   'na-role': function (el) { state.na.role = el.value; },
   'na-email': function (el) { state.na.email = el.value; },
+
+  /* L'expéditeur des e-mails (session 27, D-150). `save()` à chaque frappe,
+     comme partout ailleurs : c'est ce qui envoie aussi le réglage au cahier
+     partagé. Pas de `render()` — réafficher à chaque lettre tapée ferait
+     perdre le curseur. */
+  'mail-exp-nom': function (el) { state.mailReglages.expNom = el.value; save(); },
+  'mail-exp-mail': function (el) { state.mailReglages.expMail = el.value; save(); },
   'nar-label': function (el) { state.nar.label = el.value; },
   'nar-unit': function (el) { state.nar.unit = el.value; },
   'nar-par': function (el) { state.nar.par = el.value; },
