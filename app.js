@@ -1531,7 +1531,57 @@ function oublierSejourIcal(pid, resa) {
   return true;
 }
 
-/** `plat` : la plateforme du lot, pour ne juger disparu que ce qui vient d'elle. */
+/* CE QUI A DISPARU DU CALENDRIER A ÉTÉ ANNULÉ (session 26, D-145)
+
+   Signalé : *« j'ai eu une annulation sur Booking, ça n'a pas mis à jour dans
+   le calendrier et ça n'a pas non plus annulé la mission. »* Exact. Un séjour
+   annulé chez Airbnb ou Booking **ne s'annonce pas** : il disparaît du
+   calendrier, tout simplement. `analyserIcs()` n'écrit jamais « annule », et
+   rien ne repassait derrière les séjours déjà connus — corollaire de la
+   règle 20, quatrième fois.
+
+   POURQUOI CETTE FONCTION EST ICI, ET PAS DANS `fusionnerResas` (repris le
+   20 août, avant même d'avoir servi). La première version comparait
+   `r.plat` au nom de la plateforme du lot. Faille : `normaliserResa()` écrit
+   **`plat: PLATS[brut.plat] ? brut.plat : 'Direct'`** — seuls « Airbnb » et
+   « Booking.com » figurent dans `PLATS`. Un séjour venu d'Abritel, d'Expedia
+   ou d'un Google Agenda est donc enregistré comme **« Direct »**, la
+   comparaison échouait, et le balayage ne se déclenchait jamais pour eux. Pire :
+   deux calendriers inconnus sur un même logement vaudraient tous les deux
+   « Direct » et se seraient mutuellement annulés.
+
+   On ne compare donc plus des **noms d'affichage** mais des **identifiants** :
+   on relève tous les calendriers du logement, on rassemble les `uid` vus, et
+   ce qui n'y figure pas a disparu. Aucune plateforme n'est privilégiée.
+
+   TROIS GARDE-FOUS, parce qu'effacer une vraie réservation serait bien pire
+   que d'en garder une annulée (règle 15) :
+     · seulement les séjours qui portent un **identifiant** (`uid`) — sans lui
+       on ne peut pas affirmer qu'ils manquent ;
+     · seulement ceux **à venir** — les calendriers cessent de publier les
+       séjours passés, leur absence ne veut rien dire ;
+     · et l'appelant ne déclenche le balayage que si **tous** les calendriers du
+       logement ont répondu, et **qu'au moins un a rapporté quelque chose**.
+       Un lien expiré ou une panne de plateforme ne doit pas valoir « tout a
+       été annulé ».
+
+   `retirerResa()` fait le reste, et il le fait déjà bien (D-119) : mission
+   libre supprimée, mission prise **annulée avec un mot** sur le téléphone de
+   la prestataire, mission terminée jamais touchée. */
+function annulerSejoursDisparus(pid, uidsVus) {
+  var bilan = { disparues: 0, missionsAnnulees: 0 };
+  resasOf(pid).slice().forEach(function (r) {
+    if (r.source !== 'ical' || !r.uid) return;
+    if (uidsVus[r.uid]) return;
+    if (r.start <= TODAY) return;                 // en cours ou passé : on ne touche pas
+    var b = retirerResa(pid, r, 'La réservation a été annulée sur ' +
+      (r.plat && r.plat !== 'Direct' ? r.plat : 'la plateforme') + '.');
+    bilan.disparues++;
+    bilan.missionsAnnulees += b.annulees.length;
+  });
+  return bilan;
+}
+
 function fusionnerResas(pid, lot, source, plat) {
   var bilan = { ajoutees: 0, majs: 0, annulees: 0, inchangees: 0, rattrapees: 0,
                 missionsAnnulees: 0, disparues: 0, ignorees: 0 };
@@ -1617,43 +1667,10 @@ function fusionnerResas(pid, lot, source, plat) {
     bilan.majs++;
   });
 
-  /* CE QUI A DISPARU DU CALENDRIER A ÉTÉ ANNULÉ (session 26, D-145)
-
-     Signalé : *« j'ai eu une annulation sur Booking, ça n'a pas mis à jour
-     dans le calendrier et ça n'a pas non plus annulé la mission. »* Exact.
-     Cette fonction ne regardait **que ce que le lot apporte** : un séjour
-     annulé chez Airbnb ou Booking ne s'annonce pas, **il disparaît du
-     calendrier**, tout simplement. Le `statut === 'annule'` traité plus haut
-     n'arrive jamais par iCal — `analyserIcs()` écrit toujours « confirme ».
-     Rien, nulle part, ne repassait derrière les séjours déjà connus : c'est le
-     corollaire de la règle 20, pour la quatrième fois.
-
-     CE QU'ON NE FAIT SURTOUT PAS : conclure « disparu » à la légère. Quatre
-     garde-fous, parce qu'effacer une vraie réservation serait bien pire que
-     d'en garder une annulée (règle 15) :
-       · seulement les séjours de **cette plateforme-ci** — le lot d'Airbnb ne
-         dit rien de Booking, et les deux calendriers sont relevés séparément ;
-       · seulement ceux qui portent un **identifiant** (`uid`) : sans lui on ne
-         peut pas affirmer qu'ils manquent ;
-       · seulement ceux **à venir** : les calendriers cessent de publier les
-         séjours passés, leur absence ne veut donc rien dire ;
-       · et **jamais sur un lot vide** : un calendrier qui répond vide, c'est
-         presque toujours un lien expiré ou une panne de la plateforme, pas
-         quatre annulations d'un coup.
-
-     `retirerResa()` fait le reste, et il le fait déjà bien (D-119) : mission
-     libre supprimée, mission prise **annulée avec un mot** sur le téléphone de
-     la prestataire, mission terminée jamais touchée. */
-  if (source === 'ical' && plat && lot.length) {
-    resasOf(pid).slice().forEach(function (r) {
-      if (r.source !== 'ical' || r.plat !== plat || !r.uid) return;
-      if (vusDansLeLot[r.uid]) return;
-      if (r.start <= TODAY) return;               // en cours ou passé : on ne touche pas
-      var b = retirerResa(pid, r, 'La réservation a été annulée sur ' + plat + '.');
-      bilan.disparues++;
-      bilan.missionsAnnulees += b.annulees.length;
-    });
-  }
+  /* Le balayage des disparus ne se fait PAS ici : il a besoin de TOUS les
+     calendriers du logement, pas d'un seul (voir `annulerSejoursDisparus`).
+     On se contente de rendre les identifiants vus dans ce lot-ci. */
+  bilan.uidsVus = vusDansLeLot;
 
   state.resas[pid] = resasOf(pid).sort(function (a, b) {
     return a.start < b.start ? -1 : a.start > b.start ? 1 : 0;
@@ -1748,6 +1765,8 @@ function releverIcalDe(pid) {
   var total = { ajoutees: 0, majs: 0, annulees: 0, inchangees: 0, rattrapees: 0,
                 nomsRepares: 0, disparues: 0, ignorees: 0, missionsAnnulees: 0 };
   var soucis = [];
+  var uidsVus = {};        // les identifiants vus dans TOUS les calendriers du logement
+  var lus = 0;             // combien de calendriers ont rapporté au moins un séjour
 
   return liens.reduce(function (chaine, lien) {
     return chaine.then(function () {
@@ -1765,17 +1784,34 @@ function releverIcalDe(pid) {
         .then(function (ics) {
           var plat = plateformeDuLien(lien);
           var lot = analyserIcs(ics, plat);
-          // La plateforme est passée à part : sur un lot vide, elle est la
-          // seule chose qui dirait de quels séjours on parle (D-145).
+          if (lot.length) lus++;
           var b = fusionnerResas(pid, lot, 'ical', plat);
+          // Les identifiants vus dans CE calendrier rejoignent ceux des autres :
+          // le balayage des disparus a besoin de tous (D-145).
+          Object.keys(b.uidsVus || {}).forEach(function (u) { uidsVus[u] = true; });
           ['ajoutees', 'majs', 'annulees', 'inchangees', 'rattrapees', 'nomsRepares',
-           'disparues', 'ignorees', 'missionsAnnulees'].forEach(function (k) { total[k] += (b[k] || 0); });
+           'ignorees'].forEach(function (k) { total[k] += (b[k] || 0); });
         })
         .catch(function (e) {
           soucis.push(plateformeDuLien(lien) + ' : ' + (e.message || 'raison inconnue'));
         });
     });
   }, Promise.resolve()).then(function () {
+    /* LE BALAYAGE DES DISPARUS, UNE FOIS TOUS LES CALENDRIERS LUS (D-145).
+       Deux conditions, et il faut les deux : **aucun calendrier n'a échoué** —
+       sinon on prendrait les séjours d'un lien en panne pour des annulations —
+       et **au moins un a rapporté quelque chose**, un calendrier vide étant
+       presque toujours un lien expiré plutôt que quatre annulations d'un coup. */
+    if (!soucis.length && lus) {
+      var d = annulerSejoursDisparus(pid, uidsVus);
+      total.disparues += d.disparues;
+      total.missionsAnnulees += d.missionsAnnulees;
+      // Un ménage a pu naître ou mourir : on refait le tri et le rattrapage.
+      state.resas[pid] = resasOf(pid).sort(function (a, b) {
+        return a.start < b.start ? -1 : a.start > b.start ? 1 : 0;
+      });
+    }
+
     state.icalEnCours = null;
     var bilan = { quand: Date.now(), total: total, soucis: soucis };
     state.icalBilan[pid] = bilan;
