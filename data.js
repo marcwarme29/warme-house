@@ -1343,6 +1343,33 @@ var DB = (function () {
 
   function supprimerMission(id) { return supprimerLigne('missions', id); }
 
+  /* LE COMPTE RENDU, DIT LIGNE PAR LIGNE (session 29, D-157).
+
+     ⚠️ CETTE COLONNE APPARTIENT AU PRESTATAIRE (règle 16, règle 25) : c'est
+     `finish()` qui l'écrit, sur son téléphone, et le propriétaire n'a rien à y
+     mettre. Une seule exception, et elle est étroite : quand le propriétaire
+     **clôt lui-même** une mission que personne n'a faite dans l'application —
+     le ménage qu'il a fait de ses mains, celui que la prestataire a oublié de
+     clore —, il faut bien que la trace de ce geste voyage, sinon la mission
+     s'affiche « terminée sans détail » sur ses autres appareils, ce qui est
+     faux (règle 5).
+
+     L'appelant ne s'en sert donc QUE lorsqu'aucun compte rendu n'existe. Et si
+     la prestataire termine sa mission plus tard, son `majMission()` remplace
+     cette trace par le vrai compte rendu : c'est le bon sens de lecture, et
+     ça se répare tout seul. */
+  function majCompteRendu(id, rapport) {
+    if (!dispo || !profil || !id) return Promise.resolve(true);
+    return client.from('missions')
+      .update({ report: rapport || null, updated_at: new Date().toISOString() })
+      .eq('id', id)
+      .then(function (r) {
+        if (r && r.error) { derniereErreur = messageClair(r.error); return false; }
+        return true;
+      })
+      .catch(function (e) { derniereErreur = messageClair(e); return false; });
+  }
+
   /* LE STATUT D'UNE MISSION, DIT LIGNE PAR LIGNE (session 28, D-154).
      Le remède de la règle 16 : sortir la colonne de l'envoi groupé et la
      confier à une mise à jour ciblée, qui n'écrit que ce qu'on veut vraiment
@@ -2227,6 +2254,7 @@ var DB = (function () {
     detacherMission: detacherMission,
     supprimerMission: supprimerMission,
     majStatut: majStatut,
+    majCompteRendu: majCompteRendu,
     supprimerResa: supprimerResa,
     supprimerBien: supprimerBien,
     estPrestataireRelie: estPrestataireRelie,

@@ -5716,8 +5716,11 @@ function viewOwnerMission() {
   var checklist = !fini
     ? '<div class="card"><p class="empty">La checklist s\'affichera ici une fois la mission terminée.</p></div>'
     : !repComplet
-    ? '<div class="card"><p class="empty">Le détail de cette mission n\'a pas été conservé : ' +
-        'elle a été terminée avant la mise en place de la revue.</p></div>'
+    ? '<div class="card"><p class="empty">' + (closeALaMain(m)
+        ? 'Pas de checklist ni de photos : tu as marqué cette mission comme faite à la main. Le ' +
+          'ménage n\'est pas passé par l\'application, il n\'y a donc rien à revoir.'
+        : 'Le détail de cette mission n\'a pas été conservé : elle a été terminée avant la mise ' +
+          'en place de la revue.') + '</p></div>'
     : repComplet.rooms.map(function (r) {
         var dn = r.steps.filter(function (s) { return s.done; }).length;
         return '<div class="card" style="padding:18px 20px">' +
@@ -5766,7 +5769,14 @@ function viewOwnerMission() {
       '<div class="avatar" style="width:44px;height:44px;font-size:15px;background:' + ag.avatarBg + ';color:' + ag.avatarFg + '">' + ag.init + '</div>' +
       '<div><div style="font:700 16px Figtree,sans-serif">' + esc(ag.name) + '</div>' +
       '<div style="font:500 12.5px Figtree,sans-serif;color:var(--muted)">' + esc(ag.role) + '</div></div>' +
-      '</div>' : '<p class="sec-note">Prestataire inconnu.</p>') +
+      '</div>'
+      /* « Prestataire inconnu » laisserait croire qu'on a PERDU le nom (règle 5).
+         Quand la mission a été close à la main, il n'y en a jamais eu, et c'est
+         une situation normale : on le dit comme tel. */
+      : closeALaMain(m)
+        ? '<p class="sec-note">Personne n’y est rattaché : tu l’as marquée faite à la main. ' +
+          'Si quelqu’un d’autre l’a faite, dis-le juste en dessous — c’est ce qui le paie.</p>'
+        : '<p class="sec-note">Prestataire inconnu.</p>') +
     '<div style="margin-top:14px;padding-top:12px;border-top:1px solid rgba(36,30,26,.07)">' +
       [['Étapes validées', repComplet ? repDone + ' / ' + repTotal : '—'],
        /* UNE VALEUR MANQUANTE NE DOIT PAS FIGER L'ÉCRAN (règle 6). Un compte
@@ -5905,12 +5915,110 @@ function viewOwnerMission() {
         '<h2 class="sec-title" style="margin:0">Checklist exécutée</h2>' + checklist +
       '</section>' +
       '<section style="flex:1;min-width:min(100%,280px);display:flex;flex-direction:column;gap:14px">' +
-        problemesCard + noteCard + suivi + recap + quiCard + carteMailMission(m) + decision +
+        problemesCard + noteCard + suivi + recap + carteCloreMission(m) + quiCard +
+        carteMailMission(m) + decision +
         (state.migMsg ? '<p class="sec-note">' + esc(state.migMsg) + '</p>' : '') +
         '<button type="button" class="btn-danger-xs" style="align-self:flex-start"' +
           act('remove-mission', { id: m.id }) + '>Supprimer cette mission</button>' +
       '</section>' +
     '</div>' + releve + vueGrandePhoto());
+}
+
+/* CLORE UNE MISSION SOI-MÊME (session 29, D-157)
+   --------------------------------------------------------------------------
+   Demandé le 22 août : *« dans la rubrique mission, je voudrais pouvoir marquer
+   qu'une mission est terminée. »*
+
+   POURQUOI ÇA MANQUAIT, ET POURQUOI ÇA COMPTE. Jusqu'ici, une mission ne
+   pouvait être terminée que d'une seule façon : la prestataire appuie sur
+   « Terminer » à la fin de sa checklist, sur son téléphone. C'est le bon
+   chemin — il produit les photos, le relevé de stock, l'heure de fin. Mais il
+   ne couvre pas la vraie vie :
+
+     · le propriétaire fait le ménage lui-même entre deux voyageurs ;
+     · la prestataire l'a fait et a oublié de le clore, ou n'avait pas de
+       réseau et ne l'a jamais repris ;
+     · la mission date d'avant que la personne n'ait un compte.
+
+   Dans ces trois cas la mission restait « disponible » ou « en cours » **pour
+   toujours**. Elle encombrait le pool, elle faussait le compte des missions
+   libres, et elle n'entrait dans la paie de personne. C'est exactement ce que
+   montrait le tableau du 20 août : sept missions déjà passées que personne
+   n'avait prises.
+
+   CE QUE CE GESTE NE FAIT PAS, ET IL FAUT LE DIRE (règle 13). Il ne fabrique
+   ni checklist, ni photos, ni relevé de stock : il n'y en a pas eu. Écrire une
+   checklist vide serait pire que de ne rien écrire — on croirait à un travail
+   bâclé plutôt qu'à un travail fait hors de l'application. L'écran dit donc en
+   toutes lettres « terminée à la main », et pourquoi il n'y a rien à revoir.
+
+   QUI SERA PAYÉ. Le registre de paie se déduit des missions terminées **qui
+   portent un nom** (`ledger()`, D-87). Une mission close sans personne
+   n'entre donc dans la paie de personne — ce qui est correct quand c'est le
+   propriétaire qui a fait le ménage, et faux quand c'est quelqu'un d'autre.
+   L'encadré « Qui a fait cette mission ? » le dit déjà juste en dessous, et
+   c'est là qu'on renvoie plutôt que d'inventer un preneur (règle 15).
+
+   ET SON INVERSE, ÉCRIT (règle 20). Une mission close à la main peut être
+   rouverte d'un clic — c'était peut-être la mauvaise. On ne l'offre **que**
+   pour les clôtures à la main : une mission réellement terminée par une
+   prestataire ne se rouvre que par « Demander une reprise », qui la lui dit et
+   retire le montant de ses gains. Défaire son travail en silence serait le
+   défaut de la session 25 par un autre chemin.
+   -------------------------------------------------------------------------- */
+
+/** Cette mission a-t-elle été close à la main par le propriétaire ? */
+function closeALaMain(m) {
+  var rep = m && state.reports[m.id];
+  return !!(rep && rep.manuel);
+}
+
+/** L'heure à inscrire comme fin de mission. Aujourd'hui : l'heure qu'il est.
+    Une mission passée : la fin de son créneau, faute de mieux — inventer une
+    heure précise sur une date ancienne serait afficher une valeur fausse
+    (règle 5), la fin du créneau est la seule qu'on puisse défendre. */
+function heureDeCloture(m) {
+  if (m.date === TODAY) return nowHM();
+  var fin = /(\d{1,2}:\d{2})\s*$/.exec(m.windowLabel || '');
+  return (fin && fin[1]) || (state.info[m.prop] || {}).checkin || '16:00';
+}
+
+function carteCloreMission(m) {
+  if (!m || m.status === 'annulee') return '';
+  var fini = m.status === 'termine';
+  var manuelle = closeALaMain(m);
+  var rep = state.reports[m.id];
+
+  /* Terminée par la prestataire, avec son compte rendu : rien à ajouter ici.
+     « Votre décision » juste en dessous propose déjà valider ou reprendre. */
+  if (fini && !manuelle) return '';
+
+  if (fini && manuelle) {
+    return '<div class="card" style="padding:20px">' +
+      '<h2 style="font:700 16px Figtree,sans-serif;margin:0">Terminée à la main</h2>' +
+      '<p class="sec-note" style="margin:6px 0 0">Tu as marqué cette mission comme faite' +
+        (rep && rep.fini ? ', à ' + esc(rep.fini) : '') + '. Il n’y a donc ni checklist ni photos ' +
+        'à revoir&nbsp;: le ménage n’est pas passé par l’application.</p>' +
+      '<button type="button" class="btn btn--xs" style="margin-top:12px;background:var(--cream);' +
+        'color:var(--ink-soft)"' + act('rouvrir-mission', { id: m.id }) + '>Ce n’était pas terminé</button>' +
+    '</div>';
+  }
+
+  var qui = m.taker ? agent(m.taker).name : '';
+  return '<div class="card" style="padding:20px">' +
+    '<h2 style="font:700 16px Figtree,sans-serif;margin:0">Cette mission est-elle faite&nbsp;?</h2>' +
+    '<p class="sec-note" style="margin:6px 0 0">' +
+      (qui
+        ? 'À utiliser si <strong>' + esc(qui) + '</strong> a fait le ménage sans le clore sur son ' +
+          'téléphone. Le montant entrera dans ses gains.'
+        : 'À utiliser si <strong>tu as fait le ménage toi-même</strong>, ou si quelqu’un l’a fait ' +
+          'sans passer par l’application. Elle sortira des missions disponibles.') +
+    '</p>' +
+    '<p class="sec-note" style="margin:8px 0 0">Il n’y aura ni checklist ni photos — il n’y en a ' +
+      'pas eu. C’est écrit sur la fiche, pour qu’on ne croie pas à un travail bâclé.</p>' +
+    '<button type="button" class="btn btn--go btn--sm" style="width:100%;margin-top:14px"' +
+      act('clore-mission', { id: m.id }) + '>Marquer comme terminée</button>' +
+  '</div>';
 }
 
 /** La personne à qui la mission est attribuée, et de quoi la corriger. */
@@ -10919,6 +11027,86 @@ var actions = {
     state.showNew = false;
     save(); render();
   },
+
+  /* MARQUER UNE MISSION COMME TERMINÉE (session 29, D-157).
+     Le raisonnement complet est au-dessus de `carteCloreMission()`. */
+  'clore-mission': function (el) {
+    var m = mission(el.dataset.id);
+    if (!m || m.status === 'termine' || m.status === 'annulee') return;
+
+    var qui = m.taker ? agent(m.taker).name : '';
+    if (!confirm('Marquer comme terminé le ' + service(m.type).label.toLowerCase() + ' du ' +
+      fmtDate(m.date) + ' — ' + prop(m.prop).name + ' ?\n\n' +
+      (qui
+        ? 'Elle sera portée au crédit de ' + qui + ' : ' + (m.price || 0) + ' € entreront dans ses gains.'
+        : 'Personne n’y est rattaché : elle n’entrera dans les gains de personne. Si quelqu’un ' +
+          'd’autre que toi l’a faite, dis-le juste en dessous, dans « Qui a fait cette mission ? ».') +
+      '\n\nIl n’y aura ni checklist ni photos : le ménage n’est pas passé par l’application.')) return;
+
+    m.status = 'termine';
+    m.redo = '';
+    /* Validée d'office : c'est toi qui la clos, tu ne vas pas t'auto-relire.
+       Sans ça, l'écran proposerait « Valider » et « Demander une reprise » sur
+       un travail dont il n'existe aucune trace à revoir. */
+    m.review = 'valide';
+
+    /* LA TRACE, ET SEULEMENT SI LA PLACE EST LIBRE. Le compte rendu appartient
+       à la prestataire (règles 16 et 25) : on n'écrit ici que là où il n'y a
+       rien — une mission jamais close n'en a pas. S'il en existe un, même
+       partiel (un signalement fait en cours de mission), on n'y touche pas. */
+    var rep = state.reports[m.id];
+    var trace = null;
+    if (!rep) {
+      trace = { manuel: true, fini: heureDeCloture(m), at: new Date().toISOString() };
+      state.reports[m.id] = trace;
+    }
+
+    /* Le logement est prêt : c'est ce que `state.ready` raconte au voyageur
+       suivant, et il se déduit des missions terminées qui portent une heure
+       de fin. On le refait tout de suite plutôt qu'au prochain rechargement. */
+    reconstruireReady();
+
+    save();
+    /* Deux choses à dire au cahier, séparément, parce qu'aucune des deux ne
+       voyage plus dans l'envoi groupé (D-142, D-154). */
+    direLeStatut(m);
+    if (trace && typeof DB !== 'undefined' && DB.estDispo() && DB.profil() && DB.majCompteRendu) {
+      DB.majCompteRendu(m.id, trace);
+    }
+    render();
+  },
+
+  /* SON INVERSE (règle 20). Réservé aux clôtures à la main : une mission
+     réellement terminée par une prestataire ne se défait que par « Demander
+     une reprise », qui la lui dit. */
+  'rouvrir-mission': function (el) {
+    var m = mission(el.dataset.id);
+    if (!m || !closeALaMain(m)) return;
+    if (!confirm('Rouvrir cette mission ?\n\n' +
+      (m.taker
+        ? 'Elle redeviendra « acceptée » par ' + agent(m.taker).name + ', et sortira de ses gains.'
+        : 'Elle repartira dans les missions disponibles.'))) return;
+
+    m.status = m.taker ? 'prise' : 'dispo';
+    m.review = null;
+    delete state.reports[m.id];
+
+    // Le logement n'est plus « prêt » du fait de cette mission-là.
+    if (state.ready[m.prop] && state.ready[m.prop].mid === m.id) delete state.ready[m.prop];
+    reconstruireReady();
+
+    /* Elle redevient annonçable : sans cela, le souvenir de l'annonce déjà
+       envoyée l'écarterait du bandeau pour toujours (D-151). */
+    if (state.mailsEnvoyes) delete state.mailsEnvoyes[m.id];
+
+    save();
+    direLeStatut(m);
+    if (typeof DB !== 'undefined' && DB.estDispo() && DB.profil() && DB.majCompteRendu) {
+      DB.majCompteRendu(m.id, null);
+    }
+    render();
+  },
+
   'validate-mission': function (el) {
     var m = mission(el.dataset.id);
     if (!m) return;
