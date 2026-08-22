@@ -578,8 +578,29 @@ var DB = (function () {
      n'écrit que ce qu'on sait vraiment (voir `missionPreneur`). Ce qui n'est
      pas fourni reste intact — c'est tout l'objet de la règle 16.
 
-     `status` reste ici : c'est le propriétaire qui crée une mission et qui
-     l'annule (D-119). Une annulation doit donc pouvoir partir. */
+     SESSION 28 — `status` SORT D'ICI AUSSI (D-154). Il y était resté au nom
+     d'un raisonnement juste mais incomplet : « c'est le propriétaire qui crée
+     et qui annule, une annulation doit pouvoir partir » (D-119). C'était vrai
+     de l'annulation, et faux de tout le reste. Ce que le propriétaire renvoyait
+     ainsi, à **chaque enregistrement** — un filtre cliqué suffit —, c'était
+     l'avancement écrit par la prestataire : `prise`, `encours`, `termine`.
+     Un écran en retard de quelques heures — un second ordinateur, un onglet
+     resté ouvert, un téléphone rouvert — repoussait donc son ancienne copie
+     par-dessus la vérité, et **une mission terminée redevenait « en cours »**.
+     Signalé pour de vrai le 22 août : le ménage de Doriane du 21 était validé,
+     puis n'était plus que « en cours », checklist et photos hors de vue.
+     Le §7 disait « assumé, à revoir si le cas se présente ». Il s'est présenté.
+
+     La colonne part maintenant par une **mise à jour ciblée** (`majStatut`),
+     à chaque endroit où le propriétaire a vraiment le droit de décider du
+     statut : annuler, demander une reprise, attribuer, retirer. Et à
+     l'insertion, la colonne prend sa valeur par défaut — `dispo` (script 01) —
+     ce qui est exactement l'état d'une mission qui naît.
+
+     ⚠️ ELLE EST RETIRÉE DE **TOUTES** LES LIGNES, JAMAIS DE CERTAINES. Dans un
+     envoi groupé, une clé absente d'une seule ligne y vaut NULL et non « on
+     n'y touche pas » : ce serait retomber dans D-113 par la porte d'à côté
+     (règle 21). */
   function missionVersBase(m) {
     return {
       id: m.id,
@@ -589,7 +610,6 @@ var DB = (function () {
       date: m.date,
       window_label: m.windowLabel || '',
       price: m.price || 0,
-      status: ETATS_MISSION.indexOf(m.status) >= 0 ? m.status : 'dispo',
       guest: (m.res && m.res.guest) || '',
       guests: (m.res && m.res.guests) || null,
       urgent: m.urgent || '',
@@ -1280,10 +1300,40 @@ var DB = (function () {
      La suppression n'est pas silencieuse : si la base refuse, on renseigne
      `derniereErreur` et on rend `false`, pour que l'écran puisse le dire
      (règle D-72 : une écriture refusée doit se voir). */
+  /* DEUX DÉFAUTS CORRIGÉS ICI EN SESSION 28 (D-155)
+
+     Symptôme signalé le 22 août : *« le bouton supprimer un prestataire ne
+     marche pas, le prestataire disparaît puis réapparaît. »*
+
+     ① **ON NE SUPPRIME PLUS PAR-DESSUS UNE ÉCRITURE EN ATTENTE.** `pousser()`
+     attend 800 ms avant d'écrire. Une suppression partait, elle, tout de
+     suite : si un envoi contenant encore la ligne était en route, il arrivait
+     **après** la suppression et **recréait la ligne**. C'est le corollaire de
+     la règle 3 — déjà appliqué aux lectures en D-124 (`viderFileEcriture`) et
+     jamais aux suppressions. Et le cas était fréquent plutôt que rare : le
+     bouton « Supprimer » vit dans le panneau « ⚙ Réglages et accès », dont
+     l'ouverture déclenche justement un enregistrement.
+
+     ② **UNE SUPPRESSION QUI N'EFFACE RIEN NE DOIT PAS PASSER POUR UNE
+     RÉUSSITE.** Supabase ne rend **aucune erreur** quand la ligne existe mais
+     que les règles de sécurité interdisent de la voir : la suppression porte
+     alors sur zéro ligne et répond « c'est fait ». C'est la règle 22 dans sa
+     forme la plus traître — *« rien » est la forme que prend « tu n'as pas le
+     droit »* — et elle rendait ce bouton silencieusement inopérant. On demande
+     donc à Supabase de **rendre ce qu'il a effacé**, et zéro ligne est un
+     échec qui se dit (règle 4). */
   function supprimerLigne(table, id) {
     if (!dispo || !profil || !id) return Promise.resolve(true);
-    return client.from(table).delete().eq('id', id).then(function (r) {
+    return viderFileEcriture().then(function () {
+      return client.from(table).delete().eq('id', id).select('id');
+    }).then(function (r) {
       if (r && r.error) { derniereErreur = messageClair(r.error); return false; }
+      if (r && Array.isArray(r.data) && r.data.length === 0) {
+        derniereErreur = 'le cahier partagé n\u2019a rien trouvé à effacer sous cet identifiant. ' +
+          'Soit la ligne n\u2019y était jamais arrivée, soit les règles de sécurité ne la ' +
+          'laissent pas voir depuis ce compte.';
+        return false;
+      }
       return true;
     }).catch(function (e) {
       derniereErreur = messageClair(e);
@@ -1292,6 +1342,25 @@ var DB = (function () {
   }
 
   function supprimerMission(id) { return supprimerLigne('missions', id); }
+
+  /* LE STATUT D'UNE MISSION, DIT LIGNE PAR LIGNE (session 28, D-154).
+     Le remède de la règle 16 : sortir la colonne de l'envoi groupé et la
+     confier à une mise à jour ciblée, qui n'écrit que ce qu'on veut vraiment
+     écrire, sur la seule ligne concernée. Appelée aux quatre endroits où le
+     propriétaire décide légitimement d'un statut : annuler une mission,
+     demander une reprise, attribuer à quelqu'un, retirer de quelqu'un. */
+  function majStatut(id, statut) {
+    if (!dispo || !profil || !id) return Promise.resolve(true);
+    if (ETATS_MISSION.indexOf(statut) < 0) return Promise.resolve(true);
+    return client.from('missions')
+      .update({ status: statut, updated_at: new Date().toISOString() })
+      .eq('id', id)
+      .then(function (r) {
+        if (r && r.error) { derniereErreur = messageClair(r.error); return false; }
+        return true;
+      })
+      .catch(function (e) { derniereErreur = messageClair(e); return false; });
+  }
 
   /* DÉTACHER UNE MISSION DE SON PRENEUR (session 25, D-142).
      Depuis que le propriétaire n'écrase plus les colonnes du prestataire, un
@@ -2157,6 +2226,7 @@ var DB = (function () {
     majMission: majMission,
     detacherMission: detacherMission,
     supprimerMission: supprimerMission,
+    majStatut: majStatut,
     supprimerResa: supprimerResa,
     supprimerBien: supprimerBien,
     estPrestataireRelie: estPrestataireRelie,

@@ -1032,7 +1032,67 @@ function upgrade() {
     if (!state.missions.some(function (m) { return m.id === id; })) delete state.mailsEnvoyes[id];
   });
 
+  /* Session 28 (D-154) — remettre d'aplomb les missions dont le statut a
+     reculé. Placé avant `reconstruireReady()`, qui ne regarde que les missions
+     terminées : une mission réparée doit y entrer, sinon le logement resterait
+     annoncé « pas encore prêt » au voyageur suivant. */
+  var reparees = reparerStatutsIncoherents();
+  if (reparees.length && typeof DB !== 'undefined' && DB.estDispo() && DB.profil() &&
+      DB.profil().role === 'owner' && DB.majStatut) {
+    // Réparer l'écran ne suffit pas : il faut le dire au cahier, sinon la
+    // relecture suivante ramène l'ancien statut (règle 12, dans son esprit).
+    reparees.forEach(function (m) { DB.majStatut(m.id, 'termine'); });
+  }
+
   reconstruireReady();
+}
+
+/* UNE MISSION TERMINÉE NE PEUT PAS REDEVENIR « EN COURS » (session 28, D-154)
+
+   Signalé le 22 août : *« Doriane a fait une mission le 21 août au studio,
+   j'ai vu la checklist avec les photos et j'ai validé la mission ; aujourd'hui
+   plus rien, c'est marqué mission en cours. »*
+
+   La cause est corrigée dans `missionVersBase()` : le statut ne part plus dans
+   l'envoi groupé du propriétaire. Mais **un correctif ne répare pas le passé**
+   (règle 20, troisième corollaire, D-142) : la mission de Doriane est déjà
+   revenue en arrière dans le cahier partagé, et rien ne l'en sortirait.
+
+   D'où ce rattrapage, qui ne devine rien. Le **compte rendu** d'une mission —
+   la checklist exécutée, pièce par pièce, avec l'heure de fin — n'est écrit
+   que par `finish()`, c'est-à-dire **au moment exact où la prestataire termine
+   sa mission**. Il ne voyage plus dans l'envoi groupé depuis D-142 : il est
+   donc intact, et il constitue une preuve. Une mission qui porte un compte
+   rendu complet A ÉTÉ TERMINÉE, quoi qu'en dise sa colonne `status`.
+
+   Trois conditions, et il faut les trois — on préfère laisser une mission en
+   arrière que d'en ressusciter une à tort (règle 15, ne jamais deviner) :
+     · le compte rendu est **complet** : il a ses pièces ET son heure de fin.
+       Un compte rendu partiel existe aussi — c'est celui d'un signalement fait
+       pendant la mission (session 16) — et celui-là ne prouve rien ;
+     · le statut vaut `prise` ou `encours`. Jamais `dispo` ni `annulee` : une
+       mission remise au pool ou annulée l'a été par un geste explicite ;
+     · aucune **reprise** n'est demandée. `ask-redo` remet volontairement une
+       mission terminée à `dispo` en gardant son compte rendu : sans ce
+       troisième garde-fou, on défarait le geste du propriétaire.
+
+   Tourne à chaque relecture du cahier, donc aussi le jour où le défaut
+   reviendrait par un appareil resté sur l'ancienne version. */
+function compteRenduComplet(mid) {
+  var rep = (state.reports || {})[mid];
+  return !!(rep && Array.isArray(rep.rooms) && rep.rooms.length && rep.fini);
+}
+
+function reparerStatutsIncoherents() {
+  var reparees = [];
+  (state.missions || []).forEach(function (m) {
+    if (!m || (m.status !== 'prise' && m.status !== 'encours')) return;
+    if (m.redo) return;
+    if (!compteRenduComplet(m.id)) return;
+    m.status = 'termine';
+    reparees.push(m);
+  });
+  return reparees;
 }
 
 /* L'HEURE DE FIN DE MÉNAGE N'EST PAS UNE DONNÉE À PART (session 19)
@@ -1505,6 +1565,16 @@ function texteAnnulation(m, motif) {
     ' : ANNULÉE. ' + (motif || 'La réservation a été supprimée.');
 }
 
+/* Session 28 (D-154) : le statut ne partant plus dans l'envoi groupé, chaque
+   endroit où le propriétaire en décide un doit le DIRE, ligne par ligne. Sans
+   quoi l'annulation resterait sur cet écran — et la prestataire continuerait
+   de voir la mission sur son téléphone. */
+function direLeStatut(m) {
+  if (typeof DB === 'undefined' || !DB.estDispo() || !DB.profil() || !DB.majStatut) return;
+  if (DB.profil().role !== 'owner') return;   // le prestataire passe par majMission()
+  DB.majStatut(m.id, m.status);
+}
+
 function annulerMission(m, motif) {
   var ancienne = (m.note || '').trim();
   m.status = 'annulee';
@@ -1513,6 +1583,7 @@ function annulerMission(m, motif) {
   m.urgent = '';
   m.turnover = false;
   m.next = null;
+  direLeStatut(m);
   return m;
 }
 
@@ -5698,8 +5769,12 @@ function viewOwnerMission() {
       '</div>' : '<p class="sec-note">Prestataire inconnu.</p>') +
     '<div style="margin-top:14px;padding-top:12px;border-top:1px solid rgba(36,30,26,.07)">' +
       [['Étapes validées', repComplet ? repDone + ' / ' + repTotal : '—'],
-       ['Photos envoyées', repComplet ? String(repComplet.photos) : '—'],
-       ['Articles sous le seuil', repComplet ? String(repComplet.lows.length) : '—'],
+       /* UNE VALEUR MANQUANTE NE DOIT PAS FIGER L'ÉCRAN (règle 6). Un compte
+          rendu d'avant la session 15 a bien ses pièces mais ni `photos` ni
+          `lows` : `repComplet.lows.length` faisait alors tomber toute la fiche
+          de la mission, et le propriétaire n'y voyait plus rien du tout. */
+       ['Photos envoyées', repComplet && repComplet.photos !== undefined ? String(repComplet.photos) : '—'],
+       ['Articles sous le seuil', repComplet && Array.isArray(repComplet.lows) ? String(repComplet.lows.length) : '—'],
        ['Rémunération', d.priceLabel]].map(function (r) {
         return '<div class="kv"><span class="k">' + r[0] + '</span><span class="v num" style="font-weight:700">' + esc(r[1]) + '</span></div>';
       }).join('') +
@@ -5788,8 +5863,15 @@ function viewOwnerMission() {
     }).join('') +
   '</div>';
 
-  /* Bas de page : le relevé de stock envoyé avec la mission. */
-  var releve = !repComplet ? '' :
+  /* Bas de page : le relevé de stock envoyé avec la mission.
+
+     PAS DE RELEVÉ SANS QUANTITÉS (règle 6). Un compte rendu peut avoir ses
+     pièces sans avoir compté les stocks — c'est le cas de tous ceux d'avant la
+     session 15. `repComplet.qty[…]` faisait alors tomber **toute la fiche de la
+     mission**, pas seulement ce bloc : le propriétaire n'y voyait plus rien, et
+     rien ne disait pourquoi. Une seule valeur manquante ne doit jamais figer
+     une page entière. */
+  var releve = !repComplet || !repComplet.qty ? '' :
     '<h2 class="sec-title" style="margin:30px 0 12px">Relevé de stock envoyé</h2>' +
     '<div class="grid-cards">' + grouped().map(function (g) {
       return [g[0], g[1].filter(function (a) { return !horsStock(m.prop, a.key); })];
@@ -5797,7 +5879,8 @@ function viewOwnerMission() {
       return '<div class="card">' +
         '<div style="font:700 15px Figtree,sans-serif">' + esc(g[0]) + '</div>' +
         '<div class="list" style="margin-top:8px">' + g[1].map(function (a) {
-          var qty = repComplet.qty[a.key] || 0, low = repComplet.lows.indexOf(a.key) >= 0;
+          var qty = repComplet.qty[a.key] || 0;
+          var low = Array.isArray(repComplet.lows) && repComplet.lows.indexOf(a.key) >= 0;
           var cls = qty === 0 ? 'cell-q--zero' : low ? 'cell-q--low' : 'cell-q--ok';
           return '<div class="list-row" style="padding:9px 0">' +
             '<span class="grow" style="font:500 13.5px Figtree,sans-serif;color:' + (low ? 'var(--terra-d)' : 'var(--ink)') + '">' +
@@ -10756,7 +10839,9 @@ var actions = {
       if (m.status === 'prise' || m.status === 'encours') m.status = 'dispo';
       state.done = state.done.filter(function (x) { return x.mid !== m.id; });
       save();
-      // Le cahier ne devine pas un retrait : il faut le lui dire (règle 12).
+      // Le cahier ne devine pas un retrait : il faut le lui dire (règle 12),
+      // et le statut ne voyage plus dans l'envoi groupé (D-154).
+      direLeStatut(m);
       if (typeof DB !== 'undefined' && DB.estDispo() && DB.profil()) DB.detacherMission(m.id);
       render();
       return;
@@ -10765,6 +10850,7 @@ var actions = {
     m.taker = qui;
     if (m.status === 'dispo') m.status = 'prise';
     save();
+    direLeStatut(m);
     render();
   },
 
@@ -10854,6 +10940,11 @@ var actions = {
     // La mission n'est plus terminée : elle sort du registre de paie.
     state.done = state.done.filter(function (r) { return r.mid !== m.id; });
     save();
+    /* Le statut et le preneur se disent séparément (D-154, D-142) : ni l'un ni
+       l'autre ne part plus dans l'envoi groupé. Le compte rendu, lui, reste —
+       c'est ce qui permet de comparer l'avant et l'après d'une reprise. */
+    direLeStatut(m);
+    if (typeof DB !== 'undefined' && DB.estDispo() && DB.profil()) DB.detacherMission(m.id);
     go('#/admin/missions');
   },
   'owner-month': function (el) { state.ownerMonth = el.dataset.m; save(); render(); },
@@ -11919,7 +12010,15 @@ var actions = {
       'Elles repartiront dans les missions disponibles.\n\nSupprimer ' + a.name + ' ?')) return;
     if (!enCours.length && !confirm('Supprimer ' + a.name + ' ?\n\nSes missions déjà réalisées restent dans l\'historique des paiements.')) return;
 
-    enCours.forEach(function (m) { m.status = 'dispo'; m.taker = null; });
+    enCours.forEach(function (m) {
+      m.status = 'dispo';
+      m.taker = null;
+      /* Deux choses à dire au cahier, et il faut les deux (D-142, D-154) : le
+         statut et le preneur sortent tous deux de l'envoi groupé. Sans ça, la
+         mission resterait attribuée à quelqu'un qui n'existe plus. */
+      direLeStatut(m);
+      if (typeof DB !== 'undefined' && DB.estDispo() && DB.profil()) DB.detacherMission(m.id);
+    });
     state.agents = state.agents.filter(function (x) { return x.id !== id; });
     if (state.me === id) state.me = null;
     if (state.openAgent === id) state.openAgent = null;
@@ -11933,9 +12032,14 @@ var actions = {
     if (typeof DB !== 'undefined' && DB.estDispo() && DB.profil()) {
       DB.supprimerFiche(id).then(function (ok) {
         if (ok) return;
-        state.migMsg = '⚠️ ' + a.name + ' a bien été retiré de cet écran, mais le cahier ' +
-          'partagé a refusé la suppression : ' + (DB.erreur() || 'raison inconnue') +
-          '. La fiche risque de revenir.';
+        /* ON DIT CE QUI VA SE PASSER, PAS SEULEMENT CE QUI A RATÉ (session 28,
+           D-155). Sans cette phrase, la fiche revenait à la relecture suivante
+           et le bouton passait pour cassé : deux écrans qui se contredisent
+           font conclure à une panne, et c'est le pire des symptômes (règle 7). */
+        state.migMsg = '⚠️ La fiche de ' + a.name + ' a été retirée de cet écran, mais PAS du cahier ' +
+          'partagé : ' + (DB.erreur() || 'raison inconnue') + ' La fiche reviendra donc ' +
+          'à la prochaine relecture — ce n\u2019est pas le bouton qui est cassé. Recopie-moi ' +
+          'cette phrase telle quelle.';
         render();
       });
     }
