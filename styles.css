@@ -214,6 +214,8 @@ textarea.inp { min-height: 90px; resize: vertical; line-height: 1.5; }
 .chip[aria-pressed="true"] { background: var(--ink); color: #fff; }
 .chip--sm { min-height: 34px; padding: 0 13px; font-size: 12px; background: var(--cream); }
 .chip--sm[aria-pressed="true"] { background: var(--ink); color: #fff; }
+.chip--lg { min-height: 46px; padding: 0 18px; font-size: 14px; }
+.chip--lg[aria-pressed="true"] { background: var(--accent, var(--ink)); color: #fff; }
 
 .chiprow { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .chiprow--scroll { flex-wrap: nowrap; overflow-x: auto; padding-bottom: 4px; -webkit-overflow-scrolling: touch; }
@@ -414,6 +416,9 @@ textarea.inp { min-height: 90px; resize: vertical; line-height: 1.5; }
 .stepper .val { min-width: 40px; text-align: center; font: 700 15px Figtree, sans-serif; }
 .stepper--sm button { width: 30px; height: 30px; font-size: 15px; }
 .stepper--sm .val { min-width: 30px; font-size: 13px; }
+.stepper--lg { padding: 4px; gap: 5px; }
+.stepper--lg button { width: 46px; height: 46px; font-size: 21px; }
+.stepper--lg .val { min-width: 34px; font-size: 16px; }
 
 /* ==========================================================================
    Écran de connexion
@@ -786,6 +791,25 @@ textarea.inp { min-height: 90px; resize: vertical; line-height: 1.5; }
 .alert--amber { background: var(--amber-bg2); border-color: #F0E1C4; color: var(--amber-t); }
 .alert--blue  { background: #E9F1F6;          border-color: #D3E2EC; color: var(--blue-t); }
 .alert--green { background: var(--green-bg);  border-color: #CFE5D9; color: var(--green-t); }
+
+/* Une alerte cliquable — la carte entière mène quelque part (session 30). */
+.alert--link { cursor: pointer; text-align: left; transition: transform .1s, box-shadow .1s; }
+.alert--link:hover { box-shadow: var(--sh-card); }
+.alert--link:active { transform: scale(.99); }
+
+/* Une alerte qui liste plusieurs missions à la fois (les signalements
+   ouverts) : chaque ligne est son propre lien vers sa mission. */
+.alert-items { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; }
+.alert-item {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  width: 100%; min-height: 44px; padding: 0 12px;
+  border-radius: 12px; background: rgba(255,255,255,.55);
+  font: 600 12.5px Figtree, sans-serif; color: var(--ink);
+  text-align: left; cursor: pointer;
+}
+.alert-item:hover { background: #fff; }
+.alert-item-go { font-weight: 500; color: var(--blue-t); white-space: nowrap; }
+.alert-item-plus { font: 500 12px Figtree, sans-serif; color: var(--muted3); padding: 2px 2px 0; }
 
 /* Tableaux ---------------------------------------------------------------- */
 
@@ -1618,6 +1642,10 @@ textarea.inp { min-height: 90px; resize: vertical; line-height: 1.5; }
 .hist-l { font: 600 11.5px Figtree, sans-serif; color: var(--muted); margin-top: 8px; text-transform: uppercase; }
 .hist-col--on .hist-l { color: var(--ink); font-weight: 800; }
 .hist-col--on .hist-v { color: var(--ink-soft); }
+
+/* Le graphique à trois courbes de la sous-page d'un logement (session 30). */
+.cashflow-chart { width: 100%; }
+.cashflow-leg { display: inline-flex; align-items: center; gap: 7px; font: 600 12px Figtree, sans-serif; color: var(--muted3); }
 
 /* Connexions aux plateformes ---------------------------------------------- */
 

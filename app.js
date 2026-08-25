@@ -42,6 +42,7 @@ var TODAY_LABEL = new Date().toLocaleDateString('fr-FR',
   { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
 var CURRENT_MONTH = TODAY.slice(0, 7);
 var MOIS = ['janv.', 'févr.', 'mars', 'avril', 'mai', 'juin', 'juil.', 'août', 'sept.', 'oct.', 'nov.', 'déc.'];
+var HEURES_JOUR = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23];
 var MOIS_LONGS = ['janvier', 'février', 'mars', 'avril', 'mai', 'juin',
   'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre'];
 
@@ -568,6 +569,14 @@ function initialState() {
     done: [],
     reports: {},                      // { missionId: compte rendu figé d'une mission terminée }
     payouts: {},                      // { 'Sofia:2026-07': true } — versement effectué
+    /* LES CHARGES D'UN LOGEMENT (session 30, D-160) : eau, électricité,
+       assurance, crédit… Le ménage, lui, se lit automatiquement dans
+       `ledger()` — ce sont les missions terminées. Une charge : { id, prop,
+       categorie, libelle, montant, recurrent, mois, finMois }. Récurrente :
+       reprise chaque mois de `mois` à `finMois` (ou indéfiniment si `finMois`
+       est vide). Ponctuelle : ne compte que pour `mois`. Toujours liée à UN
+       SEUL logement — c'est le choix de Marc. */
+    charges: [],
     /* Problèmes signalés par un prestataire pendant sa mission (session 16).
        Chacun porte : { id, kind, texte, photo, agent, mission, prop, date,
        at, statut } — `photo` est une image gardée sur l'appareil, `statut`
@@ -628,6 +637,7 @@ function initialState() {
     stockScope: 'all',
     stockGroup: 'Tous',
     stockTab: 'matrice',
+    stockUnBien: null,     // logement choisi dans l'onglet « Un logement à la fois » (session 30, D-158)
     mStockGroup: 'Tous',
     ownerMonth: CURRENT_MONTH,
     openAgent: null,
@@ -658,6 +668,9 @@ function initialState() {
     // `pid` sert au formulaire ouvert depuis le calendrier, qui n'est pas
     // déjà posé sur un logement (session 16) : il faut donc le choisir.
     nr: { plat: 'Airbnb', guest: '', guests: 2, start: '', end: '', montant: '', pid: '' },
+    showNewCharge: false,
+    ncEdit: null,          // id de la charge en cours de modification, ou null = nouvelle charge
+    nc: { categorie: 'eau', libelle: '', montant: '', recurrent: true, mois: CURRENT_MONTH, finMois: '' },
 
     // Porte d'entrée du livret (session 11) — voir D-46 à D-48.
     acces: [],                        // demandes à confirmer : [{ id, pid, resa, nom, date, at, statut }]
@@ -1023,6 +1036,18 @@ function upgrade() {
   if (typeof mr.copie !== 'boolean') mr.copie = false;
   if (typeof mr.expNom !== 'string' || !mr.expNom) mr.expNom = 'MAISON WARME';
   if (typeof mr.expMail !== 'string') mr.expMail = '';
+  /* Session 30 (D-161) — l'heure fixe choisie par Marc pour l'envoi
+     automatique quotidien. `robotActif` est le nouvel interrupteur, séparé de
+     `auto` (qui déclenche l'envoi au relevé de calendrier, dans le navigateur
+     ouvert) : deux mécanismes différents, deux réglages différents. */
+  if (typeof mr.robotActif !== 'boolean') mr.robotActif = false;
+  if (typeof mr.heureAuto !== 'number' || mr.heureAuto < 0 || mr.heureAuto > 23) mr.heureAuto = 18;
+
+  /* Session 30 (D-160) — les charges d'un logement (eau, électricité,
+     assurance, crédit…). Un logement supprimé n'a plus de charges à porter,
+     même précaution que pour `horsStock` et `photosBien` juste au-dessus. */
+  if (!Array.isArray(state.charges)) state.charges = [];
+  state.charges = state.charges.filter(function (c) { return c && c.prop && !prop(c.prop).gone; });
 
   /* Les annonces déjà parties (D-151). On oublie celles dont la mission
      n'existe plus, sinon la liste enfle sans fin et finit par peser dans les
@@ -1166,6 +1191,12 @@ function fmtDate(iso) {
 }
 
 function nights(a, b) { return Math.round((Date.parse(b) - Date.parse(a)) / 86400000); }
+
+/** Un montant, sans zéros inutiles : 45 reste « 45 », 45.5 devient « 45,50 ». */
+function fmtEuros(v) {
+  var n = Math.round((parseFloat(v) || 0) * 100) / 100;
+  return n % 1 === 0 ? String(n) : n.toFixed(2).replace('.', ',');
+}
 
 /* Recherches tolérantes : un bien, un prestataire ou une prestation supprimé
    reste cité dans l'historique. On rend alors un objet de remplacement plutôt
@@ -3575,7 +3606,7 @@ function parseRoute() {
     if (seg[1] === 'reservations') return { name: 'o-resa', id: seg[2] || null };
     if (seg[1] === 'messages') return { name: seg[2] ? 'o-msg' : 'o-msgs', id: seg[2] || null };
     if (seg[1] === 'messages-programmes') return { name: 'o-auto', id: null };
-    if (seg[1] === 'statistiques') return { name: 'o-stats', id: null };
+    if (seg[1] === 'statistiques') return { name: seg[2] ? 'o-stat-bien' : 'o-stats', id: seg[2] || null };
     if (seg[1] === 'prestataires') return { name: 'o-agents', id: null };
     if (seg[1] === 'commentaires') return { name: 'o-avis', id: null };
     if (seg[1] === 'repertoire') return { name: 'o-repertoire', id: null };
@@ -4918,25 +4949,29 @@ function viewOwnerDash() {
           : m.status === 'dispo' ? 'Mission encore non prise.'
             : m.status === 'termine' ? 'Ménage terminé par ' + nomPreneur(m) + '.'
               : m.status === 'encours' ? 'Ménage en cours par ' + nomPreneur(m) + '.'
-                : 'Acceptée par ' + nomPreneur(m) + '.') });
+                : 'Acceptée par ' + nomPreneur(m) + '.'),
+      path: m ? '#/admin/missions/' + m.id : '#/admin/biens/' + t.p.id });
   });
 
   alerts.push({ cls: 'alert--amber', dot: C.ambre, kind: 'Stock bas',
     title: totalLow ? totalLow + ' articles sous leur seuil' : 'Aucun article sous son seuil',
     det: lowByProp.filter(function (x) { return x.lows.length; })
-      .map(function (x) { return x.p.short + ' (' + x.lows.length + ')'; }).join(' · ') || 'Rien à signaler' });
+      .map(function (x) { return x.p.short + ' (' + x.lows.length + ')'; }).join(' · ') || 'Rien à signaler',
+    path: '#/admin/stocks' });
 
-  /* Les signalements ouverts, avec de quoi savoir où aller (session 16).
-     L'alerte se contentait d'un décompte, et rien nulle part ne permettait
-     de LIRE le problème : c'est corrigé dans la fiche de la mission. */
+  /* Les signalements ouverts, avec de quoi savoir où aller (session 16 puis
+     30). L'alerte se contentait d'un décompte, sans dire où cliquer : chaque
+     signalement porte pourtant déjà l'identifiant de sa mission (`p.mission`)
+     — il suffisait de le lire. Chaque ligne devient un lien direct vers LA
+     mission concernée, celle qui porte le bouton « Marquer comme traité ». */
   var pbOuverts = tousLesProblemes().filter(function (p) { return p.statut !== 'traite'; });
   alerts.push({ cls: 'alert--blue', dot: C.bleu, kind: 'Signalement',
     title: pbOuverts.length ? pbOuverts.length + ' problème(s) à traiter' : 'Aucun problème signalé',
-    det: pbOuverts.length
-      ? pbOuverts.slice(0, 3).map(function (p) {
-          return prop(p.prop).short + ' · ' + typeProbleme(p.kind)[0].toLowerCase();
-        }).join(' · ') + '. Ouvre la mission concernée pour voir la photo et le commentaire.'
-      : 'Rien à traiter pour le moment.' });
+    det: pbOuverts.length ? '' : 'Rien à traiter pour le moment.',
+    items: pbOuverts.slice(0, 5).map(function (p) {
+      return { label: prop(p.prop).short + ' · ' + typeProbleme(p.kind)[0], path: '#/admin/missions/' + p.mission };
+    }),
+    itemsReste: Math.max(0, pbOuverts.length - 5) });
 
   /* Départs signalés par les voyageurs eux-mêmes, depuis leur livret d'accueil. */
   var libres = state.props.map(function (p) {
@@ -4952,12 +4987,14 @@ function viewOwnerDash() {
   if (libres.length) {
     alerts.push({ cls: 'alert--green', dot: C.vert, kind: 'Logement libre',
       title: libres.length + ' voyageur(s) ont signalé leur départ',
-      det: libres.map(function (x) { return x.p.short + ' · ' + x.guest + ' à ' + x.at; }).join(' · ') });
+      det: libres.map(function (x) { return x.p.short + ' · ' + x.guest + ' à ' + x.at; }).join(' · '),
+      path: libres.length === 1 ? '#/admin/biens/' + libres[0].p.id : '#/admin/missions' });
   }
   if (prets.length) {
     alerts.push({ cls: 'alert--green', dot: C.vert, kind: 'Prêt en avance',
       title: prets.length + ' logement(s) prêts avant l\'heure',
-      det: prets.map(function (x) { return x.p.short + ' · arrivée possible dès ' + x.rd.at; }).join(' · ') });
+      det: prets.map(function (x) { return x.p.short + ' · arrivée possible dès ' + x.rd.at; }).join(' · '),
+      path: prets.length === 1 ? '#/admin/biens/' + prets[0].p.id : '#/admin/missions' });
   }
 
   /* Voyageurs qui se sont déclarés sans pouvoir prouver qui ils sont : ils
@@ -4973,12 +5010,30 @@ function viewOwnerDash() {
       }).join('') + '</div>' +
     '</div>' +
 
+    /* CHAQUE ALERTE MÈNE QUELQUE PART (session 30, D-159). Signalé par Marc : le
+       voyant s'allumait, mais rien ne menait à la mission concernée, et la
+       retrouver à la main n'était pas facile. Deux formes : `path` rend toute
+       la carte cliquable (un seul endroit où aller) ; `items` liste des
+       liens, un par signalement, quand plusieurs missions différentes sont
+       concernées à la fois. */
     '<div class="cols" style="margin-top:24px;gap:12px">' + alerts.map(function (a) {
-      return '<div class="alert ' + a.cls + '">' +
+      var tag = a.path && !a.items ? 'button type="button"' : 'div';
+      var close = a.path && !a.items ? 'button' : 'div';
+      return '<' + tag + ' class="alert ' + a.cls + (a.path && !a.items ? ' alert--link' : '') + '"' +
+          (a.path && !a.items ? act('nav', { path: a.path }) : '') + '>' +
         '<div style="display:flex;align-items:center;gap:8px"><span class="dot" style="background:' + a.dot + '"></span>' +
         '<span class="kind">' + a.kind + '</span></div>' +
         '<div class="title" style="color:var(--ink)">' + esc(a.title) + '</div>' +
-        '<div class="det">' + esc(a.det) + '</div></div>';
+        (a.det ? '<div class="det">' + esc(a.det) + '</div>' : '') +
+        (a.items && a.items.length
+          ? '<div class="alert-items">' + a.items.map(function (i) {
+              return '<button type="button" class="alert-item"' + act('nav', { path: i.path }) + '>' +
+                '<span>' + esc(i.label) + '</span><span class="alert-item-go">Ouvrir la mission →</span></button>';
+            }).join('') +
+            (a.itemsReste ? '<div class="alert-item-plus">… et ' + a.itemsReste + ' autre(s), dans Missions.</div>' : '') +
+            '</div>'
+          : '') +
+        '</' + close + '>';
     }).join('') + '</div>' +
 
     blocOutils() +
@@ -6913,8 +6968,336 @@ function detailStatBien(l, mois) {
         act('nav', { path: '#/admin/biens/' + pid }) + '>Ouvrir la fiche du logement</button>' +
       '<button type="button" class="btn btn--xs" style="background:var(--cream);color:var(--ink-soft)"' +
         act('nav', { path: '#/admin/biens/' + pid + '/resas' }) + '>Voir ses réservations</button>' +
+      '<button type="button" class="btn btn--xs" style="background:var(--terra-bg);color:var(--terra-d)"' +
+        act('nav', { path: '#/admin/statistiques/' + pid }) + '>📊 Statistiques complètes de ce logement</button>' +
     '</div>' +
     '</div>';
+}
+
+/* ==========================================================================
+   LES CHARGES D'UN LOGEMENT, ET LE CASHFLOW (session 30, D-160)
+   ==========================================================================
+
+   Demandé par Marc : au-delà du ménage (déjà automatique, via `ledger()`),
+   pouvoir compter l'eau, l'électricité, l'assurance, le crédit… et voir un
+   cashflow mois par mois. Une charge est toujours liée à UN SEUL logement
+   (son choix, question posée avant de coder) — pas de répartition entre
+   plusieurs biens.
+
+   RÉCURRENTE OU PONCTUELLE : une charge récurrente (l'assurance, le crédit)
+   se reprend seule chaque mois de `mois` (son point de départ) jusqu'à
+   `finMois` (vide = pas encore arrêtée). Une charge ponctuelle ne compte que
+   pour le mois où elle a été saisie. Marc choisit laquelle des deux à la
+   saisie — rien n'est deviné (règle 5). */
+var CATEGORIES_CHARGE = {
+  eau:        'Eau',
+  electricite:'Électricité',
+  assurance:  'Assurance',
+  credit:     'Crédit / emprunt',
+  copro:      'Copropriété / charges',
+  taxe:       'Taxe foncière',
+  abonnement: 'Abonnements (internet, box…)',
+  autre:      'Autre'
+};
+function libelleCategorie(k) { return CATEGORIES_CHARGE[k] || CATEGORIES_CHARGE.autre; }
+
+function chargesDe(pid) {
+  return (state.charges || []).filter(function (c) { return c.prop === pid; })
+    .sort(function (a, b) { return (b.mois || '') < (a.mois || '') ? -1 : 1; });
+}
+
+/** Cette charge compte-t-elle pour ce mois-là ? */
+function chargeApplicable(c, mois) {
+  if (!c.recurrent) return c.mois === mois;
+  return c.mois <= mois && (!c.finMois || c.finMois >= mois);
+}
+
+function chargesMois(pid, mois) {
+  return chargesDe(pid).filter(function (c) { return chargeApplicable(c, mois); })
+    .reduce(function (n, c) { return n + (c.montant || 0); }, 0);
+}
+
+/** Le premier mois où ce logement a une trace quelconque — réservation,
+    ménage payé ou charge. Sert de point de départ à la trésorerie cumulée :
+    la compter depuis un point arbitraire (par ex. le début de la fenêtre
+    affichée) donnerait un chiffre qui ne veut rien dire (règle 5). */
+function premierMoisBien(pid) {
+  var vus = [];
+  resasOf(pid).forEach(function (r) { if (r.start) vus.push(moisDe(r.start)); });
+  ledger().forEach(function (l) { if (l.prop === pid) vus.push(l.month); });
+  chargesDe(pid).forEach(function (c) { if (c.mois) vus.push(c.mois); });
+  vus.sort();
+  return vus[0] || CURRENT_MONTH;
+}
+
+/** La série mensuelle d'un logement, du premier mois connu jusqu'au mois
+    demandé inclus : revenus, ménage, charges, net et trésorerie cumulée.
+    `depuis` fixe le début réel du calcul (toujours le premier mois connu,
+    même si l'affichage n'en montre qu'une partie) — sinon le cumul du
+    premier mois affiché serait faux. */
+function cashflowComplet(pid, jusquA) {
+  var depuis = premierMoisBien(pid);
+  var out = [];
+  var cumul = 0;
+  var m = depuis;
+  var garde = 0;
+  while (m <= jusquA && garde < 600) {          // 600 mois = 50 ans, filet de sécurité
+    var lignes = statsMois(m).filter(function (l) { return l.p.id === pid; });
+    var revenus = lignes.reduce(function (n, l) { return n + l.revenus; }, 0);
+    var menage = lignes.reduce(function (n, l) { return n + l.depenses; }, 0);
+    var charges = chargesMois(pid, m);
+    var depenses = menage + charges;
+    var net = revenus - depenses;
+    cumul += net;
+    out.push({ mois: m, revenus: revenus, menage: menage, charges: charges, depenses: depenses, net: net, cumul: cumul });
+    m = moisPlus(m, 1);
+    garde++;
+  }
+  return out;
+}
+
+/** Les N derniers mois de la série complète, pour l'affichage — le cumul de
+    chaque point, lui, reste calculé depuis le tout premier mois. */
+function cashflowSerie(pid, jusquA, n) {
+  var complet = cashflowComplet(pid, jusquA);
+  return complet.slice(Math.max(0, complet.length - n));
+}
+
+/* LE GRAPHIQUE À TROIS COURBES (session 30, D-160) : dépenses en rouge, CA en
+   vert, trésorerie cumulée en bleu — dessiné à la main en SVG, sans aucune
+   bibliothèque (règle du projet : zéro dépendance).
+
+   Les dépenses et le CA partagent une échelle ; la trésorerie cumulée, qui
+   grandit mois après mois, a la SIENNE — sinon au bout d'un an elle écraserait
+   les deux autres courbes à plat en bas du graphique. Deux échelles, deux axes,
+   dits clairement : ne jamais laisser croire que les trois courbes se
+   comparent au même trait (règle 5). */
+function svgCashflow(serie) {
+  var n = serie.length;
+  if (n < 2) return '<p class="sec-note">Pas encore assez de mois pour tracer un graphique.</p>';
+
+  var W = 720, H = 220, PT = 14, PB = 26, PX = 6;
+  var plotH = H - PT - PB;
+  var xStep = (W - 2 * PX) / (n - 1);
+  var x = function (i) { return PX + i * xStep; };
+
+  var maxM = 1;
+  serie.forEach(function (s) { maxM = Math.max(maxM, s.revenus, s.depenses); });
+  var yM = function (v) { return PT + plotH - (v / maxM) * plotH; };
+
+  var cumuls = serie.map(function (s) { return s.cumul; });
+  var minC = Math.min(0, Math.min.apply(null, cumuls));
+  var maxC = Math.max(1, Math.max.apply(null, cumuls));
+  var rangeC = (maxC - minC) || 1;
+  var yC = function (v) { return PT + plotH - ((v - minC) / rangeC) * plotH; };
+
+  var chemin = function (vals, fy) {
+    return vals.map(function (v, i) { return (i === 0 ? 'M' : 'L') + x(i).toFixed(1) + ',' + fy(v).toFixed(1); }).join(' ');
+  };
+  var points = function (vals, fy, coul) {
+    return vals.map(function (v, i) {
+      return '<circle cx="' + x(i).toFixed(1) + '" cy="' + fy(v).toFixed(1) + '" r="3" fill="' + coul + '"></circle>';
+    }).join('');
+  };
+
+  var depenses = serie.map(function (s) { return s.depenses; });
+  var revenus = serie.map(function (s) { return s.revenus; });
+
+  var zeroY = minC < 0 ? yC(0) : null;
+
+  var labels = serie.map(function (s, i) {
+    return '<text x="' + x(i).toFixed(1) + '" y="' + (H - 6) + '" font-size="10" fill="' + C.ink +
+      '" fill-opacity=".55" text-anchor="middle" font-family="Figtree,sans-serif">' +
+      esc(MOIS[parseInt(s.mois.slice(5, 7), 10) - 1]) + '</text>';
+  }).join('');
+
+  return '<div class="cashflow-chart">' +
+    '<svg viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none" style="width:100%;height:220px;display:block">' +
+      (zeroY !== null
+        ? '<line x1="' + PX + '" y1="' + zeroY.toFixed(1) + '" x2="' + (W - PX) + '" y2="' + zeroY.toFixed(1) +
+          '" stroke="' + C.ink + '" stroke-opacity=".18" stroke-dasharray="3,3"></line>'
+        : '') +
+      '<path d="' + chemin(depenses, yM) + '" fill="none" stroke="' + C.terracotta + '" stroke-width="2.5"></path>' +
+      '<path d="' + chemin(revenus, yM) + '" fill="none" stroke="' + C.vert + '" stroke-width="2.5"></path>' +
+      '<path d="' + chemin(cumuls, yC) + '" fill="none" stroke="' + C.bleu + '" stroke-width="2.5" stroke-dasharray="0"></path>' +
+      points(depenses, yM, C.terracotta) + points(revenus, yM, C.vert) + points(cumuls, yC, C.bleu) +
+      labels +
+    '</svg>' +
+    '<div class="chiprow" style="margin-top:10px;gap:16px">' +
+      '<span class="cashflow-leg"><span class="dot" style="background:' + C.vert + '"></span>CA (revenus)</span>' +
+      '<span class="cashflow-leg"><span class="dot" style="background:' + C.terracotta + '"></span>Dépenses (ménage + charges)</span>' +
+      '<span class="cashflow-leg"><span class="dot" style="background:' + C.bleu + '"></span>Trésorerie cumulée — échelle à part →</span>' +
+    '</div>' +
+    '</div>';
+}
+
+/* LA GESTION DES CHARGES (session 30, D-160). Formulaire d'ajout / modification
+   et liste, pour un seul logement. */
+function formCharge(pid) {
+  var c = state.nc;
+  var editant = !!state.ncEdit;
+  return '<div class="card" style="padding:18px 20px;margin-top:12px">' +
+    '<h3 class="sec-title" style="margin:0 0 12px">' + (editant ? 'Modifier la charge' : 'Ajouter une charge') + '</h3>' +
+    '<div class="cols" style="gap:12px">' +
+      '<div style="flex:1;min-width:160px">' +
+        '<label class="lab">Type</label>' +
+        '<select class="inp" data-fid="chg-cat" data-ch="charge-cat">' +
+          Object.keys(CATEGORIES_CHARGE).map(function (k) {
+            return '<option value="' + k + '"' + (c.categorie === k ? ' selected' : '') + '>' + esc(CATEGORIES_CHARGE[k]) + '</option>';
+          }).join('') +
+        '</select></div>' +
+      '<div style="flex:1;min-width:160px">' +
+        '<label class="lab">Précision (facultatif)</label>' +
+        '<input class="inp" type="text" placeholder="ex. MAAF habitation" value="' + esc(c.libelle) + '"' +
+          ' data-fid="chg-libelle" data-in="charge-libelle"></div>' +
+      '<div style="width:130px">' +
+        '<label class="lab">Montant €</label>' +
+        '<input class="inp" type="number" min="0" step="0.01" inputmode="decimal" value="' + esc(c.montant) + '"' +
+          ' data-fid="chg-montant" data-in="charge-montant"></div>' +
+    '</div>' +
+    '<div class="perm-row" style="border:0;padding:10px 0 0">' +
+      '<button type="button" class="chip" aria-pressed="' + (c.recurrent === true) + '"' +
+        act('charge-recurrent', { v: '1' }) + '>Dépense récurrente</button>' +
+      '<button type="button" class="chip" aria-pressed="' + (c.recurrent === false) + '"' +
+        act('charge-recurrent', { v: '0' }) + '>Dépense ponctuelle</button>' +
+    '</div>' +
+    '<div class="cols" style="gap:12px;margin-top:6px">' +
+      '<div style="width:170px">' +
+        '<label class="lab">' + (c.recurrent ? 'À partir de' : 'Mois concerné') + '</label>' +
+        '<input class="inp" type="month" value="' + esc(c.mois) + '" data-fid="chg-mois" data-ch="charge-mois"></div>' +
+      (c.recurrent
+        ? '<div style="width:170px">' +
+            '<label class="lab">Jusqu\'à (facultatif)</label>' +
+            '<input class="inp" type="month" value="' + esc(c.finMois) + '" data-fid="chg-fin" data-ch="charge-fin"></div>'
+        : '') +
+    '</div>' +
+    '<p class="sec-note" style="margin-top:8px">' +
+      (c.recurrent
+        ? 'Ce montant sera compté chaque mois à partir de ' + esc(moisLabel(c.mois || CURRENT_MONTH)) +
+          (c.finMois ? ', et jusqu\'à ' + esc(moisLabel(c.finMois)) + ' inclus.' : ', sans date de fin pour l\'instant.')
+        : 'Ce montant ne sera compté qu\'une fois, pour ' + esc(moisLabel(c.mois || CURRENT_MONTH)) + '.') +
+    '</p>' +
+    '<div style="display:flex;gap:10px;margin-top:14px">' +
+      '<button type="button" class="btn btn--go btn--sm"' + act('charge-save', { pid: pid }) + '>' +
+        (editant ? 'Enregistrer' : 'Ajouter') + '</button>' +
+      '<button type="button" class="btn btn--quiet btn--sm"' + act('charge-annuler') + '>Annuler</button>' +
+    '</div>' +
+    '</div>';
+}
+
+function blocCharges(pid) {
+  var liste = chargesDe(pid);
+  return '<h2 class="sec-title" style="margin-top:26px">Charges de ce logement</h2>' +
+    '<p class="sec-note" style="margin:0 0 12px">Le ménage est compté automatiquement (missions terminées). ' +
+      'Ajoute ici l\'eau, l\'électricité, l\'assurance, le crédit, ou toute autre dépense régulière.</p>' +
+    (!liste.length ? '<p class="empty">Aucune charge enregistrée pour ce logement.</p>' :
+      '<div class="card" style="padding:0;overflow:hidden">' +
+        '<div class="table-scroll"><div class="thead" style="min-width:640px">' +
+          '<span style="flex:1.6">Type</span><span style="width:130px">Montant</span>' +
+          '<span style="width:190px">Période</span><span style="width:90px"></span></div>' +
+        liste.map(function (c) {
+          return '<div class="trow" style="min-width:640px">' +
+            '<span style="flex:1.6;min-width:0">' +
+              '<span style="font:600 13.5px Figtree,sans-serif">' + esc(libelleCategorie(c.categorie)) + '</span>' +
+              (c.libelle ? '<span class="num" style="display:block;font:500 11.5px Figtree,sans-serif;color:var(--muted2)">' + esc(c.libelle) + '</span>' : '') +
+            '</span>' +
+            '<span class="num" style="width:130px;font-weight:700">' + fmtEuros(c.montant) + ' €</span>' +
+            '<span style="width:190px;font:500 12px Figtree,sans-serif;color:var(--muted3)">' +
+              (c.recurrent
+                ? 'Depuis ' + esc(moisLabel(c.mois)) + (c.finMois ? ' → ' + esc(moisLabel(c.finMois)) : ' · en cours')
+                : esc(moisLabel(c.mois)) + ' seulement') +
+            '</span>' +
+            '<span style="width:90px;display:flex;gap:6px;justify-content:flex-end">' +
+              '<button type="button" class="x-btn" aria-label="Modifier"' + act('charge-edit', { id: c.id }) + '>✎</button>' +
+              '<button type="button" class="x-btn" aria-label="Supprimer"' + act('charge-del', { id: c.id, pid: pid }) + '>×</button>' +
+            '</span>' +
+            '</div>';
+        }).join('') +
+      '</div></div>') +
+    (state.showNewCharge ? formCharge(pid) :
+      '<button type="button" class="btn btn--xs" style="background:var(--cream);color:var(--ink-soft);margin-top:12px"' +
+        act('charge-new-toggle', { pid: pid }) + '>+ Ajouter une charge</button>');
+}
+
+/* LA SOUS-PAGE D'UN LOGEMENT (session 30, D-160). Demandée par Marc : garder
+   la vue d'ensemble actuelle de « Statistiques » telle quelle, et ajouter ici
+   une vision complète et détaillée d'UN SEUL logement — occupation, revenus,
+   charges, cashflow mois par mois et le graphique à trois courbes. On y
+   arrive depuis « Statistiques » (bouton sous chaque logement déplié). */
+function viewOwnerStatBien() {
+  var pid = route.id;
+  var p = prop(pid);
+  if (p.gone) {
+    return ownerShell('stats', '<div class="page-head"><div><h1 class="page-title">Logement introuvable</h1>' +
+      '<p class="page-sub">Ce logement a été supprimé.</p></div></div>' +
+      '<button type="button" class="btn btn--xs" style="background:var(--cream);color:var(--ink-soft);margin-top:16px"' +
+      act('nav', { path: '#/admin/statistiques' }) + '>← Retour aux statistiques</button>');
+  }
+
+  var mois = state.statMonth;
+  var lignesMois = statsMois(mois).filter(function (l) { return l.p.id === pid; })[0];
+  var chM = chargesMois(pid, mois);
+  var menageM = lignesMois ? lignesMois.depenses : 0;
+  var revenusM = lignesMois ? lignesMois.revenus : 0;
+  var netM = revenusM - menageM - chM;
+
+  var serie = cashflowSerie(pid, mois, 12);
+  var dernier = serie[serie.length - 1];
+
+  return ownerShell('stats',
+    '<div class="page-head">' +
+      '<div>' +
+        '<button type="button" class="btn btn--xs" style="background:var(--cream);color:var(--ink-soft);margin-bottom:10px"' +
+          act('nav', { path: '#/admin/statistiques' }) + '>← Toutes les statistiques</button>' +
+        '<h1 class="page-title" style="display:flex;align-items:center;gap:10px">' +
+          vignetteBien(pid, p.color) + esc(p.name) + '</h1>' +
+        '<p class="page-sub">Vue complète : occupation, revenus, charges et cashflow.</p></div>' +
+      '<div style="min-width:200px">' +
+        '<label class="lab" for="st-mois-bien">Mois</label>' +
+        '<select class="inp" id="st-mois-bien" data-fid="st-mois-bien" data-ch="stat-month">' + moisDispo().map(function (m) {
+          return '<option value="' + m + '"' + (m === mois ? ' selected' : '') + '>' + esc(moisLabel(m)) + '</option>';
+        }).join('') + '</select>' +
+      '</div>' +
+    '</div>' +
+
+    '<div class="cols" style="margin-top:22px;gap:12px">' +
+      '<div class="kpi" style="min-width:170px"><div class="v num">' + (lignesMois ? lignesMois.taux : 0) + ' %</div><div class="l">occupation</div></div>' +
+      '<div class="kpi" style="min-width:170px"><div class="v num" style="color:' + C.vert + '">' + revenusM + ' €</div><div class="l">CA du mois</div></div>' +
+      '<div class="kpi" style="min-width:170px"><div class="v num" style="color:' + C.terracotta + '">' + menageM + ' €</div><div class="l">ménage</div></div>' +
+      '<div class="kpi" style="min-width:170px"><div class="v num" style="color:' + C.terracotta + '">' + chM + ' €</div><div class="l">charges</div></div>' +
+      '<div class="kpi" style="min-width:170px"><div class="v num">' + netM + ' €</div><div class="l">net du mois</div></div>' +
+    '</div>' +
+
+    '<h2 class="sec-title" style="margin-top:28px">Cashflow — 12 derniers mois</h2>' +
+    '<div class="card" style="padding:20px 20px 16px">' +
+      svgCashflow(serie) +
+    '</div>' +
+    (dernier ? '<p class="sec-note" style="margin-top:10px">Trésorerie cumulée à fin ' + esc(moisLabel(dernier.mois)) +
+      ' : <strong>' + dernier.cumul + ' €</strong>, calculée depuis ' + esc(moisLabel(premierMoisBien(pid))) +
+      ' (premier mois connu de ce logement). Chiffre d\'affaires, pas la trésorerie réelle en banque : ' +
+      'les réservations sans montant réel sont estimées au prix par nuit tant que Beds24 n\'est pas branché.</p>' : '') +
+
+    '<div class="card" style="padding:0;overflow:hidden;margin-top:14px">' +
+      '<div class="table-scroll"><div class="thead" style="min-width:680px">' +
+        '<span style="flex:1.2">Mois</span>' +
+        '<span style="width:90px;text-align:right">CA</span>' +
+        '<span style="width:90px;text-align:right">Ménage</span>' +
+        '<span style="width:90px;text-align:right">Charges</span>' +
+        '<span style="width:90px;text-align:right">Net</span>' +
+        '<span style="width:100px;text-align:right">Cumul</span></div>' +
+      serie.slice().reverse().map(function (s) {
+        return '<div class="trow" style="min-width:680px">' +
+          '<span style="flex:1.2">' + esc(moisLabel(s.mois)) + '</span>' +
+          '<span class="num" style="width:90px;text-align:right;color:' + C.vert + '">' + s.revenus + ' €</span>' +
+          '<span class="num" style="width:90px;text-align:right;color:var(--muted3)">' + (s.menage ? '− ' + s.menage + ' €' : '—') + '</span>' +
+          '<span class="num" style="width:90px;text-align:right;color:var(--muted3)">' + (s.charges ? '− ' + s.charges + ' €' : '—') + '</span>' +
+          '<span class="num" style="width:90px;text-align:right;font-weight:700">' + s.net + ' €</span>' +
+          '<span class="num" style="width:100px;text-align:right;font-weight:700;color:' + C.bleu + '">' + s.cumul + ' €</span>' +
+          '</div>';
+      }).join('') +
+      '</div></div>' +
+
+    blocCharges(pid));
 }
 
 /* DIRE LES SÉJOURS QUI SE CHEVAUCHENT (session 24, D-136)
@@ -7511,7 +7894,29 @@ function carteMailReglages() {
         'envoi réussir&nbsp;: on automatise ce qui marche, jamais ce qu’on espère.') +
 
       bascule('mail-copie', !!r.copie, 'M’envoyer une copie de ce qui part',
-        'Tu reçois le récapitulatif de chaque envoi, pour le vérifier de tes yeux.')
+        'Tu reçois le récapitulatif de chaque envoi, pour le vérifier de tes yeux.') +
+
+      /* L'ENVOI À HEURE FIXE, MÊME APPLICATION FERMÉE (session 30, D-161).
+         `auto` (ci-dessus) ne joue qu'au relevé des calendriers, donc quand
+         MAISON WARME est ouvert. Ici, un petit robot chez Vercel — pas ton
+         ordinateur — regarde l'heure lui-même et envoie à ta place. Demandé
+         par Marc : « je veux choisir l'heure moi-même ». */
+      bascule('mail-robot', !!r.robotActif, 'Envoyer automatiquement chaque jour, à heure fixe',
+        'Un petit robot chez Vercel vérifie, une fois par jour à l’heure choisie, s’il reste des ' +
+        'missions non annoncées, et les envoie tout seul — même si tu n’as pas ouvert MAISON ' +
+        'WARME. Il faut d’abord le préparer une seule fois : mode d’emploi §35.') +
+      (!r.robotActif ? '' :
+        '<div style="margin-top:10px;max-width:220px">' +
+          '<label class="lab" for="mail-heure">Heure d’envoi</label>' +
+          '<select class="inp" id="mail-heure" data-fid="mail-heure" data-ch="mail-heure">' +
+            HEURES_JOUR.map(function (h) {
+              return '<option value="' + h + '"' + (r.heureAuto === h ? ' selected' : '') + '>' +
+                (h < 10 ? '0' + h : h) + ' h</option>';
+            }).join('') +
+          '</select></div>' +
+        '<p class="sec-note" style="margin:6px 0 0">Heure de Paris. Le robot passe chaque heure ; ' +
+          'le premier passage à partir de ' + (r.heureAuto < 10 ? '0' + r.heureAuto : r.heureAuto) +
+          ' h envoie les missions en attente de ce jour-là, une seule fois.</p>')
     ) +
 
     (!branche ? '' :
@@ -8009,6 +8414,66 @@ function celluleStock(p, a) {
       ' data-pid="' + esc(p.id) + '" data-k="' + esc(a.key) + '"></span>';
 }
 
+/* UN LOGEMENT À LA FOIS — LA SAISIE DE STOCK PENSÉE POUR LE TÉLÉPHONE (session 30, D-158).
+
+   Signalé par Marc : le tableau « Par bien » (une colonne par logement) est
+   illisible sur un petit écran, il faut faire défiler dans tous les sens pour
+   toucher la bonne case. Ici, l'inverse : on choisit UN logement, et chaque
+   article devient une ligne pleine largeur avec un gros − / +, comme sur les
+   fiches de tarifs (`.stepper`). Rien de nouveau côté données — c'est
+   `state.stock[pid][k]`, exactement comme le tableau — seul l'écran change. */
+function viewStockUnBien() {
+  var pid = state.stockUnBien && state.props.some(function (p) { return p.id === state.stockUnBien; })
+    ? state.stockUnBien : (state.props[0] && state.props[0].id);
+
+  if (!pid) return '<p class="empty" style="margin-top:20px">Aucun logement enregistré.</p>';
+
+  var p = prop(pid);
+  var picker = '<div class="chiprow chiprow--scroll" style="margin-top:20px">' +
+    state.props.map(function (x) {
+      return '<button type="button" class="chip chip--lg" aria-pressed="' + (x.id === pid) + '" style="--accent:' + x.color + '"' +
+        act('stock-un-bien', { pid: x.id }) + '>' +
+        '<span class="dot" style="background:' + x.color + ';margin-right:7px"></span>' + esc(x.short) + '</button>';
+    }).join('') + '</div>';
+
+  var rows = groups().map(function (gn) {
+    var items = arts().filter(function (a) { return a.group === gn; });
+    if (!items.length) return '';
+    return '<div class="card" style="margin-top:14px;padding:16px 18px">' +
+      '<div style="font:700 15px Figtree,sans-serif;margin-bottom:6px">' + esc(gn) + '</div>' +
+      items.map(function (a) {
+        var exclu = horsStock(pid, a.key);
+        if (exclu) {
+          return '<div style="display:flex;align-items:center;gap:10px;padding:12px 0;border-top:1px solid rgba(36,30,26,.08)">' +
+            '<span class="grow" style="font:500 14px Figtree,sans-serif;color:var(--muted2)">' + esc(a.label) +
+              ' <span style="font-weight:400">— absent de ' + esc(p.short) + '</span></span>' +
+            '<button type="button" class="btn btn--xs" style="background:var(--cream);color:var(--ink-soft)"' +
+              act('stock-hors', { pid: pid, k: a.key }) + '>Remettre</button>' +
+            '</div>';
+        }
+        var v = (state.stock[pid] || {})[a.key] || 0;
+        var seuil = state.seuils[a.key] || 0;
+        var cls = v === 0 ? 'cell-q--zero' : v <= seuil ? 'cell-q--low' : 'cell-q--ok';
+        return '<div style="display:flex;align-items:center;gap:10px;padding:12px 0;border-top:1px solid rgba(36,30,26,.08)">' +
+          '<span class="grow" style="min-width:0">' +
+            '<span style="font:500 14px Figtree,sans-serif;display:block">' + esc(a.label) + '</span>' +
+            '<span class="num" style="font:500 11.5px Figtree,sans-serif;color:var(--muted2)">' +
+              esc(a.unit) + (v <= seuil ? ' · sous le seuil (' + seuil + ')' : '') + '</span></span>' +
+          '<span class="stepper stepper--lg">' +
+            '<button type="button" aria-label="Baisser ' + esc(a.label)+ '"' + act('stock-step', { pid: pid, k: a.key, d: -1 }) + '>−</button>' +
+            '<span class="val num ' + cls + '">' + v + '</span>' +
+            '<button type="button" aria-label="Monter ' + esc(a.label) + '"' + act('stock-step', { pid: pid, k: a.key, d: 1 }) + '>+</button>' +
+          '</span>' +
+          '<button type="button" class="x-btn" aria-label="' + esc(a.label) + ' n’est pas dans ce logement"' +
+            act('stock-hors', { pid: pid, k: a.key }) + '>—</button>' +
+          '</div>';
+      }).join('') +
+      '</div>';
+  }).join('');
+
+  return picker + rows;
+}
+
 function viewOwnerStocks() {
   var content;
 
@@ -8058,6 +8523,8 @@ function viewOwnerStocks() {
           }).join('') : '<p class="empty">Rien sous le seuil dans cette catégorie.</p>') +
           '</div></div>';
       }).join('') + '</div>' + formNewArticle();
+  } else if (state.stockTab === 'unbien') {
+    content = viewStockUnBien();
   } else {
     /* Biens retenus pour les courses. Tant que rien n'a été décoché, ils y sont tous. */
     var choisis = coursesPropIds();
@@ -8155,7 +8622,7 @@ function viewOwnerStocks() {
     '<div class="page-head">' +
       '<div><h1 class="page-title">Stocks</h1>' +
       '<p class="page-sub">Dernier relevé du prestataire. Ajuste le seuil de chaque article pour piloter la liste de courses.</p></div>' +
-      '<div class="seg">' + [['matrice', 'Par bien'], ['courses', 'Liste de courses']].map(function (t) {
+      '<div class="seg">' + [['matrice', 'Tableau'], ['unbien', 'Un logement à la fois'], ['courses', 'Liste de courses']].map(function (t) {
         return '<button type="button" aria-pressed="' + (state.stockTab === t[0]) + '"' + act('stock-tab', { t: t[0] }) + '>' + t[1] + '</button>';
       }).join('') + '</div>' +
     '</div>' + content);
@@ -11148,6 +11615,13 @@ var actions = {
   },
   'stock-tab': function (el) { state.stockTab = el.dataset.t; save(); render(); },
   'stock-group': function (el) { state.stockGroup = el.dataset.g; save(); render(); },
+  'stock-un-bien': function (el) { state.stockUnBien = el.dataset.pid; save(); render(); },
+  'stock-step': function (el) {
+    var pid = el.dataset.pid, k = el.dataset.k, d = parseInt(el.dataset.d, 10);
+    if (!state.stock[pid]) state.stock[pid] = {};
+    state.stock[pid][k] = Math.max(0, (state.stock[pid][k] || 0) + d);
+    save(); render();
+  },
   'toggle-scope': function () { state.stockScope = state.stockScope === 'low' ? 'all' : 'low'; save(); render(); },
   seuil: function (el) {
     var k = el.dataset.k, d = parseInt(el.dataset.d, 10);
@@ -11264,6 +11738,11 @@ var actions = {
   },
   'mail-copie': function () {
     state.mailReglages.copie = !state.mailReglages.copie;
+    save(); render();
+  },
+  /* L'envoi à heure fixe, robot compris (session 30, D-161). */
+  'mail-robot': function () {
+    state.mailReglages.robotActif = !state.mailReglages.robotActif;
     save(); render();
   },
 
@@ -11595,6 +12074,57 @@ var actions = {
   'stat-bien': function (el) {
     var pid = el.dataset.pid;
     state.statBien = state.statBien === pid ? null : pid;
+    save(); render();
+  },
+
+  /* LES CHARGES D'UN LOGEMENT (session 30, D-160). Un seul formulaire, pour
+     ajouter ou modifier — `ncEdit` dit lequel. `charge-annuler` referme et
+     oublie le brouillon, comme les autres formulaires de création du projet. */
+  'charge-new-toggle': function () {
+    state.ncEdit = null;
+    state.nc = { categorie: 'eau', libelle: '', montant: '', recurrent: true, mois: CURRENT_MONTH, finMois: '' };
+    state.showNewCharge = !state.showNewCharge;
+    render();
+  },
+  'charge-annuler': function () { state.showNewCharge = false; state.ncEdit = null; render(); },
+  'charge-recurrent': function (el) { state.nc.recurrent = el.dataset.v === '1'; render(); },
+
+  'charge-edit': function (el) {
+    var c = (state.charges || []).find(function (x) { return x.id === el.dataset.id; });
+    if (!c) return;
+    state.ncEdit = c.id;
+    state.nc = { categorie: c.categorie, libelle: c.libelle || '', montant: c.montant,
+      recurrent: !!c.recurrent, mois: c.mois || CURRENT_MONTH, finMois: c.finMois || '' };
+    state.showNewCharge = true;
+    render();
+  },
+
+  'charge-save': function (el) {
+    var pid = el.dataset.pid;
+    var c = state.nc;
+    var montant = Math.max(0, parseFloat(String(c.montant).replace(',', '.')) || 0);
+    var mois = c.mois || CURRENT_MONTH;
+    if (state.ncEdit) {
+      var ex = (state.charges || []).find(function (x) { return x.id === state.ncEdit; });
+      if (ex) {
+        ex.categorie = c.categorie; ex.libelle = (c.libelle || '').trim(); ex.montant = montant;
+        ex.recurrent = !!c.recurrent; ex.mois = mois; ex.finMois = c.recurrent ? (c.finMois || '') : '';
+      }
+    } else {
+      state.charges.push({
+        id: jeton(), prop: pid, categorie: c.categorie, libelle: (c.libelle || '').trim(),
+        montant: montant, recurrent: !!c.recurrent, mois: mois, finMois: c.recurrent ? (c.finMois || '') : ''
+      });
+    }
+    state.showNewCharge = false;
+    state.ncEdit = null;
+    save(); render();
+  },
+
+  'charge-del': function (el) {
+    var id = el.dataset.id;
+    if (!confirm('Supprimer cette charge ?')) return;
+    state.charges = state.charges.filter(function (c) { return c.id !== id; });
     save(); render();
   },
 
@@ -12382,6 +12912,8 @@ var inputs = {
   'login-pwd': function (el) { state.loginPwd = el.value; },
   'inv-pwd': function (el) { state.inv.pwd = el.value; },
   'inv-pwd2': function (el) { state.inv.pwd2 = el.value; },
+  'charge-libelle': function (el) { state.nc.libelle = el.value; },
+  'charge-montant': function (el) { state.nc.montant = el.value; },
   'nm-window': function (el) { state.nm.window = el.value; },
   'nm-price': function (el) { state.nm.price = parseInt(el.value || '0', 10) || 0; },
   'nm-note': function (el) { state.nm.note = el.value; },
@@ -12529,6 +13061,11 @@ var changes = {
     render();
   },
 
+  'mail-heure': function (el) { state.mailReglages.heureAuto = parseInt(el.value, 10) || 0; save(); render(); },
+  'charge-cat': function (el) { state.nc.categorie = el.value; render(); },
+  'charge-mois': function (el) { state.nc.mois = el.value; render(); },
+  'charge-fin': function (el) { state.nc.finMois = el.value; render(); },
+
   /* Porte d'entrée du livret : la date sert aux deux écrans (D-46). */
   'bv-date': function (el) { state.bienvenue.date = el.value; state.bienvenue.erreur = ''; save(); },
   'bv-pid': function (el) { state.bienvenue.pid = el.value; state.bienvenue.erreur = ''; save(); },
@@ -12641,6 +13178,7 @@ var VIEWS = {
   'o-msg': viewOwnerMsg,
   'o-auto': viewOwnerAuto,
   'o-stats': viewOwnerStats,
+  'o-stat-bien': viewOwnerStatBien,
   'o-missions': viewOwnerMissions,
   'o-mission': viewOwnerMission,
   'o-agents': viewOwnerAgents,

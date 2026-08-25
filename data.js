@@ -917,7 +917,11 @@ var DB = (function () {
        a: [adresses] } }`. Doit voyager, sinon rouvrir l'application sur un
        autre appareil renverrait une seconde fois le même e-mail à tout le
        monde — septième occurrence de la règle 14 évitée d'avance. */
-    'mailsEnvoyes'];
+    'mailsEnvoyes',
+    /* Session 30 (D-160) : les charges d'un logement (eau, électricité,
+       assurance, crédit…), saisies une à une mais toujours relues et
+       réécrites en bloc — même parti pris que les autres listes ci-dessus. */
+    'charges'];
 
   /* Deux clés ne doivent JAMAIS être remplacées par une liste vide : sans
      prestation ni article, l'application n'a plus rien à afficher et
