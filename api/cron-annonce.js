@@ -178,8 +178,29 @@ module.exports = async function handler(req, res) {
   if (!adresseValide(mr.expMail)) {
     return res.status(200).json({ agi: false, raison: 'Adresse d’expédition manquante ou invalide.' });
   }
-  if (typeof mr.heureAuto !== 'number' || dh.heure !== mr.heureAuto) {
-    return res.status(200).json({ agi: false, raison: 'Pas encore l’heure (' + dh.heure + ' h, attendu ' + mr.heureAuto + ' h).' });
+  /* UNE SEULE VISITE PAR JOUR, ET ELLE EST FIXÉE PAR `vercel.json` (D-162).
+     La première version réveillait le robot **chaque heure** et n'agissait qu'à
+     l'heure exacte choisie. Le forfait gratuit de Vercel n'autorise qu'un seul
+     passage par jour : la publication entière était refusée, et rien de la
+     session 30 n'atteignait le site — pas seulement le robot.
+
+     Le robot passe donc une fois, à l'heure inscrite dans `vercel.json`, et
+     agit si cette heure a **atteint ou dépassé** celle que Marc a choisie. Si
+     Marc choisit une heure PLUS TARDIVE que le passage du robot, celui-ci ne
+     ferait jamais rien : plutôt que de se taire, il le DIT (règle 4 — un
+     automatisme muet est ce que la règle 13 interdit), et la phrase nomme le
+     geste : changer l'heure dans `vercel.json`. */
+  if (typeof mr.heureAuto !== 'number') {
+    return res.status(200).json({ agi: false, raison: 'Aucune heure choisie dans les réglages.' });
+  }
+  if (dh.heure < mr.heureAuto) {
+    return res.status(200).json({
+      agi: false,
+      raison: 'Le robot passe à ' + dh.heure + ' h (heure de Paris), mais l’heure choisie dans ' +
+        'MAISON WARME est ' + mr.heureAuto + ' h — donc plus tard. Il ne partira jamais rien ainsi : ' +
+        'il faut soit choisir une heure au plus tard ' + dh.heure + ' h dans l’application, soit faire ' +
+        'changer l’heure de passage du robot dans vercel.json (§35.4 du mode d’emploi).'
+    });
   }
   if (mr.dernierEnvoiRobot === dh.jour) {
     return res.status(200).json({ agi: false, raison: 'Déjà passé aujourd’hui (' + dh.jour + ').' });

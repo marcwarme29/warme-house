@@ -1043,6 +1043,21 @@ function upgrade() {
   if (typeof mr.robotActif !== 'boolean') mr.robotActif = false;
   if (typeof mr.heureAuto !== 'number' || mr.heureAuto < 0 || mr.heureAuto > 23) mr.heureAuto = 18;
 
+  /* Session 30 (D-162) — DEUX SÉJOURS DU MÊME LOGEMENT AVEC LE MÊME `uid`.
+     Signalé le 25 août : « duplicate key value violates unique constraint
+     reservations_uid_idx ». Le cahier partagé, lui, n'avait AUCUN doublon
+     (script 14b : zéro ligne) — les deux exemplaires vivaient donc dans le
+     navigateur, et c'est l'envoi qui était refusé **en entier** (règle 21 :
+     un lot tombe en entier, jamais ligne par ligne). Plus rien ne partait :
+     ni les séjours, ni les missions qui les suivent dans la chaîne.
+
+     Cause : `fusionnerResas()` rapproche par `uid`, mais **deux relevés qui se
+     chevauchent** — le bouton « Relever maintenant » pendant que la relève
+     automatique tourne (D-133) — passent tous deux par « pas connue → créer »
+     avant que l'un ait fini. Le garde-fou manquait ici, comme il manquait pour
+     les missions en D-116 : c'est la même faute, une table plus loin. */
+  reparerResasEnDouble();
+
   /* Session 30 (D-160) — les charges d'un logement (eau, électricité,
      assurance, crédit…). Un logement supprimé n'a plus de charges à porter,
      même précaution que pour `horsStock` et `photosBien` juste au-dessus. */
@@ -1913,6 +1928,16 @@ function releverIcalDe(pid) {
   var liens = state.extraFeeds[pid] || [];
   if (!liens.length) return Promise.resolve(null);
 
+  /* JAMAIS DEUX RELEVÉS EN MÊME TEMPS (session 30, D-162).
+     `state.icalEnCours` était **écrit** mais jamais **lu** : le bouton
+     « Relever maintenant » pouvait donc démarrer pendant que la relève
+     automatique (D-133) tournait déjà. Les deux lisaient le même calendrier,
+     les deux constataient « ce séjour n'est pas connu » avant que l'autre ne
+     l'ait créé, et les deux le créaient — d'où deux séjours au même `uid`, que
+     le cahier partagé refuse en bloc. C'est la faute de D-116 (deux missions au
+     même identifiant), une table plus loin. */
+  if (state.icalEnCours) return Promise.resolve(null);
+
   state.icalEnCours = pid;
   state.icalBilan[pid] = null;
   render();
@@ -2409,6 +2434,87 @@ function nowHM() {
 
 /** Identifiant d'un séjour : il n'y a pas d'identifiant sur les réservations. */
 function resaKey(pid, r) { return pid + ':' + r.start + ':' + r.end; }
+
+/* DEUX SÉJOURS AVEC LE MÊME IDENTIFIANT DE PLATEFORME (session 30, D-162)
+
+   Le cahier partagé refuse deux réservations du même logement portant le même
+   `uid` (index unique `reservations_uid_idx`, script 01). Quand le navigateur
+   en contient deux, **tout l'envoi des réservations est refusé** — donc les
+   missions ne partent pas non plus, la chaîne s'arrêtant là. C'est le symptôme
+   signalé le 25 août.
+
+   ON NE SUPPRIME PAS AU HASARD (règle 5). On garde l'exemplaire **le mieux
+   renseigné** : celui qui porte un vrai nom de voyageur, ses coordonnées, son
+   identité confirmée, un montant réel. Ce qu'un exemplaire a et pas l'autre
+   est **recopié sur celui qu'on garde** avant d'écarter le doublon — sinon on
+   perdrait ce que le voyageur avait saisi (l'esprit de D-91).
+
+   ET LES MISSIONS SUIVENT (règle 20) : `resaKey()` est bâtie sur les dates, si
+   bien que deux exemplaires aux mêmes dates partagent déjà leur clé et que
+   rien ne bouge. Mais si les dates diffèrent — un séjour déplacé, importé deux
+   fois —, les missions du doublon sont **rattachées** à celui qu'on garde
+   plutôt que laissées orphelines.
+
+   Rend la liste des identifiants écartés, pour que l'appelant puisse les dire
+   au cahier partagé : `pousser()` ne sait qu'ajouter et modifier (règle 12). */
+function reparerResasEnDouble() {
+  var ecartes = [];
+
+  Object.keys(state.resas || {}).forEach(function (pid) {
+    var parUid = {};
+    var gardees = [];
+
+    resasOf(pid).forEach(function (r) {
+      if (!r || !r.uid) { gardees.push(r); return; }        // sans uid, l'index ne s'applique pas
+      var deja = parUid[r.uid];
+      if (!deja) { parUid[r.uid] = r; gardees.push(r); return; }
+
+      // Lequel des deux est le mieux renseigné ?
+      var score = function (x) {
+        return (nomGeneriqueResa(x.guest) ? 0 : 4) + (x.guestOk ? 3 : 0) +
+          (x.tel || x.tel4 ? 2 : 0) + (x.mail ? 2 : 0) +
+          (x.montant !== null && x.montant !== undefined ? 1 : 0) +
+          (x.arriveePrevue ? 1 : 0) + (x.guests ? 1 : 0);
+      };
+      var garde = score(r) > score(deja) ? r : deja;
+      var jete = garde === r ? deja : r;
+
+      // Ce que le jeté avait et que le gardé n'a pas n'est pas perdu.
+      ['guest', 'guests', 'tel', 'tel4', 'mail', 'arriveePrevue', 'montant', 'plat'].forEach(function (k) {
+        var vide = garde[k] === undefined || garde[k] === null || garde[k] === '' ||
+          (k === 'guest' && nomGeneriqueResa(garde[k]));
+        if (vide && jete[k] !== undefined && jete[k] !== null && jete[k] !== '') garde[k] = jete[k];
+      });
+      if (jete.guestOk) garde.guestOk = true;
+      if (jete.demarchable) garde.demarchable = true;
+
+      // Les missions du jeté suivent celui qu'on garde, si les clés diffèrent.
+      var cleJetee = resaKey(pid, jete), cleGardee = resaKey(pid, garde);
+      if (cleJetee !== cleGardee) {
+        state.missions.forEach(function (m) { if (m.fromResa === cleJetee) m.fromResa = cleGardee; });
+      }
+
+      parUid[r.uid] = garde;
+      gardees = gardees.filter(function (x) { return x !== jete; });
+      if (gardees.indexOf(garde) < 0) gardees.push(garde);
+      if (jete.id) ecartes.push(jete.id);
+    });
+
+    if (ecartes.length) {
+      state.resas[pid] = gardees.sort(function (a, b) {
+        return a.start < b.start ? -1 : a.start > b.start ? 1 : 0;
+      });
+    }
+  });
+
+  /* LE DIRE AU CAHIER (règle 12). Le doublon écarté peut très bien être celui
+     qui, lui, était déjà enregistré : le supprimer par son identifiant règle
+     les deux cas, et une suppression qui ne porte sur rien est sans effet. */
+  if (ecartes.length && typeof DB !== 'undefined' && DB.estDispo() && DB.profil() && DB.supprimerResa) {
+    ecartes.forEach(function (id) { DB.supprimerResa(id); });
+  }
+  return ecartes;
+}
 
 /* Le jour d'un turnover, deux voyageurs différents ouvrent le même livret :
    celui qui s'en va et celui qui arrive. On les distingue par les dates.
@@ -3725,18 +3831,26 @@ function decorate(m) {
      fait normalement. On le montre plutôt que de laisser deviner. */
   var enRetard = m.status === 'dispo' && m.date < TODAY;
 
+  /* `dateLabel` AVEC UN REPLI (règle 6). `decorate()` tourne pour CHAQUE
+     mission de la liste : une seule à qui il manquerait `dateLabel` faisait
+     tomber l'écran des missions **en entier**, propriétaire comme prestataire.
+     Il est posé à la création et à la relecture du cahier — mais « c'est posé
+     partout » est exactement ce qu'on croyait de `provider_id` avant D-142.
+     `fmtDate(m.date)` dit la même chose, et `date`, elle, existe toujours. */
+  var quandLabel = String(m.dateLabel || fmtDate(m.date));
+
   var ctaLabel, ctaCls, ctaAction = '';
   if (m.status === 'annulee') { ctaLabel = 'Mission annulée'; ctaCls = 'btn--muted'; }
   else if (m.status === 'termine') { ctaLabel = 'Mission terminée'; ctaCls = 'btn--muted'; }
   else if (m.status === 'encours') { ctaLabel = 'Reprendre la checklist'; ctaCls = 'btn--go'; ctaAction = 'resume'; }
   else if (canStart) { ctaLabel = 'Commencer la mission'; ctaCls = 'btn--go'; ctaAction = 'start'; }
-  else { ctaLabel = 'Démarrage le ' + m.dateLabel.toLowerCase(); ctaCls = 'btn--muted'; }
+  else { ctaLabel = 'Démarrage le ' + quandLabel.toLowerCase(); ctaCls = 'btn--muted'; }
 
   return {
     id: m.id, raw: m, mine: mine,
     propName: p.name, city: p.city, address: p.address + ', ' + p.city, color: p.color, tint: p.tint,
     typeLabel: ty.label, durationLabel: duration(m.prop, m.type),
-    dateLabel: m.dateLabel, windowLabel: m.windowLabel,
+    dateLabel: quandLabel, windowLabel: m.windowLabel,
     free: free, freeLabel: free ? 'Logement libre depuis ' + free : '',
     enRetard: enRetard, retardLabel: enRetard ? 'En retard — encore à prendre' : '',
     day: m.date.split('-')[2], month: MOIS[parseInt(m.date.split('-')[1], 10) - 1],
@@ -4126,7 +4240,13 @@ function viewPrestaDetail() {
                 'Le code d’accès n’est donc plus affiché.'
               : 'Le code d’accès et le Wi-Fi apparaîtront ici <strong>dès que tu auras pris cette mission</strong>. ' +
                 (m.date < TODAY
-                  ? 'Cette mission était prévue le ' + esc(m.dateLabel.toLowerCase()) + ', mais elle reste à prendre : ' +
+                  /* `dateLabel` avec un repli (règle 6) : il est posé à la
+                     création et à la relecture du cahier, mais une mission qui
+                     en manquerait faisait tomber TOUT l'écran des missions —
+                     une seule donnée absente fige l'application, exactement ce
+                     que la règle 6 interdit. `fmtDate(m.date)` dit la même
+                     chose à partir de la date, qui, elle, existe toujours. */
+                  ? 'Cette mission était prévue le ' + esc(String(m.dateLabel || fmtDate(m.date)).toLowerCase()) + ', mais elle reste à prendre : ' +
                     '<strong>le retard n’y change rien</strong>, tu peux la prendre et la faire aujourd’hui.'
                   : 'C’est ce geste qui t’ouvre la porte, pas la date.')) +
           '</div>'
@@ -7914,9 +8034,16 @@ function carteMailReglages() {
                 (h < 10 ? '0' + h : h) + ' h</option>';
             }).join('') +
           '</select></div>' +
-        '<p class="sec-note" style="margin:6px 0 0">Heure de Paris. Le robot passe chaque heure ; ' +
-          'le premier passage à partir de ' + (r.heureAuto < 10 ? '0' + r.heureAuto : r.heureAuto) +
-          ' h envoie les missions en attente de ce jour-là, une seule fois.</p>')
+        '<p class="sec-note" style="margin:6px 0 0">Heure de Paris. ' +
+          '<strong>Le robot passe une fois par jour, à 18 h.</strong> Il envoie les missions en ' +
+          'attente si l’heure choisie ici est déjà passée — donc laisse-la à <strong>18 h ou ' +
+          'avant</strong>. Une heure plus tardive ne partirait jamais : dis-le-moi, c’est une ligne ' +
+          'à changer et à republier (§35.4 du mode d’emploi).</p>' +
+        (r.heureAuto > 18
+          ? '<p class="sec-note" style="margin:6px 0 0;color:var(--terra)"><strong>Attention : ' +
+            r.heureAuto + ' h est plus tard que le passage du robot (18 h).</strong> Rien ne partira ' +
+            'automatiquement tant que cette heure sera après 18 h.</p>'
+          : ''))
     ) +
 
     (!branche ? '' :
