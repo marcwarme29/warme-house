@@ -312,30 +312,28 @@ var T = {
   // Porte d'entrée
   bvSous:       ['Vous arrivez dans un logement MAISON WARME', 'You are arriving at a MAISON WARME property'],
   bvTitre:      ['Retrouvez votre séjour', 'Find your booking'],
-  bvP:          ['Vos dates suffisent : indiquez le jour de votre arrivée et celui de votre départ.',
-                 'Your dates are enough: enter your arrival day and your departure day.'],
-  bvPBien:      ['Votre date d’arrivée suffit.', 'Your arrival date is enough.'],
+  /* LES DEUX DATES, TOUJOURS (session 31, D-163). Le lien par logement se
+     contentait de la date d'arrivée (D-140) ; le propriétaire a demandé que
+     les deux soient exigées partout, sur le lien général comme sur le lien
+     par logement. Une seule phrase, donc, et un seul comportement. */
+  bvP:          ['Vos deux dates suffisent : indiquez le jour de votre arrivée et celui de votre départ.',
+                 'Your two dates are enough: enter your arrival day and your departure day.'],
   bvDate:       ['Date de votre arrivée', 'Your arrival date'],
   bvFin:        ['Date de votre départ', 'Your departure date'],
-  /* Sur un lien par logement, le départ ne sert plus qu'à affiner (D-140). */
-  bvFinFac:     ['Date de votre départ (facultatif)', 'Your departure date (optional)'],
-  bvNomTitre:   ['Votre nom (facultatif)', 'Your name (optional)'],
-  bvNomAide:    ['Seulement si deux séjours se ressemblent. Vous pouvez laisser vide.',
-                 'Only useful if two bookings look alike. You may leave this empty.'],
-  bvErrNomCourt: ['Indiquez votre nom (au moins 3 lettres).', 'Please enter your name (at least 3 letters).'],
   bvErrFin:     ['Indiquez aussi la date de votre départ.', 'Please also enter your departure date.'],
   bvErrOrdre:   ['La date de départ doit être après celle d’arrivée.', 'The departure date must be after the arrival date.'],
   bvCherche:    ['Recherche…', 'Searching…'],
   bvTel:        ['4 derniers chiffres de votre téléphone', 'Last 4 digits of your phone number'],
   bvContinuer:  ['Continuer', 'Continue'],
-  bvSaisPas:    ['Je ne sais pas quoi mettre →', 'I don’t know what to enter →'],
   bvErrDate:    ['Indiquez d’abord la date de votre arrivée.', 'Please enter your arrival date first.'],
   bvErrTel:     ['Il faut les 4 derniers chiffres de votre téléphone.', 'We need the last 4 digits of your phone number.'],
-  /* Le message ne parle plus d'orthographe du nom : le nom est facultatif
-     depuis D-139, et le renvoyer vers une faute de frappe qu'il n'a pas faite
-     ferait chercher au mauvais endroit (règle 5). */
-  bvErrRien:    ['Aucun séjour ne correspond à ces dates. Vérifiez le jour de votre arrivée et celui de votre départ — ce sont les dates de la réservation, pas celles de votre voyage. Sinon, passez par « Je ne sais pas quoi mettre ».',
-                 'No booking matches these dates. Check your arrival and departure days — these are the booking dates, not your travel dates. Otherwise, use “I don’t know what to enter”.'],
+  /* Le message ne parle plus d'orthographe du nom : le nom n'est plus demandé
+     ici (session 31), et le renvoyer vers une faute de frappe qu'il n'a pas
+     faite ferait chercher au mauvais endroit (règle 5). Il ne renvoie plus non
+     plus vers « Je ne sais pas quoi mettre », qui a été retiré : un message qui
+     désigne un bouton absent est pire que pas de message du tout (règle 8). */
+  bvErrRien:    ['Aucun séjour ne correspond à ces dates. Vérifiez le jour de votre arrivée et celui de votre départ — ce sont les dates de la réservation, pas celles de votre voyage. Si vous ne trouvez toujours pas, écrivez à votre hôte : il vous enverra le lien de votre séjour.',
+                 'No booking matches these dates. Check your arrival and departure days — these are the booking dates, not your travel dates. If you still cannot find it, message your host: they will send you the link to your stay.'],
   bvChoixT:     ['Lequel est le vôtre ?', 'Which one is yours?'],
   bvChoixP:     ['Plusieurs séjours correspondent. Choisissez votre logement.',
                  'Several bookings match. Please choose your property.'],
@@ -366,6 +364,14 @@ var T = {
   bvMail:       ['Votre e-mail', 'Your email'],
   bvCombien:    ['Vous serez combien ?', 'How many of you?'],
   bvHeure:      ['Vers quelle heure ?', 'Around what time?'],
+  bvHeureChoisir: ['— Choisir une heure —', '— Choose a time —'],
+  /* LE COMMENTAIRE LIBRE DU VOYAGEUR (session 31, D-164). Demandé par le
+     propriétaire : « une nouvelle rubrique texte pour qu'il puisse laisser un
+     éventuel commentaire ». */
+  bvComment:    ['Un mot pour nous ? (facultatif)', 'Anything to tell us? (optional)'],
+  bvCommentPh:  ['Ex. nous arriverons en train, nous voyageons avec un bébé, nous fêtons un anniversaire…',
+                 'E.g. we are arriving by train, we are travelling with a baby, we are celebrating a birthday…'],
+  bvCommentAide: ['Votre hôte le lira avant votre arrivée.', 'Your host will read it before you arrive.'],
   bvHeureNote:  ['Arrivée prévue à partir de ', 'Check-in is from '],
   bvHeureNote2: ['. Si vous arrivez plus tard, dites-le nous : la personne qui vous remet les clés s’organisera.',
                  '. If you are arriving later, let us know: whoever hands over the keys will plan accordingly.'],
@@ -374,7 +380,6 @@ var T = {
   bvOptinS:     ['Facultatif. Vous pourrez vous désinscrire à tout moment.',
                  'Optional. You can unsubscribe at any time.'],
   bvEnregistrer:['Enregistrer et voir le livret', 'Save and open the guidebook'],
-  bvPlusTard:   ['Plus tard →', 'Later →'],
   bvBienvenue:  ['Bienvenue', 'Welcome']
 };
 
@@ -602,6 +607,7 @@ function initialState() {
     // Les outils de mise en service dépliés (session 24, D-138) : un état
     // d'écran, replié à chaque ouverture.
     outilsOuverts: false,
+    mailReglagesOuvert: false,        // le réglage d'envoi, replié par défaut (D-167)
 
     /* PRÉVENIR LES PRESTATAIRES PAR E-MAIL (session 27, D-150)
 
@@ -633,7 +639,7 @@ function initialState() {
     mailBilan: null,
 
     // Préférences d'affichage
-    missionFilter: 'all',
+    missionFilter: 'avenir',     // la liste s'ouvre sur ce qui arrive (D-166)
     stockScope: 'all',
     stockGroup: 'Tous',
     stockTab: 'matrice',
@@ -676,7 +682,7 @@ function initialState() {
     acces: [],                        // demandes à confirmer : [{ id, pid, resa, nom, date, at, statut }]
     guestPass: null,                  // souvenir posé dans le navigateur du VOYAGEUR : { resa, pid, niveau, at }
     bienvenue: { date: '', tel4: '', pid: '', nom: '', etape: 'recherche', erreur: '', choix: null, enCours: false },
-    gform: { nom: '', tel: '', mail: '', guests: '', arrivee: '', optin: false },
+    gform: { nom: '', tel: '', mail: '', guests: '', arrivee: '', commentaire: '', optin: false },
     repFiltre: 'tous',                // filtre du répertoire voyageurs (session 12)
     lvLang: 'fr',                     // langue du livret côté voyageur (session 12)
     lvEdLang: 'fr',                   // langue en cours d'écriture, côté propriétaire
@@ -755,6 +761,12 @@ function load() {
   state.icalEnCours = null;           // un relevé de calendrier en cours (session 20)
   state.icalAutoEnCours = false;      // la relève automatique en cours (session 24)
   state.outilsOuverts = false;        // les outils de mise en service (session 24, D-138)
+  state.mailReglagesOuvert = false;   // le réglage d'envoi d'e-mails (session 31, D-167)
+  /* Le filtre des missions est une POSITION D'AFFICHAGE, pas une donnée
+     (règle 7, D-135) : il repart sur « À venir » à chaque ouverture, comme le
+     propriétaire l'a demandé. Le laisser mémorisé rouvrirait la liste sur le
+     dernier filtre choisi, souvent « Terminées ». */
+  state.missionFilter = 'avenir';
   state.mailEnCours = false;          // un envoi d'e-mails en cours (session 27, D-150)
   state.mailBilan = null;             // le compte rendu du dernier envoi
   state.mMsg = '';
@@ -919,6 +931,8 @@ function upgrade() {
       if (r.tel === undefined) r.tel = '';
       if (r.mail === undefined) r.mail = '';
       if (r.arriveePrevue === undefined) r.arriveePrevue = '';
+      // Le mot libre laissé par le voyageur (session 31, D-164).
+      if (r.commentaire === undefined) r.commentaire = '';
       if (r.guestOk === undefined) r.guestOk = false;
       // Accord de démarchage (session 12) : jamais vrai par défaut (D-56).
       if (r.demarchable === undefined) r.demarchable = false;
@@ -988,7 +1002,9 @@ function upgrade() {
   if (!state.bienvenue) state.bienvenue = { date: '', tel4: '', pid: '', nom: '', etape: 'recherche', erreur: '', choix: null };
   // Session 23 : la date de départ, pour départager deux séjours du même nom.
   if (typeof state.bienvenue.fin !== 'string') state.bienvenue.fin = '';
-  if (!state.gform) state.gform = { nom: '', tel: '', mail: '', guests: '', arrivee: '', optin: false };
+  if (!state.gform) state.gform = { nom: '', tel: '', mail: '', guests: '', arrivee: '', commentaire: '', optin: false };
+  // Le mot libre du voyageur (session 31, D-164) — règle 9 : déclaré ici aussi.
+  if (typeof state.gform.commentaire !== 'string') state.gform.commentaire = '';
   if (!state.repFiltre) state.repFiltre = 'tous';
   if (state.lvLang !== 'en') state.lvLang = 'fr';
   if (state.lvEdLang !== 'en') state.lvEdLang = 'fr';
@@ -1414,6 +1430,8 @@ function normaliserResa(brut, source, pid) {
     tel4: quatreChiffres(brut.tel4 || brut.tel),
     mail: String(brut.mail || '').trim(),
     arriveePrevue: String(brut.arriveePrevue || '').trim(),
+    // Le mot laissé par le voyageur dans son livret (session 31, D-164).
+    commentaire: String(brut.commentaire || '').trim(),
     guestOk: !!brut.guestOk
   };
   if (!r.id) r.id = slugResa(pid, r);
@@ -1830,7 +1848,7 @@ function fusionnerResas(pid, lot, source, plat) {
        à la première ouverture de l'application qui suivait la saisie. */
     if (nomFourni || !connue.guest) connue.guest = incoming.guest;
     if (effectifFourni || !connue.guests) connue.guests = incoming.guests;
-    ['tel', 'tel4', 'mail', 'arriveePrevue'].forEach(function (k) {
+    ['tel', 'tel4', 'mail', 'arriveePrevue', 'commentaire'].forEach(function (k) {
       if (incoming[k]) connue[k] = incoming[k];
     });
     if (datesBougent) { state.resas[pid] = resasOf(pid).concat([connue]); creerMissionDepart(pid, connue); }
@@ -2480,7 +2498,7 @@ function reparerResasEnDouble() {
       var jete = garde === r ? deja : r;
 
       // Ce que le jeté avait et que le gardé n'a pas n'est pas perdu.
-      ['guest', 'guests', 'tel', 'tel4', 'mail', 'arriveePrevue', 'montant', 'plat'].forEach(function (k) {
+      ['guest', 'guests', 'tel', 'tel4', 'mail', 'arriveePrevue', 'commentaire', 'montant', 'plat'].forEach(function (k) {
         var vide = garde[k] === undefined || garde[k] === null || garde[k] === '' ||
           (k === 'guest' && nomGeneriqueResa(garde[k]));
         if (vide && jete[k] !== undefined && jete[k] !== null && jete[k] !== '') garde[k] = jete[k];
@@ -2834,7 +2852,12 @@ function installerSejour(l) {
   var r = normaliserResa({
     id: l.reservation_id, plat: 'Direct', guest: l.guest, guests: l.guests,
     start: l.start_date, end: l.end_date, tel: l.tel, mail: l.mail,
-    arriveePrevue: l.arrivee_prevue, guestOk: true
+    arriveePrevue: l.arrivee_prevue,
+    // Son propre mot, s'il en a déjà laissé un (session 31, D-164). Rendu par
+    // `sejour_par_lien` depuis le script 14 ; vide tant qu'il n'est pas collé,
+    // et un champ laissé vide n'efface rien.
+    commentaire: l.commentaire,
+    guestOk: true
   }, 'manuel', pid);
   r.demarchable = !!l.demarchable;
 
@@ -2896,6 +2919,7 @@ function prefillGform(f, nom) {
     mail: (r && r.mail) || '',
     guests: r && r.guests ? String(r.guests) : '',
     arrivee: (r && r.arriveePrevue) || '',
+    commentaire: (r && r.commentaire) || '',
     optin: !!(r && r.demarchable)      // jamais coché d'avance (D-56)
   };
 }
@@ -5093,6 +5117,35 @@ function viewOwnerDash() {
     }),
     itemsReste: Math.max(0, pbOuverts.length - 5) });
 
+  /* UN VOYAGEUR A LAISSÉ UN MOT (session 31, D-164)
+
+     Demandé par le propriétaire : « si un voyageur laisse un commentaire il
+     faut que je sois au courant ». Un champ de plus sur une fiche que
+     personne n'ouvre ne prévient personne (règle 13) : l'alerte est donc ici,
+     et chaque ligne mène à la fiche du séjour.
+
+     Elle ne montre que les séjours **encore devant** (pas encore terminés) :
+     c'est le moment où le mot sert encore à quelque chose. Une fois le
+     voyageur reparti, l'alerte s'éteint d'elle-même et le mot reste sur la
+     fiche du séjour, où il ne se perd pas. On évite ainsi un marqueur « lu »,
+     qui n'existerait que sur un appareil (règle 14). */
+  var mots = allResas().filter(function (x) {
+    return x.r.statut !== 'annule' && (x.r.commentaire || '').trim() && x.r.end >= TODAY;
+  }).sort(function (a, b) { return a.r.start < b.r.start ? -1 : 1; });
+
+  if (mots.length) {
+    alerts.push({ cls: 'alert--blue', dot: C.bleu, kind: 'Mot d’un voyageur',
+      title: mots.length + ' voyageur(s) vous ont laissé un mot',
+      det: '',
+      items: mots.slice(0, 5).map(function (x) {
+        var txt = x.r.commentaire.trim();
+        return { label: prop(x.pid).short + ' · ' + x.r.guest + ' · « ' +
+          (txt.length > 70 ? txt.slice(0, 70) + '…' : txt) + ' »',
+          path: '#/admin/reservations/' + x.r.id, go: 'Ouvrir le séjour →' };
+      }),
+      itemsReste: Math.max(0, mots.length - 5) });
+  }
+
   /* Départs signalés par les voyageurs eux-mêmes, depuis leur livret d'accueil. */
   var libres = state.props.map(function (p) {
     var r = resasOf(p.id).find(function (x) { return x.end === TODAY && departAt(p.id, x); });
@@ -5148,9 +5201,10 @@ function viewOwnerDash() {
         (a.items && a.items.length
           ? '<div class="alert-items">' + a.items.map(function (i) {
               return '<button type="button" class="alert-item"' + act('nav', { path: i.path }) + '>' +
-                '<span>' + esc(i.label) + '</span><span class="alert-item-go">Ouvrir la mission →</span></button>';
+                '<span>' + esc(i.label) + '</span><span class="alert-item-go">' +
+                esc(i.go || 'Ouvrir la mission →') + '</span></button>';
             }).join('') +
-            (a.itemsReste ? '<div class="alert-item-plus">… et ' + a.itemsReste + ' autre(s), dans Missions.</div>' : '') +
+            (a.itemsReste ? '<div class="alert-item-plus">… et ' + a.itemsReste + ' autre(s).</div>' : '') +
             '</div>'
           : '') +
         '</' + close + '>';
@@ -5379,12 +5433,35 @@ function bandeauTousMenagesManquants() {
     '</div>';
 }
 
+/* « À VENIR », LA PREMIÈRE RUBRIQUE ET CELLE PAR DÉFAUT (session 31, D-166)
+
+   Demandé par le propriétaire. La liste s'ouvrait sur « Toutes », c'est-à-dire
+   sur des mois de ménages déjà faits qu'il fallait dépasser pour voir ce qui
+   arrive. « À venir » = toutes les missions dont la date est **aujourd'hui ou
+   plus tard**, du plus proche au plus lointain.
+
+   Les missions annulées en sont exclues : une mission annulée n'a plus lieu,
+   elle n'est donc « à venir » pour personne. Elle reste dans « Toutes » et
+   dans « Annulées », rien n'est caché.
+
+   Le tri : partout ailleurs les missions s'affichent dans l'ordre où elles ont
+   été créées. Ici la question posée est « qu'est-ce qui arrive ? » : c'est donc
+   la date qui commande, la plus proche en haut. */
+function missionsAVenir() {
+  return state.missions.filter(function (m) {
+    return m.date >= TODAY && m.status !== 'annulee';
+  }).sort(function (a, b) { return a.date < b.date ? -1 : (a.date > b.date ? 1 : 0); });
+}
+
 function viewOwnerMissions() {
-  var filters = [['all', 'Toutes'], ['dispo', 'Disponibles'], ['prise', 'Acceptées'],
-    ['termine', 'Terminées'], ['annulee', 'Annulées']];
-  var rows = state.missions
-    .filter(function (m) { return state.missionFilter === 'all' || state.missionFilter === m.status; })
-    .map(decorate);
+  var filters = [['avenir', 'À venir'], ['all', 'Toutes'], ['dispo', 'Disponibles'],
+    ['prise', 'Acceptées'], ['termine', 'Terminées'], ['annulee', 'Annulées']];
+  var rows = (state.missionFilter === 'avenir'
+    ? missionsAVenir()
+    : state.missions.filter(function (m) {
+        return state.missionFilter === 'all' || state.missionFilter === m.status;
+      })
+  ).map(decorate);
 
   var form = !state.showNew ? '' :
     '<div class="card pop" style="margin-top:18px;padding:22px">' +
@@ -5464,7 +5541,11 @@ function viewOwnerMissions() {
           '<span class="num" style="width:70px;text-align:right;font-weight:600">' + esc(m.priceLabel) + '</span>' +
           '<span class="trow-go">' + (done ? 'Revoir →' : 'Ouvrir →') + '</span>' +
           '</button>';
-      }).join('') : '<p class="empty">Aucune mission pour ce filtre.</p>') +
+      }).join('') : '<p class="empty">' +
+        (state.missionFilter === 'avenir'
+          ? 'Aucune mission à venir. Les ménages se créent tout seuls au départ de chaque voyageur : ' +
+            'si tu en attendais, regarde l’onglet « Toutes ».'
+          : 'Aucune mission pour ce filtre.') + '</p>') +
     '</div></div>');
 }
 
@@ -6467,6 +6548,20 @@ function viewOwnerResa() {
         '</select>' +
       '</div>' +
     '</div>' +
+    /* LE MOT LAISSÉ PAR LE VOYAGEUR (session 31, D-164). En lecture seule :
+       il est de lui, pas de toi. Le tableau de bord y renvoie. */
+    (String(r.commentaire || '').trim()
+      ? '<div style="margin-top:16px;border-radius:16px;padding:14px 16px;background:var(--blue-bg);' +
+          'border-left:3px solid ' + C.bleu + '">' +
+          '<div style="font:700 13.5px Figtree,sans-serif;color:' + C.bleu + '">💬 Le mot de ' +
+            esc(r.guest) + '</div>' +
+          '<p style="font:500 13.5px/1.6 Figtree,sans-serif;color:var(--ink-soft);margin:6px 0 0;' +
+            'white-space:pre-wrap">' + esc(r.commentaire.trim()) + '</p>' +
+          '<p class="sec-note" style="margin:8px 0 0">Écrit par le voyageur dans son livret ' +
+            'd’accueil. Tu ne peux pas le modifier — c’est le sien.</p>' +
+        '</div>'
+      : '') +
+
     '<p class="sec-note" style="margin-top:12px">Enregistré au fur et à mesure, rien à valider. ' +
       'Ce que tu écris ici part dans le cahier partagé et s’affiche sur le téléphone de ta ' +
       'prestataire, sur la mission de ce départ.</p>';
@@ -7505,7 +7600,11 @@ function viewOwnerStats() {
       'le revenu est calculé au prix par nuit du logement. Corrigez-le sur la fiche de la réservation, ' +
       'ou attendez la connexion Beds24 qui apportera les montants exacts.</p>' : '') +
 
-    bandeauChevauchements() +
+    /* L'ENCADRÉ « SÉJOURS OCCUPANT LES MÊMES NUITS » A ÉTÉ RETIRÉ DE L'ÉCRAN
+       (session 31, D-167), à la demande du propriétaire. Il avait servi : le
+       taux d'occupation au-dessus de 100 % venait de là (D-136). La fonction
+       `bandeauChevauchements()` reste écrite juste au-dessus — elle n'est plus
+       appelée nulle part, et rien n'est perdu si le sujet revient. */
 
     '<h2 class="sec-title" style="margin-top:26px">Par logement</h2>' +
     '<div class="card" style="padding:0;overflow:hidden">' +
@@ -7959,6 +8058,38 @@ function bilanMailHtml() {
       : ''));
 }
 
+/* LE RÉGLAGE DE L'ENVOI, REPLIÉ (session 31, D-167)
+
+   Demandé par le propriétaire : « masque "Prévenir les prestataires par
+   e-mail", j'ai pas besoin de le voir tout le temps en grand. » Il a raison :
+   c'est un réglage, on y va deux fois par an, et il occupait la moitié de la
+   page « Prestataires ».
+
+   Même principe que les outils de mise en service (D-138) : un lien discret,
+   fermé par défaut, et **rien n'est supprimé**. L'ouverture est un état
+   d'écran, elle ne s'enregistre pas (règle 7).
+
+   Un réglage replié ne doit pas pour autant cacher une panne (règle 4). Deux
+   précautions, qui n'obligent pas à rouvrir l'encadré :
+   · le lien lui-même dit « — pas encore réglé » tant que l'envoi ne peut pas
+     partir. L'information reste sous les yeux, elle tient sur une ligne ;
+   · la page « Missions » continue d'afficher son bandeau ambre « N missions
+     libres n'ont été annoncées à personne », qui n'a jamais été replié.
+   L'encadré se rouvre seul dans un seul cas : quand un envoi vient de se faire
+   et qu'il a son compte rendu à montrer. */
+function blocMailReglages() {
+  var ouvert = state.mailReglagesOuvert || !!state.mailBilan;
+
+  return '<div style="margin-top:22px">' +
+    '<button type="button" class="btn btn--xs" style="background:transparent;color:var(--muted);' +
+      'padding-left:0"' + act('toggle-mail-reglages') + '>' +
+      (ouvert ? '▾' : '▸') + ' ✉️ Prévenir les prestataires par e-mail' +
+      (mailBranche() ? '' : ' — pas encore réglé') +
+    '</button>' +
+    (ouvert ? carteMailReglages() : '') +
+    '</div>';
+}
+
 /** Le réglage complet, affiché sur la page « Prestataires ». */
 function carteMailReglages() {
   var r = state.mailReglages || {};
@@ -8376,7 +8507,7 @@ function viewOwnerAgents() {
           ';min-height:42px;font-size:13px"' + act('toggle-new-agent') + '>' +
           (state.showNewAgent ? 'Fermer' : '+ Ajouter un prestataire') + '</button>' +
       '</div>' +
-    '</div>' + messageCahier() + form + carteMailReglages() +
+    '</div>' + messageCahier() + form + blocMailReglages() +
 
     '<div class="cols" style="margin-top:22px;gap:12px">' +
       '<div class="kpi" style="min-width:200px"><div class="v num">' +
@@ -8866,7 +8997,13 @@ function viewOwnerBiens() {
     '<div class="grid-cards" style="margin-top:22px">' +
       (cards || '<p class="empty">Aucun bien. Ajoutez le premier ci-dessus.</p>') + '</div>' +
     carteLiensParLogement() +
-    carteLienUnique() +
+    /* LA CARTE DU LIEN GÉNÉRAL A ÉTÉ RETIRÉE (session 31, D-167) : « chaque
+       appartement a maintenant son propre lien ». Le lien `#/bienvenue`
+       continue de fonctionner — il est encore proposé au voyageur qui ouvre un
+       livret sans être reconnu, et le raccourci `{bienvenue}` des messages
+       programmés le remplace toujours. Seule sa mise en avant disparaît, avec
+       la confusion qu'elle entretenait : `carteLienUnique()` reste écrite plus
+       bas, simplement plus appelée. */
     carteConnexions());
 }
 
@@ -8946,10 +9083,13 @@ function carteLiensParLogement() {
       '</div>';
     }).join('') + '</div>' +
 
-    '<p class="sec-note" style="margin-top:14px">💡 <strong>Avec ce lien, la date de départ n’est ' +
-      'même plus obligatoire</strong> : le logement étant déjà connu, la seule date d’arrivée suffit ' +
-      'à retrouver le bon séjour — deux voyageurs ne peuvent pas arriver le même jour dans la même ' +
-      'maison.</p>' +
+    /* Depuis la session 31 (D-163), les deux dates sont exigées sur les deux
+       liens : la phrase qui promettait le contraire a été refaite. Une
+       étiquette périmée est aussi grave qu'un chiffre faux (règle 5). */
+    '<p class="sec-note" style="margin-top:14px">💡 <strong>Le voyageur donne ses deux dates</strong>, ' +
+      'ici comme sur le lien général. Ce que ce lien-ci apporte : il <strong>nomme la maison</strong> ' +
+      'à l’écran, et la recherche ne va chercher que dans ce logement — deux séjours aux mêmes dates ' +
+      'dans deux maisons différentes ne peuvent plus se confondre.</p>' +
     '</div>';
 }
 
@@ -9009,7 +9149,7 @@ function texteBienvenueBien(pid) {
   return 'Bonjour,\n\n' +
     'Voici votre livret d’accueil pour ' + p.name + ' :\n' +
     lienBien(pid) + '\n\n' +
-    'Indiquez votre date d’arrivée : vous y retrouverez l’adresse, ' +
+    'Indiquez vos dates d’arrivée et de départ : vous y retrouverez l’adresse, ' +
     'les horaires, le code d’accès et le Wi-Fi pendant votre séjour, ainsi que ' +
     'nos conseils sur place.\n\n' +
     'À très bientôt !';
@@ -9021,7 +9161,7 @@ function carteLienBien(pid, b) {
     '<h2 style="font:700 16px Figtree,sans-serif;margin:0 0 4px">Le lien de ' + esc(b.name) + '</h2>' +
     '<p class="sec-note" style="margin:0 0 12px">Le lien à coller dans les messages automatiques de ' +
       '<strong>l’annonce de ce logement</strong>, sur Airbnb comme sur Booking. Le voyageur y entre ' +
-      'son nom et ses dates de séjour ; il voit tout de suite qu’il est chez « ' + esc(b.name) +
+      'ses dates de séjour ; il voit tout de suite qu’il est chez « ' + esc(b.name) +
       ' », et la recherche ne va chercher que dans ce logement.</p>' +
     '<input class="inp num" style="font-size:12.5px" readonly value="' + esc(lien) +
       '" data-fid="lien-bien-' + esc(pid) + '">' +
@@ -9033,8 +9173,8 @@ function carteLienBien(pid, b) {
       '<button type="button" class="btn btn--xs" style="background:var(--cream);color:var(--ink-soft)"' +
         act('nav', { path: '#/bienvenue/' + pid }) + '>👁 Voir ce que le voyageur voit</button>' +
     '</div>' +
-    '<p class="sec-note" style="margin-top:12px">Le voyageur n’a que sa <strong>date d’arrivée</strong> ' +
-      'à donner : le logement étant déjà connu, elle suffit. Quelqu’un qui connaîtrait cette date ' +
+    '<p class="sec-note" style="margin-top:12px">Le voyageur donne ses <strong>deux dates</strong>, ' +
+      'celles de sa réservation. Quelqu’un qui connaîtrait ces dates ' +
       'pourrait ouvrir le livret — le code d’accès et le Wi-Fi, eux, restent protégés à part. Pour ' +
       'écrire à une personne en particulier, le <strong>lien personnel</strong> de sa réservation ' +
       'reste préférable : il n’a pas ce défaut.</p>' +
@@ -9670,24 +9810,23 @@ function bienDuLien() {
   return p || null;
 }
 
-/** Étape 1 : date d'arrivée + 4 derniers chiffres du téléphone. */
+/** Étape 1 : les deux dates du séjour. */
 function bvRecherche() {
   var b = state.bienvenue;
   var bien = bienDuLien();
   /* Le lien peut désigner un logement dont ce téléphone ne sait rien (D-144) :
      on ne peut alors pas afficher son nom, mais la recherche est bien
-     restreinte à lui, et la date de départ reste facultative. */
-  var cible = bienDuLienId();
+     restreinte à lui. */
 
   return bvCoque(
     '<section class="lv-section">' +
       '<div class="bv-card">' +
         '<h2 class="bv-h">' + esc(t('bvTitre')) + '</h2>' +
-        /* La phrase suit ce que le formulaire fait vraiment, donc l'identifiant
-           du lien — pas la fiche, que le téléphone du voyageur n'a pas (D-144).
-           Promettre « votre date d'arrivée suffit » puis exiger le départ, ou
-           l'inverse, c'est la règle 5 par son bord « étiquette » (D-128). */
-        '<p class="bv-p">' + esc(cible ? t('bvPBien') : t('bvP')) + '</p>' +
+        /* La phrase suit ce que le formulaire fait vraiment. Promettre « votre
+           date d'arrivée suffit » puis exiger le départ, ou l'inverse, c'est la
+           règle 5 par son bord « étiquette » (D-128). Depuis la session 31 les
+           deux dates sont exigées partout : une seule phrase suffit donc. */
+        '<p class="bv-p">' + esc(t('bvP')) + '</p>' +
 
         /* Quand le lien nomme le logement, on le DIT : le voyageur doit
            reconnaître la maison qu'il a réservée, sinon il se demande s'il est
@@ -9703,27 +9842,27 @@ function bvRecherche() {
         '<input class="inp" id="bv-date" type="date" value="' + esc(b.date) + '" ' +
           'data-fid="bv-date" data-ch="bv-date">' +
 
-        /* LA DATE DE DÉPART DEVIENT OBLIGATOIRE (session 24, D-139), parce que
-           c'est elle qui remplace le nom. Deux dates, c'est bien plus
-           discriminant qu'une seule, et c'est la seule chose que le voyageur
-           et le propriétaire connaissent tous les deux sans dépendre d'une
-           plateforme. */
+        /* LA DATE DE DÉPART EST OBLIGATOIRE PARTOUT (session 31, D-163).
+           Elle l'était sur le lien général depuis D-139, parce que c'est elle
+           qui remplace le nom ; le lien par logement s'en dispensait (D-140).
+           Le propriétaire a demandé les deux dates dans les deux cas : c'est
+           une règle de moins à retenir, et le départ reste ce qui départage
+           deux séjours qui se ressemblent.
+
+           ⚠️ Obligatoire à la SAISIE ne veut pas dire filtrant à la RECHERCHE :
+           voir `bv-chercher`. Un voyageur qui se trompe d'un jour sur son
+           départ retrouve quand même son séjour — sinon on aurait fermé la
+           porte en croyant la renforcer. */
         '<label class="lab" style="margin-top:14px" for="bv-fin">' +
-          esc(cible ? t('bvFinFac') : t('bvFin')) + '</label>' +
+          esc(t('bvFin')) + '</label>' +
         '<input class="inp" id="bv-fin" type="date" value="' + esc(b.fin || '') + '" ' +
           'data-fid="bv-fin" data-ch="bv-fin">' +
 
-        /* LE NOM DEVIENT FACULTATIF (session 24, D-139). Il était obligatoire
-           depuis D-90 — mais depuis que les séjours arrivent par iCal (D-114),
-           ils s'appellent TOUS « Voyageur » : les plateformes ne publient pas
-           le nom. Exiger un nom qu'aucune réservation ne porte fermait la porte
-           à tout le monde. Il reste proposé : le propriétaire peut l'avoir
-           saisi à la main (D-118), et il départage alors deux séjours qui se
-           ressemblent. */
-        '<label class="lab" style="margin-top:14px" for="bv-nom">' + esc(t('bvNomTitre')) + '</label>' +
-        '<input class="inp" id="bv-nom" type="text" autocomplete="name" ' +
-          'placeholder="' + esc(t('bvNomPh')) + '" value="' + esc(b.nom) + '" data-fid="bv-nom" data-in="bv-nom">' +
-        '<p class="bv-aide">' + esc(t('bvNomAide')) + '</p>' +
+        /* LE NOM N'EST PLUS DEMANDÉ ICI (session 31, D-163). Il était devenu
+           facultatif en D-139 ; le propriétaire fait remarquer qu'il est de
+           toute façon demandé à l'écran suivant, celui des coordonnées. Deux
+           fois la même question sur deux écrans qui se suivent, c'est une
+           hésitation, pas une précaution. */
 
         (b.erreur ? '<p class="bv-err">' + esc(b.erreur) + '</p>' : '') +
 
@@ -9731,8 +9870,10 @@ function bvRecherche() {
           (b.enCours ? ' disabled' : '') + act('bv-chercher') + '>' +
           esc(b.enCours ? t('bvCherche') : t('bvContinuer')) + '</button>' +
 
-        '<button type="button" class="bv-lien"' + act('bv-voieb') + '>' +
-          esc(t('bvSaisPas')) + '</button>' +
+        /* « Je ne sais pas quoi mettre » a été retiré (session 31, D-163) :
+           il ouvrait la voie B, où le voyageur se déclarait lui-même et
+           attendait que le propriétaire le reconnaisse à la main. L'écran de
+           la voie B reste dans le code, mais plus rien n'y mène. */
       '</div>' +
     '</section>', t('bvSous'));
 }
@@ -9800,7 +9941,37 @@ function bvVoieB() {
     '</section>', t('bvBSous'));
 }
 
-/** Étape 3 : les coordonnées. Facultative — « Plus tard » ouvre le livret. */
+/* LES HEURES D'ARRIVÉE PROPOSÉES (session 31, D-165)
+
+   C'était un champ « heure » libre : le voyageur pouvait annoncer 9 h du
+   matin, alors que le logement n'est jamais prêt avant l'après-midi — et
+   personne ne le lui disait. Le propriétaire a demandé qu'on ne puisse plus
+   choisir avant 16 h.
+
+   On rend donc une **liste**, par demi-heures, qui commence au plus tard des
+   deux : 16 h (le plancher demandé) ou l'heure d'arrivée du logement si le
+   propriétaire l'a fixée plus tard. Fixer un check-in plus TÔT que 16 h sur la
+   fiche du logement ne rouvre pas la liste avant 16 h : c'est la consigne.
+
+   Une heure déjà enregistrée qui ne serait pas dans la liste — une ancienne
+   saisie, ou une heure écrite à la main par le propriétaire sur la fiche du
+   séjour — est ajoutée telle quelle : on n'affiche jamais autre chose que la
+   vraie valeur (règle 5). */
+var HEURE_MINI_ARRIVEE = '16:00';
+
+function heuresArrivee(checkin, actuelle) {
+  var mini = (checkin && checkin > HEURE_MINI_ARRIVEE) ? checkin : HEURE_MINI_ARRIVEE;
+  var m0 = parseInt(mini.split(':')[0], 10) * 60 + parseInt(mini.split(':')[1] || '0', 10);
+  m0 = Math.ceil(m0 / 30) * 30;                 // on cale sur la demi-heure
+  var out = [];
+  for (var m = m0; m <= 23 * 60 + 30; m += 30) {
+    out.push(String(Math.floor(m / 60)).padStart(2, '0') + ':' + String(m % 60).padStart(2, '0'));
+  }
+  if (actuelle && out.indexOf(actuelle) < 0) out.unshift(actuelle);
+  return out;
+}
+
+/** Étape 3 : les coordonnées du voyageur, et son mot pour l'hôte. */
 function bvFormulaire() {
   var f = sejourDuPass();
   if (!f) return bvRecherche();
@@ -9839,13 +10010,29 @@ function bvFormulaire() {
           '</div>' +
           '<div style="flex:1;min-width:min(100%,140px)">' +
             '<label class="lab" for="gf-h">' + esc(t('bvHeure')) + '</label>' +
-            '<input class="inp num" id="gf-h" type="time" value="' + esc(g.arrivee) + '" ' +
-              'data-fid="gf-h" data-ch="gf-heure">' +
+            /* UNE LISTE, PLUS UN CHAMP LIBRE (session 31, D-165) : rien avant
+               16 h ne peut plus être choisi. Voir `heuresArrivee()`. */
+            '<select class="inp num" id="gf-h" data-fid="gf-h" data-ch="gf-heure">' +
+              '<option value="">' + esc(t('bvHeureChoisir')) + '</option>' +
+              heuresArrivee(inf.checkin, g.arrivee).map(function (h) {
+                return '<option value="' + esc(h) + '"' + (g.arrivee === h ? ' selected' : '') + '>' +
+                  esc(h.replace(':', ' h ')) + '</option>';
+              }).join('') +
+            '</select>' +
           '</div>' +
         '</div>' +
 
         '<p class="bv-note">' + esc(t('bvHeureNote')) + esc(inf.checkin || '16:00') +
           esc(t('bvHeureNote2')) + '</p>' +
+
+        /* UN MOT LIBRE POUR L'HÔTE (session 31, D-164). Il voyage jusqu'au
+           cahier partagé, et le tableau de bord du propriétaire le signale :
+           un commentaire que personne ne lit ne sert à rien (règle 14). */
+        '<label class="lab" style="margin-top:14px" for="gf-com">' + esc(t('bvComment')) + '</label>' +
+        '<textarea class="inp" id="gf-com" rows="3" style="min-height:88px;resize:vertical"' +
+          ' placeholder="' + esc(t('bvCommentPh')) + '"' +
+          ' data-fid="gf-com" data-in="gf" data-k="commentaire">' + esc(g.commentaire || '') + '</textarea>' +
+        '<p class="bv-aide">' + esc(t('bvCommentAide')) + '</p>' +
 
         /* Accord explicite et décoché par défaut : sans lui, le propriétaire
            n'a pas le droit de démarcher ce voyageur plus tard (D-56). */
@@ -9857,10 +10044,12 @@ function bvFormulaire() {
             '<span class="bv-optin-s">' + esc(t('bvOptinS')) + '</span></span>' +
         '</button>' +
 
+        /* « Plus tard » a été retiré (session 31, D-163) : le bouton
+           d'enregistrement mène de toute façon au livret, et il n'oblige à
+           rien — un formulaire laissé vide s'enregistre sans rien écraser.
+           Deux boutons qui mènent au même endroit faisaient hésiter. */
         '<button type="button" class="btn btn--primary bv-go"' + act('gf-envoyer') + '>' +
           esc(t('bvEnregistrer')) + '</button>' +
-        '<button type="button" class="bv-lien"' + act('gf-plus-tard') + '>' +
-          esc(t('bvPlusTard')) + '</button>' +
       '</div>' +
     '</section>', t('bvSousTrouve'));
 }
@@ -11957,6 +12146,11 @@ var actions = {
   /* Déplier les outils de mise en service (session 24, D-138). Pas de `save()` :
      l'ouverture est un état d'écran et ne doit pas survivre au rechargement. */
   'toggle-outils': function () { state.outilsOuverts = !state.outilsOuverts; render(); },
+  /* Le réglage d'envoi, replié par défaut (session 31, D-167). Comme ci-dessus,
+     l'ouverture ne s'enregistre pas : elle repart fermée (règle 7). */
+  'toggle-mail-reglages': function () {
+    state.mailReglagesOuvert = !state.mailReglagesOuvert; render();
+  },
 
   'toggle-new-bien': function () { state.showNewBien = !state.showNewBien; save(); render(); },
   'nb-color': function (el) { state.nb.color = el.dataset.c; save(); render(); },
@@ -12470,16 +12664,14 @@ var actions = {
      navigateur si le réseau manque, ou si le script 07 n'est pas encore collé. */
   'bv-chercher': function () {
     var b = state.bienvenue;
-    /* LES DEUX DATES, ET LE NOM EN PLUS SI ON L'A (session 24, D-139).
-       Le nom était obligatoire ; depuis l'iCal aucun séjour n'en porte, et la
-       porte était fermée pour tout le monde. */
+    /* LES DEUX DATES, TOUJOURS (session 31, D-163). Le nom n'est plus demandé
+       sur cet écran : depuis l'iCal aucun séjour n'en porte, et il est de toute
+       façon redemandé à l'écran suivant. */
     if (!b.date) { b.erreur = t('bvErrDate'); save(); render(); return; }
-    /* Le départ n'est exigé que sur le LIEN GÉNÉRAL (session 24, D-140).
-       Quand le lien désigne déjà le logement, la date d'arrivée suffit : deux
-       voyageurs ne peuvent pas arriver le même jour dans la même maison. Une
-       information de moins à taper, sur un écran que le voyageur découvre. */
-    if (!bienDuLienId() && !b.fin) { b.erreur = t('bvErrFin'); save(); render(); return; }
-    if (b.fin && b.fin <= b.date) { b.erreur = t('bvErrOrdre'); save(); render(); return; }
+    /* Le départ est exigé sur les DEUX liens depuis la session 31. Il ne
+       l'était que sur le lien général (D-140). */
+    if (!b.fin) { b.erreur = t('bvErrFin'); save(); render(); return; }
+    if (b.fin <= b.date) { b.erreur = t('bvErrOrdre'); save(); render(); return; }
     b.erreur = '';
 
     /* Le lien peut désigner un logement (session 23, D-132) : on ne cherche
@@ -12491,9 +12683,15 @@ var actions = {
     var restreindre = function (liste) {
       return duBienId ? liste.filter(function (x) { return x.pid === duBienId; }) : liste;
     };
-    /* La date de départ, si elle est donnée, départage. Si elle ne correspond à
-       rien on ne l'impose pas : mieux vaut proposer un choix que renvoyer « je
-       ne trouve rien » à quelqu'un qui s'est trompé d'un jour. */
+    /* LA DATE DE DÉPART DÉPARTAGE, ELLE NE FILTRE PAS (session 31, D-163).
+       C'est la nuance qui empêche l'exigence des deux dates de se retourner
+       contre le voyageur. On cherche sur la date d'ARRIVÉE ; parmi ce qui
+       revient, on garde ce qui correspond aussi au départ — et si rien ne
+       correspond au départ, on garde quand même le résultat de l'arrivée
+       plutôt que de renvoyer « je ne trouve rien » à quelqu'un qui s'est
+       trompé d'un jour. Exiger les deux dates rend la saisie plus sûre ;
+       les rendre toutes deux filtrantes rendrait la porte plus fragile
+       qu'avant, ce qui n'est pas ce qui a été demandé. */
     var affiner = function (liste) {
       if (!b.fin || liste.length < 2) return liste;
       var exact = liste.filter(function (x) { return x.r.end === b.fin; });
@@ -12502,23 +12700,15 @@ var actions = {
 
     var localement = function () {
       /* Repli : les séjours déjà présents sur cet appareil. On cherche par
-         DATES (D-139) ; le nom, s'il a été saisi, ne fait qu'affiner — et s'il
-         ne correspond à rien on garde le résultat des dates plutôt que de
-         renvoyer « je ne trouve rien » (même principe que `affiner`). */
+         date d'ARRIVÉE, le départ ne fait qu'affiner (voir ci-dessus). */
       var parDates = restreindre(allResas().filter(function (x) {
         var r = x.r;
         /* Deux jours de battement après le départ (session 26) : le voyageur
            qui veut relire une adresse le lendemain doit encore se retrouver.
            Même durée que côté serveur, sinon les deux chemins se contredisent. */
         if (r.statut === 'annule' || r.end < jourPlus(TODAY, -2)) return false;
-        if (b.fin && r.end !== b.fin) return false;
         return r.start === b.date || (r.start <= b.date && b.date < r.end);
       }));
-      var n = (b.nom || '').trim().length >= 3 ? nomSimple(b.nom) : '';
-      if (n && parDates.length > 1) {
-        var parNom = parDates.filter(function (x) { return nomSimple(x.r.guest).indexOf(n) >= 0; });
-        if (parNom.length) return parNom;
-      }
       return affiner(parDates);
     };
 
@@ -12537,30 +12727,24 @@ var actions = {
 
     b.enCours = true;
     render();
-    /* LA RECHERCHE PAR DATES D'ABORD (session 24, D-139), et le nom en repli.
-       Deux raisons de garder l'ancien chemin plutôt que de le remplacer :
-       tant que le script 10 n'est pas collé, `chercher_sejour_dates` n'existe
-       pas et l'appel échoue — il faut alors que la porte continue de
-       fonctionner pour les séjours dont le nom EST connu (saisi à la main,
-       D-118) ; et un voyageur qui donne son nom doit être trouvé même si ses
-       dates sont approximatives. Règle 19 : une fonction facultative ne casse
-       jamais le reste. */
-    var parNomSiPossible = function () {
-      if ((b.nom || '').trim().length < 3) return Promise.resolve([]);
-      return DB.chercherSejour(b.nom, b.date).catch(function () { return []; });
-    };
+    /* LA RECHERCHE SE FAIT SUR LA DATE D'ARRIVÉE (session 31, D-163).
+       On ne passe plus la date de départ au cahier partagé : là-bas elle est
+       une **égalité stricte**, et un voyageur qui se trompe d'un jour ne
+       trouverait plus rien. Elle sert ici, sur le résultat, à départager —
+       c'est `affiner()`. Le nom n'est plus demandé sur cet écran, donc le
+       repli par nom (script 07) n'a plus rien à chercher : il est retiré.
 
-    DB.chercherSejourDates(b.date, b.fin, duBienId)
+       Tant que le script 10 (ou le 12, qui le contient) n'est pas collé,
+       `chercher_sejour_dates` n'existe pas et l'appel échoue : on se rabat
+       alors sur ce que contient l'appareil. Règle 19 : une fonction
+       facultative ne casse jamais le reste. */
+    DB.chercherSejourDates(b.date, null, duBienId)
       .catch(function (e) {
         /* Le script 10 n'est pas collé : on le DIT au propriétaire dans la
-           console d'erreur habituelle, et on se rabat sur le nom. Le voyageur,
-           lui, ne doit pas lire un message technique. */
+           console d'erreur habituelle. Le voyageur, lui, ne doit pas lire un
+           message technique. */
         if (typeof console !== 'undefined' && console.warn) console.warn(e && e.message);
-        return parNomSiPossible();
-      })
-      .then(function (lignes) {
-        if (!lignes.length) return parNomSiPossible();
-        return lignes;
+        return [];
       })
       .then(function (lignes) {
         if (!lignes.length) { suite(localement()); return; }
@@ -12651,6 +12835,10 @@ var actions = {
     var n = parseInt(g.guests, 10);
     if (n > 0) r.guests = n;
     if (g.arrivee) r.arriveePrevue = g.arrivee;
+    /* LE MOT DU VOYAGEUR (session 31, D-164). Comme les autres champs du
+       voyageur, il ne s'efface pas quand il est envoyé vide (D-118, D-91) :
+       corriger fonctionne, réécrire par-dessus aussi. */
+    if (g.commentaire && g.commentaire.trim()) r.commentaire = g.commentaire.trim();
     r.demarchable = !!g.optin;      // l'accord du voyageur, tel qu'il l'a donné
 
     // Ce que le voyageur vient de dire doit descendre sur la mission de ménage
@@ -12672,18 +12860,25 @@ var actions = {
         nom: g.nom, tel: g.tel, mail: g.mail,
         guests: g.guests, arrivee: g.arrivee, optin: !!g.optin
       }).catch(function () { /* le livret s'ouvre quand même : rien n'est perdu localement */ });
+
+      /* LE COMMENTAIRE PART À PART (session 31, D-164), par sa propre
+         fonction. Deux raisons : `enregistrer_voyageur` existe déjà chez tous
+         ceux qui ont collé le script 07, et lui ajouter un paramètre ferait
+         échouer l'appel entier tant que le script 14 n'est pas collé — c'est
+         exactement la règle 19. Ici, si le script 14 manque, seul le
+         commentaire ne part pas ; le reste arrive normalement, et le
+         propriétaire voit le bandeau ambre qui nomme le fichier à coller. */
+      if (r.commentaire && DB.enregistrerCommentaire) {
+        DB.enregistrerCommentaire(r.id, r.commentaire).catch(function (e) {
+          if (typeof console !== 'undefined' && console.warn) console.warn(e && e.message);
+        });
+      }
     }
 
     go('#/livret/' + f.pid);
   },
   'gf-optin': function () { state.gform.optin = !state.gform.optin; save(); render(); },
-  'gf-plus-tard': function () {
-    var f = sejourDuPass();
-    state.bienvenue.etape = 'recherche';
-    save();
-    go(f ? '#/livret/' + f.pid : '#/bienvenue');
-  },
-  /* Le bandeau de rappel, pour celui qui avait dit « plus tard ». */
+  /* Le bandeau de rappel, pour celui qui n'a encore rien renseigné. */
   'gf-ouvrir': function () {
     var f = sejourDuPass();
     if (!f) return;

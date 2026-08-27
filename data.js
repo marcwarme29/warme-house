@@ -485,7 +485,11 @@ var DB = (function () {
         guests: l.guests, start: l.start_date, end: l.end_date,
         montant: (l.montant === null || l.montant === undefined) ? null : Number(l.montant),
         statut: l.statut, tel4: l.tel4 || '', tel: l.tel || '', mail: l.mail || '',
-        arriveePrevue: l.arrivee_prevue || '', guestOk: !!l.guest_ok, demarchable: !!l.demarchable
+        arriveePrevue: l.arrivee_prevue || '', guestOk: !!l.guest_ok, demarchable: !!l.demarchable,
+        // Le mot laissé par le voyageur (session 31, D-164). Le propriétaire ne
+        // le RENVOIE jamais — il appartient au voyageur (règles 16 et 25) —,
+        // il ne fait que le lire ici. Voir `resaVoyageur()`.
+        commentaire: l.commentaire || ''
       };
       if (!parBien[l.property_id]) parBien[l.property_id] = [];
       parBien[l.property_id].push(r);
@@ -1547,6 +1551,49 @@ var DB = (function () {
     });
   }
 
+  /* LE MOT LAISSÉ PAR LE VOYAGEUR (session 31, D-164)
+
+     Une fonction à part, et non un paramètre de plus sur `enregistrer_voyageur`.
+     Ajouter un paramètre aurait fait échouer **tout** l'enregistrement des
+     coordonnées chez qui n'a pas encore collé le script 14 : PostgREST ne
+     retrouve pas une fonction dont la signature a changé. Là, si le script
+     manque, seul le commentaire ne part pas — et le bandeau ambre du
+     propriétaire le dit, en nommant le fichier (règle 19).
+
+     Script : `supabase/14-commentaire-voyageur.sql`. */
+  function enregistrerCommentaire(jeton, texte) {
+    if (!dispo || !jeton) return Promise.reject(new Error('Lien inconnu.'));
+    return client.rpc('enregistrer_commentaire', {
+      jeton: jeton, p_texte: texte || ''
+    }).then(function (r) {
+      if (r.error) {
+        colonneCommentaireAbsente = /enregistrer_commentaire|commentaire/i.test(r.error.message || '');
+        throw new Error(messageClair(r.error));
+      }
+      colonneCommentaireAbsente = false;
+      return r.data === true;
+    });
+  }
+
+  /* Le script 14 est-il collé ? On ne peut pas le déduire d'une lecture de
+     `reservations` : une colonne absente et une colonne vide se ressemblent
+     (règle 5, « la table n'existe pas » ≠ « la table est vide »). On demande
+     donc explicitement la colonne, une fois par chargement. Erreur `42703`
+     (« column does not exist ») = script pas collé. */
+  var colonneCommentaireAbsente = false;
+
+  function sonderCommentaire() {
+    return client.from('reservations').select('commentaire').limit(1).then(function (r) {
+      if (r.error) {
+        var c = r.error.code || '', m = r.error.message || '';
+        if (c === '42703' || c === 'PGRST204' || /commentaire/i.test(m)) colonneCommentaireAbsente = true;
+      } else {
+        colonneCommentaireAbsente = false;
+      }
+      return null;
+    }, function () { return null; });
+  }
+
   /** « J'ai quitté le logement ». */
   function signalerDepart(jeton, heure) {
     if (!dispo || !jeton) return Promise.resolve(false);
@@ -1687,6 +1734,8 @@ var DB = (function () {
     if (tablesAbsentes.avis) out.push('08-avis.sql');
     if (tablesAbsentes.prestataires || tablesAbsentes.stocks ||
         tablesAbsentes.reglages || tablesAbsentes.acces) out.push('09-lot4.sql');
+    // Le mot laissé par le voyageur (session 31, D-164) : une colonne, pas une table.
+    if (colonneCommentaireAbsente) out.push('14-commentaire-voyageur.sql');
     return out;
   }
 
@@ -1718,7 +1767,10 @@ var DB = (function () {
       lireFacultative('prestataires'),
       lireFacultative('stocks'),
       lireFacultative('reglages'),
-      lireFacultative('acces')
+      lireFacultative('acces'),
+      // Le script 14 est-il collé ? (session 31, D-164). Ne rend rien d'utile :
+      // il ne sert qu'à savoir si la colonne existe, pour pouvoir le DIRE.
+      sonderCommentaire()
     ]).then(function (r) {
       var erreur = r.slice(0, 5).filter(function (x) { return x.error; })[0];
       if (erreur) throw erreur.error;
@@ -2270,6 +2322,7 @@ var DB = (function () {
     chercherSejour: chercherSejour,
     chercherSejourDates: chercherSejourDates,
     enregistrerVoyageur: enregistrerVoyageur,
+    enregistrerCommentaire: enregistrerCommentaire,
     signalerDepart: signalerDepart,
     pousser: pousser,
     pousserMaintenant: pousserMaintenant,
