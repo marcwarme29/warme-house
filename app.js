@@ -912,8 +912,13 @@ function upgrade() {
           (f.k === 'checkin' ? '16:00' : f.k === 'checkout' ? '11:00' : f.num ? 0 : '');
       }
     });
-    // Identifiant du logement chez Beds24 : rempli le jour de la connexion.
-    if (inf.beds24 === undefined) inf.beds24 = '';
+    // Identifiants du logement chez Beds24 : remplis le jour de la connexion.
+    // DEUX numéros et non un (session 32) : Beds24 range une « room » (ce que
+    // le voyageur réserve) dans une « property » (le bâtiment). La sonnette du
+    // §17.9 se règle par PROPERTY, la réservation arrive par ROOM : il faut les
+    // deux, et les demander en une seule fois évite un second passage chez eux.
+    if (inf.beds24 === undefined) inf.beds24 = '';          // roomId
+    if (inf.beds24Prop === undefined) inf.beds24Prop = '';  // propertyId
 
     // Format commun des réservations (voir normaliserResa) : les anciennes
     // saisies n'ont ni identifiant, ni source, ni statut.
@@ -9181,6 +9186,18 @@ function carteLienBien(pid, b) {
     '</div>';
 }
 
+/** L'état des deux numéros Beds24 d'un logement, dit sans mentir : « à moitié
+    renseigné » n'est pas « renseigné », et les deux servent (session 32). */
+function b24Etat(pid) {
+  var inf = state.info[pid] || {};
+  var p = !!String(inf.beds24Prop || '').trim();
+  var r = !!String(inf.beds24 || '').trim();
+  if (p && r) return 'Les deux numéros sont notés';
+  if (p) return 'Il manque le numéro de l’unité';
+  if (r) return 'Il manque le numéro de la propriété';
+  return 'À renseigner';
+}
+
 /* --- Connexions aux plateformes ------------------------------------------
    Panneau d'état, honnête sur ce qui marche et ce qui attend le serveur.
    Aucune clé secrète n'est demandée ici : elle n'a rien à faire dans une page
@@ -10579,20 +10596,33 @@ function bienIcal(pid) {
     '<div class="card" style="margin-top:16px;padding:22px">' +
       '<h2 style="font:700 16px Figtree,sans-serif;margin:0">Beds24</h2>' +
       '<p class="sec-note" style="margin-top:4px">Beds24 se connecte lui-même à Airbnb, Booking.com et aux autres, ' +
-        'et rend une réservation complète : voyageur, montant, statut, messages. ' +
-        'Il reste à brancher côté serveur — en attendant, notez ici l’identifiant de ce logement chez eux.</p>' +
+        'et rend une réservation complète : voyageur, <strong>montant réel</strong>, statut, messages. ' +
+        'Notez ici les <strong>deux numéros</strong> que Beds24 donne à ce logement — vous les trouvez ' +
+        'dans leur écran <em>Settings → Properties</em>. Ce ne sont pas des secrets, juste des numéros ' +
+        'd’étiquette.</p>' +
       '<div class="cols" style="gap:14px;margin-top:14px">' +
-        '<div style="flex:1;min-width:min(100%,220px)">' +
-          '<label class="lab" for="b24-' + pid + '">Identifiant du logement (roomId)</label>' +
-          '<input class="inp num" id="b24-' + pid + '" type="text" placeholder="Ex. 123456" value="' +
+        '<div style="flex:1;min-width:min(100%,200px)">' +
+          '<label class="lab" for="b24p-' + pid + '">Numéro de la propriété (propertyId)</label>' +
+          '<input class="inp num" id="b24p-' + pid + '" type="text" placeholder="Ex. 123456" value="' +
+            esc((state.info[pid] || {}).beds24Prop || '') + '" data-fid="b24p-' + pid + '" data-in="bien-field" data-pid="' + pid + '" data-k="beds24Prop">' +
+        '</div>' +
+        '<div style="flex:1;min-width:min(100%,200px)">' +
+          '<label class="lab" for="b24-' + pid + '">Numéro de l’unité louée (roomId)</label>' +
+          '<input class="inp num" id="b24-' + pid + '" type="text" placeholder="Ex. 654321" value="' +
             esc((state.info[pid] || {}).beds24 || '') + '" data-fid="b24-' + pid + '" data-in="bien-field" data-pid="' + pid + '" data-k="beds24">' +
         '</div>' +
-        '<div style="flex:1;min-width:min(100%,220px)">' +
+        '<div style="flex:1;min-width:min(100%,200px)">' +
           '<span class="lab">État</span>' +
           '<div class="conn" style="margin-top:6px"><div class="conn-top">' +
-            '<span class="conn-n">' + ((state.info[pid] || {}).beds24 ? 'Identifiant noté' : 'À renseigner') + '</span>' +
-            '<span class="badge badge--amber">Serveur requis</span></div>' +
-            '<div class="conn-x">La synchronisation réelle démarrera à la phase serveur, sans ressaisie.</div>' +
+            '<span class="conn-n">' + b24Etat(pid) + '</span>' +
+            '<span class="badge badge--amber">Connecteur à écrire</span></div>' +
+            /* Le badge disait « Serveur requis » : c'était vrai en session 10,
+               ça ne l'est plus depuis la session 20 (`api/ical.js`). Une
+               étiquette périmée fait construire une conclusion fausse — ici,
+               « inutile d'ouvrir le compte, rien ne peut marcher » (règle 5). */
+            '<div class="conn-x">Le serveur existe déjà (c’est lui qui relève vos calendriers et poste ' +
+              'vos e-mails). Ce qui reste à écrire, c’est le connecteur Beds24 lui-même. Vos numéros ' +
+              'sont conservés, il n’y aura rien à ressaisir.</div>' +
           '</div>' +
         '</div>' +
       '</div>' +
