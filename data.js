@@ -38,8 +38,25 @@ var DB = (function () {
       derniereErreur = 'L\'adresse du projet Supabase est absente de config.js.';
       return false;
     }
+    /* `detectSessionInUrl: false` — DÉLIBÉRÉ (session 33, D-169).
+
+       Par défaut, la bibliothèque Supabase lit l'adresse de la page au
+       démarrage et, si elle y trouve des jetons, **ouvre une session toute
+       seule**. Deux raisons de le lui interdire ici :
+
+       ① MAISON WARME navigue avec des adresses en `#/…`. Le lien de
+          récupération de mot de passe revient avec ses jetons **au même
+          endroit** (`#access_token=…`). Qui, de la bibliothèque ou de notre
+          routeur, lit le premier ? La réponse dépend d'un enchaînement
+          asynchrone — autrement dit, ça marcherait une fois sur deux. On
+          préfère lire nous-mêmes, au tout début, une bonne fois.
+
+       ② Règle 1 : jamais de porte d'entrée sans mot de passe. Une session
+          ouverte à la seule vue d'une adresse est exactement cela. Ici, le
+          lien ne donne le droit que de **choisir un nouveau mot de passe**,
+          et la session n'est ouverte qu'au moment où on l'enregistre. */
     client = supabase.createClient(SUPABASE_URL, SUPABASE_KEY, {
-      auth: { persistSession: true, autoRefreshToken: true }
+      auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: false }
     });
     dispo = true;
     return true;
@@ -81,6 +98,48 @@ var DB = (function () {
     return client.auth.signInWithPassword({ email: email, password: motDePasse })
       .then(function (r) {
         if (r.error) throw r.error;
+        return relireProfil();
+      });
+  }
+
+  /* ---- MOT DE PASSE OUBLIÉ (session 33, D-169) --------------------------
+
+     Trois fonctions, une par moment du parcours. Aucune n'a besoin de la
+     moindre clé secrète : c'est Supabase lui-même qui poste l'e-mail et qui
+     vérifie le jeton. La règle 2 est donc tenue sans effort.
+
+     ⚠️ `redirectTo` doit figurer dans la liste des adresses autorisées du
+     projet Supabase (Authentication → URL Configuration). Sinon Supabase
+     renvoie sur son adresse par défaut — souvent `http://localhost:3000`,
+     c'est-à-dire nulle part — et le lien paraît cassé sans qu'aucun message
+     ne l'explique. C'est le §37 du mode d'emploi, et c'est un geste de Marc. */
+  function demanderReinitialisation(email, retour) {
+    if (!dispo) return Promise.reject(new Error(derniereErreur || 'Connexion indisponible.'));
+    return client.auth.resetPasswordForEmail(email, { redirectTo: retour })
+      .then(function (r) {
+        if (r.error) throw new Error(messageClair(r.error));
+        return true;
+      });
+  }
+
+  /* Le lien vient d'être ouvert : ses jetons valent session, le temps de
+     choisir un mot de passe. On ne les pose QU'AU MOMENT d'enregistrer —
+     ouvrir la session à l'affichage de l'écran laisserait quelqu'un connecté
+     sans mot de passe s'il refermait la page en route (règle 1). */
+  function ouvrirSessionAvecJetons(acces, rafraichi) {
+    if (!dispo) return Promise.reject(new Error(derniereErreur || 'Connexion indisponible.'));
+    return client.auth.setSession({ access_token: acces, refresh_token: rafraichi })
+      .then(function (r) {
+        if (r.error) throw new Error(messageClair(r.error));
+        return true;
+      });
+  }
+
+  function changerMotDePasse(nouveau) {
+    if (!dispo) return Promise.reject(new Error(derniereErreur || 'Connexion indisponible.'));
+    return client.auth.updateUser({ password: nouveau })
+      .then(function (r) {
+        if (r.error) throw new Error(messageClair(r.error));
         return relireProfil();
       });
   }
@@ -271,6 +330,27 @@ var DB = (function () {
         script + ' dans Supabase (SQL Editor → New query → Run).';
     }
     if (/User already registered/i.test(m)) return 'Un compte existe déjà avec cette adresse e-mail : utilise « Se connecter ».';
+    /* Les refus propres au mot de passe oublié (session 33, D-169). Sans eux,
+       l'écran recopierait de l'anglais que personne ne peut comprendre — c'est
+       la faute exacte de D-134. */
+    if (/New password should be different/i.test(m)) {
+      return 'Ce mot de passe est déjà le tien : choisis-en un autre.';
+    }
+    if (/Password should be at least|password.*at least .* characters/i.test(m)) {
+      return 'Le mot de passe est trop court : il faut au moins 6 caractères.';
+    }
+    if (/(email|otp).*(rate limit|too many)|rate limit|For security purposes/i.test(m)) {
+      return 'Trop de demandes coup sur coup. Attends quelques minutes avant de redemander un lien : ' +
+        'c\'est une sécurité de Supabase, rien n\'est cassé.';
+    }
+    if (/expired|Token has expired|invalid.*token|Invalid Refresh Token/i.test(m)) {
+      return 'Ce lien a expiré ou a déjà servi. Redemande un lien « Mot de passe oublié » : ' +
+        'ils ne valent qu\'une heure, et une seule fois.';
+    }
+    if (/redirect|not allowed|url.*not.*valid/i.test(m)) {
+      return 'Supabase refuse de renvoyer vers l\'adresse de MAISON WARME. Le propriétaire doit ' +
+        'l\'ajouter dans Authentication → URL Configuration (§37 du mode d\'emploi).';
+    }
     if (/Password should be at least/i.test(m)) return 'Le mot de passe est trop court : il faut au moins 6 caractères.';
     if (/Signups not allowed/i.test(m)) return 'Les inscriptions sont fermées dans Supabase (Authentication → Sign In / Providers → « Allow new users to sign up »).';
     // Le casier à photos (lot 2). Les deux cas se produisent si le script
@@ -2270,6 +2350,10 @@ var DB = (function () {
 
   return {
     demarrer: demarrer,
+    // Mot de passe oublié (session 33, D-169)
+    demanderReinitialisation: demanderReinitialisation,
+    ouvrirSessionAvecJetons: ouvrirSessionAvecJetons,
+    changerMotDePasse: changerMotDePasse,
     estDispo: function () { return dispo; },
     profil: function () { return profil; },
     erreur: function () { return derniereErreur; },

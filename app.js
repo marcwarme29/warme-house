@@ -501,6 +501,11 @@ function initialState() {
     me: null,                         // prestataire connecté (son legacy_id)
     loginEmail: '',
     loginPwd: '',
+    /* Mot de passe oublié (session 33, D-169). **Aucun mot de passe ici** :
+       `state` est recopié tel quel dans le navigateur par `save()`, et un
+       secret n'a rien à y faire. Les deux saisies vivent dans `mdpSaisie`,
+       une variable de travail que rien n'enregistre. */
+    mdp: { etape: 'demande', email: '', erreur: '', message: '', enCours: false },
     loginErreur: '',
     loginEnCours: false,
     migMsg: '',
@@ -608,6 +613,7 @@ function initialState() {
     // d'écran, replié à chaque ouverture.
     outilsOuverts: false,
     mailReglagesOuvert: false,        // le réglage d'envoi, replié par défaut (D-167)
+    stepAvecPhoto: true,              // ce que sera la prochaine étape ajoutée (D-170)
 
     /* PRÉVENIR LES PRESTATAIRES PAR E-MAIL (session 27, D-150)
 
@@ -714,6 +720,23 @@ var STORE_KEY = 'warme-house.v1';
 var state = initialState();
 var flash = null;   // identifiant d'étape qui vient d'être photographiée (non sauvegardé)
 
+/* MOT DE PASSE OUBLIÉ — CE QUI NE DOIT JAMAIS ÊTRE ENREGISTRÉ (session 33, D-169)
+
+   `save()` recopie `state` **en entier** dans le navigateur. Deux choses n'ont
+   donc rien à y faire, et vivent ici, en dehors :
+
+   · `mdpSaisie` — le nouveau mot de passe pendant qu'on le tape ;
+   · `recupJetons` — les jetons du lien reçu par e-mail, qui valent, le temps
+     d'une heure, la même chose qu'un mot de passe.
+
+   Les deux disparaissent au rechargement de la page, et c'est exactement ce
+   qu'on veut. (Le même soin n'avait pas été pris pour `state.loginPwd`, hérité
+   de la session 13 : il n'est jamais écrit par sa propre saisie, mais il
+   partirait dans un `save()` déclenché par autre chose. Corrigé plus bas dans
+   `viewLogin`/`login`, qui le vident.) */
+var mdpSaisie = { pwd: '', pwd2: '' };
+var recupJetons = null;      // { acces, rafraichi } — jamais enregistré
+
 function save() {
   var ecrit = true;
   try {
@@ -762,6 +785,12 @@ function load() {
   state.icalAutoEnCours = false;      // la relève automatique en cours (session 24)
   state.outilsOuverts = false;        // les outils de mise en service (session 24, D-138)
   state.mailReglagesOuvert = false;   // le réglage d'envoi d'e-mails (session 31, D-167)
+  state.stepAvecPhoto = true;         // la prochaine étape ajoutée (session 33, D-170)
+  /* L'écran « mot de passe oublié » repart toujours de zéro (session 33) : une
+     demande en cours n'est pas une donnée, et une adresse laissée là ferait
+     croire qu'un lien est parti alors que la page a été rechargée. */
+  state.mdp = { etape: 'demande', email: '', erreur: '', message: '', enCours: false };
+  mdpSaisie = { pwd: '', pwd2: '' };
   /* Le filtre des missions est une POSITION D'AFFICHAGE, pas une donnée
      (règle 7, D-135) : il repart sur « À venir » à chaque ouverture, comme le
      propriétaire l'a demandé. Le laisser mémorisé rouvrirait la liste sur le
@@ -3711,6 +3740,10 @@ function parseRoute() {
   // l'ouvre n'a pas encore de compte — c'est justement ce qu'il vient créer.
   if (seg[0] === 'invitation') return { name: 'invitation', id: seg[1] || null, sec: null };
 
+  // Mot de passe oublié (session 33, D-169). Page publique : par définition,
+  // celui qui l'ouvre ne peut pas se connecter.
+  if (seg[0] === 'mot-de-passe') return { name: 'motdepasse', id: null, sec: null };
+
   // Livret d'accueil : page publique, destinée au voyageur (pas de connexion).
   // Sans troisième segment, c'est l'accueil : les grandes rubriques à choisir.
   if (seg[0] === 'livret' && seg[1]) {
@@ -3769,6 +3802,7 @@ function guard() {
   if (r.name === 'bienvenue') return r;
   if (r.name === 'sejour') return r;
   if (r.name === 'invitation') return r;
+  if (r.name === 'motdepasse') return r;
   if (r.name === 'livret') return r;
   if (r.name === 'livret-sec') {
     var ok = LIVRET_SECTIONS.some(function (s) { return s.k === r.sec; });
@@ -9407,17 +9441,42 @@ function bienChecklist(pid, b) {
           '<div style="margin-top:10px">' + r.steps.map(function (s, si) {
             return '<div style="display:flex;align-items:center;gap:12px;padding:10px 0;border-top:1px solid rgba(36,30,26,.06)">' +
               '<span class="grow" style="font:500 14px Figtree,sans-serif">' + esc(s.label) + '</span>' +
+              /* CETTE ÉTIQUETTE EST UN INTERRUPTEUR, ET ÇA NE SE VOYAIT PAS
+                 (session 33, D-170). Le choix « sans photo » existe depuis la
+                 session 8 et fonctionne de bout en bout — mais il ressemblait
+                 à une simple pastille d'information, au milieu d'une dizaine
+                 d'autres pastilles qui, elles, ne se cliquent pas. Le
+                 propriétaire l'a demandé comme une fonctionnalité manquante :
+                 c'est le signe qu'elle était invisible, pas absente. Un geste
+                 qui ne se devine pas n'existe pas (D-99). */
               '<button type="button" class="badge ' + (s.photo ? 'badge--terra' : '') + '" style="' +
                 (s.photo ? '' : 'background:var(--cream);color:var(--muted)') + ';font-weight:600;min-height:38px"' +
-                act('toggle-photo', { pid: pid, ri: ri, si: si }) + '>' + (s.photo ? 'Photo requise' : 'Sans photo') + '</button>' +
+                ' title="Toucher pour basculer entre « Photo requise » et « Sans photo »"' +
+                ' aria-label="' + esc(s.label) + ' : ' + (s.photo ? 'photo requise' : 'sans photo') +
+                '. Toucher pour changer."' +
+                act('toggle-photo', { pid: pid, ri: ri, si: si }) + '>' +
+                (s.photo ? '📷 Photo requise' : '☑ Sans photo') + ' ⇄</button>' +
               '<button type="button" aria-label="Supprimer l\'étape" style="width:32px;height:32px;border-radius:999px;background:var(--cream);color:var(--muted);display:flex;align-items:center;justify-content:center;font:700 14px Figtree,sans-serif;flex:none"' +
                 act('remove-step', { pid: pid, ri: ri, si: si }) + '>×</button>' +
               '</div>';
           }).join('') + '</div>' +
-          '<div style="display:flex;gap:10px;margin-top:12px;flex-wrap:wrap">' +
-            '<input class="inp" style="flex:1;min-width:200px" type="text" placeholder="Ajouter une étape…" value="' + esc(state.stepDrafts[dkey] || '') + '" data-fid="sd-' + esc(dkey) + '" data-in="step-draft" data-key="' + esc(dkey) + '">' +
+          /* LE CHOIX SE FAIT À LA CRÉATION (session 33, D-170). Toute étape
+             neuve exigeait une photo, et il fallait ensuite penser à toucher
+             l'étiquette. En le posant ici, la question est posée au moment où
+             on écrit l'étape — celui où on sait si une photo a un sens. */
+          '<div style="display:flex;gap:10px;margin-top:12px;flex-wrap:wrap;align-items:center">' +
+            '<input class="inp" style="flex:1;min-width:180px" type="text" placeholder="Ajouter une étape…" value="' + esc(state.stepDrafts[dkey] || '') + '" data-fid="sd-' + esc(dkey) + '" data-in="step-draft" data-key="' + esc(dkey) + '">' +
+            '<button type="button" class="badge ' + (state.stepAvecPhoto ? 'badge--terra' : '') + '" style="' +
+              (state.stepAvecPhoto ? '' : 'background:var(--cream);color:var(--muted)') + ';font-weight:600;min-height:38px"' +
+              ' title="Ce que sera la prochaine étape ajoutée"' +
+              act('toggle-step-photo') + '>' +
+              (state.stepAvecPhoto ? '📷 Avec photo' : '☑ Simple case') + ' ⇄</button>' +
             '<button type="button" class="btn btn--dark btn--sm"' + act('add-step', { pid: pid, ri: ri }) + '>Ajouter</button>' +
-          '</div></div>';
+          '</div>' +
+          '<p class="sec-note" style="margin-top:8px">Touche l’étiquette d’une étape pour basculer ' +
+            'entre <strong>📷 Photo requise</strong> et <strong>☑ Sans photo</strong>. Une étape ' +
+            '« sans photo » est une simple case que la prestataire coche.</p>' +
+          '</div>';
       }).join('') : '<p class="empty">Aucune pièce. Ajoute la première à droite.</p>') +
     '</div>' +
     '<div class="card" style="flex:1;min-width:min(100%,280px);padding:20px">' +
@@ -9426,7 +9485,9 @@ function bienChecklist(pid, b) {
       '<input class="inp" style="margin-top:14px" type="text" placeholder="Ex. Buanderie" value="' + esc(state.newRoom) + '" data-fid="new-room" data-in="new-room">' +
       '<button type="button" class="btn btn--primary btn--sm" style="margin-top:12px;width:100%"' + act('add-room', { pid: pid }) + '>Ajouter la pièce</button>' +
       '<p class="sec-note" style="margin-top:18px;padding-top:16px;border-top:1px solid rgba(36,30,26,.08)">' +
-        rs.length + ' pièces · ' + totalSteps + ' étapes, dont ' + withPhoto + ' avec photo obligatoire.</p>' +
+        rs.length + ' pièces · ' + totalSteps + ' étapes : <strong>' + withPhoto +
+        '</strong> avec photo obligatoire, <strong>' + (totalSteps - withPhoto) +
+        '</strong> en simple case à cocher.</p>' +
     '</div></div>';
 }
 
@@ -10656,9 +10717,108 @@ function viewLogin() {
     '<button type="button" class="btn btn--primary" style="margin-top:22px"' +
       (state.loginEnCours || !dispo ? ' disabled' : '') + act('login') + '>' +
       (state.loginEnCours ? 'Connexion…' : 'Se connecter') + '</button>' +
+    /* MOT DE PASSE OUBLIÉ (session 33, D-169). Il n'y avait rien : ni Marc ni
+       ses prestataires n'avaient le moindre moyen de rentrer après un oubli —
+       il fallait passer par Supabase, que Marc est le seul à savoir ouvrir, et
+       qui ne sert pas à ça. */
+    '<button type="button" class="login-lien"' + act('nav', { path: '#/mot-de-passe' }) + '>' +
+      'Mot de passe oublié ?</button>' +
     '<p class="login-hint">Pas encore de compte ? Il n\'y a pas d\'inscription libre : ' +
       'le propriétaire envoie un lien d\'invitation à ton adresse e-mail, et c\'est ce lien ' +
       'qui te fait choisir ton mot de passe.</p>' +
+    '</div></div>';
+}
+
+/* ==========================================================================
+   MOT DE PASSE OUBLIÉ (session 33, D-169)
+   ==========================================================================
+
+   Il n'y avait rien. Ni Marc ni ses prestataires ne pouvaient rentrer après un
+   oubli : le seul recours était d'ouvrir Supabase, que Marc est le seul à
+   savoir ouvrir — et qui n'est pas fait pour ça.
+
+   UN SEUL ÉCRAN, QUATRE MOMENTS, parce que c'est un seul parcours et qu'un
+   parcours coupé en quatre pages se perd :
+
+     · `demande` — « à quelle adresse ? » ;
+     · `envoye`  — « regarde tes e-mails » ;
+     · `nouveau` — arrivé par le lien : « choisis ton nouveau mot de passe » ;
+     · `fini`    — « c'est fait, entre ».
+
+   CE QUI N'EST PAS ENREGISTRÉ, ET POURQUOI : voir `mdpSaisie` et `recupJetons`
+   en tête de fichier. Un mot de passe ne se range pas dans `state`.
+
+   ON NE DIT JAMAIS SI L'ADRESSE EXISTE. Répondre « cette adresse est inconnue »
+   apprendrait à n'importe qui quelles adresses ont un compte. Le message est
+   donc le même dans les deux cas — c'est aussi ce que fait Supabase, et c'est
+   la seule chose qui puisse surprendre Marc : je l'ai écrite noir sur blanc à
+   l'écran plutôt que de le laisser croire à une panne. */
+function viewMotDePasse() {
+  var m = state.mdp;
+  var dispo = typeof DB !== 'undefined' && DB.estDispo();
+  var corps;
+
+  if (m.etape === 'envoye') {
+    corps =
+      '<p class="login-sub">Si un compte existe à l’adresse <strong>' + esc(m.email) + '</strong>, ' +
+        'un e-mail vient de partir. Ouvre-le et clique sur son lien : il te ramènera ici pour ' +
+        'choisir un nouveau mot de passe.</p>' +
+      '<p class="login-hint" style="margin-top:16px">⏱ <strong>Le lien ne vaut qu’une heure</strong>, ' +
+        'et il ne sert qu’une fois.<br>' +
+        '📥 <strong>Regarde aussi tes courriers indésirables</strong> : cet e-mail part des serveurs ' +
+        'de Supabase, pas de MAISON WARME.<br>' +
+        '🔒 Nous n’indiquons pas si cette adresse a un compte ou non — ce serait dire à n’importe ' +
+        'qui qui travaille ici.</p>' +
+      '<button type="button" class="btn btn--primary" style="margin-top:20px"' +
+        act('nav', { path: '#/login' }) + '>Revenir à la connexion</button>' +
+      '<button type="button" class="login-lien"' + act('mdp-recommencer') + '>' +
+        'Renvoyer un lien, ou changer d’adresse</button>';
+
+  } else if (m.etape === 'nouveau') {
+    corps =
+      '<p class="login-sub">Choisis ton nouveau mot de passe. Il te servira à chaque connexion, ' +
+        'sur tous tes appareils.</p>' +
+      '<div class="login-field" style="margin-top:16px"><label class="lab" for="mdp-1">Nouveau mot de passe</label>' +
+        '<input class="inp" id="mdp-1" type="password" autocomplete="new-password" value="' +
+          esc(mdpSaisie.pwd) + '" data-fid="mdp-1" data-in="mdp-pwd"></div>' +
+      '<div class="login-field"><label class="lab" for="mdp-2">Retape-le, pour être sûr</label>' +
+        '<input class="inp" id="mdp-2" type="password" autocomplete="new-password" value="' +
+          esc(mdpSaisie.pwd2) + '" data-fid="mdp-2" data-in="mdp-pwd2"></div>' +
+      '<p class="login-hint">Au moins 6 caractères. Prends-en un que tu retrouveras : ' +
+        'note-le quelque part de sûr.</p>' +
+      (m.erreur ? '<p class="login-err" role="alert">' + esc(m.erreur) + '</p>' : '') +
+      '<button type="button" class="btn btn--primary" style="margin-top:18px"' +
+        (m.enCours || !dispo ? ' disabled' : '') + act('mdp-enregistrer') + '>' +
+        (m.enCours ? 'Enregistrement…' : 'Enregistrer et entrer') + '</button>';
+
+  } else if (m.etape === 'fini') {
+    corps =
+      '<p class="login-sub">C’est fait : ton mot de passe est changé, et tu es connecté.</p>' +
+      '<button type="button" class="btn btn--primary" style="margin-top:18px"' +
+        act('mdp-entrer') + '>Entrer dans l’application</button>';
+
+  } else {
+    corps =
+      '<p class="login-sub">Indique ton adresse e-mail : nous t’envoyons un lien pour choisir ' +
+        'un nouveau mot de passe.</p>' +
+      '<div class="login-field" style="margin-top:16px"><label class="lab" for="mdp-mail">Ton e-mail</label>' +
+        '<input class="inp" id="mdp-mail" type="email" autocomplete="username" inputmode="email" value="' +
+          esc(m.email) + '" data-fid="mdp-mail" data-in="mdp-mail"></div>' +
+      (m.erreur ? '<p class="login-err" role="alert">' + esc(m.erreur) + '</p>' : '') +
+      (dispo ? '' :
+        '<p class="login-err" role="alert">Impossible de joindre le cahier partagé. ' +
+          'Vérifie ta connexion internet, puis recharge la page.</p>') +
+      '<button type="button" class="btn btn--primary" style="margin-top:18px"' +
+        (m.enCours || !dispo ? ' disabled' : '') + act('mdp-envoyer') + '>' +
+        (m.enCours ? 'Envoi…' : 'M’envoyer le lien') + '</button>' +
+      '<button type="button" class="login-lien"' + act('nav', { path: '#/login' }) + '>' +
+        '← Revenir à la connexion</button>';
+  }
+
+  return '<div class="login"><div class="login-card">' +
+    '<div class="login-logo">MAISON WARME</div>' +
+    (m.message ? '<p class="login-err" role="alert">' + esc(m.message) + '</p>' : '') +
+    corps +
     '</div></div>';
 }
 
@@ -11999,7 +12159,8 @@ var actions = {
     var txt = (state.stepDrafts[key] || '').trim();
     if (!txt) return;
     editRooms(pid, function (rs) {
-      rs[ri] = { name: rs[ri].name, steps: rs[ri].steps.concat([{ id: 'n' + Date.now(), label: txt, photo: true }]) };
+      rs[ri] = { name: rs[ri].name, steps: rs[ri].steps.concat([
+        { id: 'n' + Date.now(), label: txt, photo: !!state.stepAvecPhoto }]) };
       return rs;
     });
     state.stepDrafts[key] = '';
@@ -12012,6 +12173,103 @@ var actions = {
       return rs;
     });
     render();
+  },
+  /* --- Mot de passe oublié (session 33, D-169) ------------------------- */
+  'mdp-recommencer': function () {
+    state.mdp.etape = 'demande';
+    state.mdp.erreur = '';
+    state.mdp.message = '';
+    render();
+  },
+
+  'mdp-envoyer': function () {
+    var m = state.mdp;
+    var mail = (m.email || '').trim();
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(mail)) {
+      m.erreur = 'Cette adresse e-mail ne ressemble pas à une adresse.';
+      render(); return;
+    }
+    if (typeof DB === 'undefined' || !DB.estDispo()) {
+      m.erreur = 'Le cahier partagé ne répond pas : impossible d’envoyer le lien.';
+      render(); return;
+    }
+    /* Le message d'accueil — « ce lien a expiré » — a fait son travail : il ne
+       doit pas rester en haut de l'écran suivant, où il contredirait
+       « un e-mail vient de partir » (règle 7 : deux écrans qui se
+       contredisent font conclure à une panne). */
+    m.erreur = ''; m.message = ''; m.enCours = true; render();
+
+    /* L'adresse de retour est celle de CETTE page, sans le `#…` : Supabase y
+       ajoute ses propres jetons dans le `#`, et deux `#` dans une adresse ne
+       veulent rien dire. C'est le démarrage de l'application qui les lira. */
+    var retour = location.origin + location.pathname;
+
+    DB.demanderReinitialisation(mail, retour)
+      .then(function () {
+        m.enCours = false; m.etape = 'envoye'; m.erreur = '';
+        render();
+      })
+      .catch(function (e) {
+        m.enCours = false;
+        /* Règle 4 : un envoi qui ne part pas doit se VOIR. On ne bascule pas
+           sur « regarde tes e-mails » quand rien n'est parti — ce serait
+           envoyer quelqu'un attendre un courrier qui n'existe pas. */
+        m.erreur = (e && e.message) || 'L’envoi a échoué.';
+        render();
+      });
+  },
+
+  'mdp-enregistrer': function () {
+    var m = state.mdp;
+    var p1 = mdpSaisie.pwd, p2 = mdpSaisie.pwd2;
+    if (p1.length < 6) { m.erreur = 'Le mot de passe doit faire au moins 6 caractères.'; render(); return; }
+    if (p1 !== p2) { m.erreur = 'Les deux mots de passe ne sont pas identiques.'; render(); return; }
+    if (!recupJetons) {
+      m.erreur = 'Ce lien n’est plus valable sur cette page. Redemande un lien « Mot de passe oublié ».';
+      m.etape = 'demande'; render(); return;
+    }
+    if (typeof DB === 'undefined' || !DB.estDispo()) {
+      m.erreur = 'Le cahier partagé ne répond pas.'; render(); return;
+    }
+    m.erreur = ''; m.enCours = true; render();
+
+    /* La session n'est ouverte QU'ICI, au moment d'enregistrer — pas à
+       l'affichage de l'écran. Quelqu'un qui ouvre le lien puis referme la page
+       n'est donc jamais resté connecté sans mot de passe (règle 1). */
+    DB.ouvrirSessionAvecJetons(recupJetons.acces, recupJetons.rafraichi)
+      .then(function () { return DB.changerMotDePasse(p1); })
+      .then(function (profil) {
+        // Les secrets ne traînent pas une seconde de plus que nécessaire.
+        recupJetons = null;
+        mdpSaisie = { pwd: '', pwd2: '' };
+        m.enCours = false; m.etape = 'fini'; m.erreur = '';
+        state.mdpProfil = null;
+        render();
+        return profil;
+      })
+      .catch(function (e) {
+        m.enCours = false;
+        m.erreur = (e && e.message) || 'Le changement de mot de passe a échoué.';
+        render();
+      });
+  },
+
+  /* On entre par le chemin NORMAL, celui de la connexion réussie : un second
+     chemin d'entrée finirait par diverger du premier (leçon de D-144). */
+  'mdp-entrer': function () {
+    if (typeof DB === 'undefined' || !DB.estDispo()) { go('#/login'); return; }
+    DB.relireProfil().then(function (p) {
+      if (!p) { go('#/login'); return; }
+      return DB.charger().then(function () { entrerAvecProfil(p); });
+    }).catch(function () { go('#/login'); });
+  },
+
+  /* Ce que sera la PROCHAINE étape ajoutée. C'est un état d'écran, pas une
+     donnée (règle 7) : `load()` le repose sur « avec photo », le comportement
+     d'avant la session 33 — on ne change pas en douce des checklists déjà
+     réglées. */
+  'toggle-step-photo': function () {
+    state.stepAvecPhoto = !state.stepAvecPhoto; render();
   },
   'toggle-photo': function (el) {
     var ri = parseInt(el.dataset.ri, 10), si = parseInt(el.dataset.si, 10);
@@ -13262,6 +13520,16 @@ var inputs = {
 
   'login-email': function (el) { state.loginEmail = el.value; },
   'login-pwd': function (el) { state.loginPwd = el.value; },
+
+  /* --- Mot de passe oublié (session 33, D-169) --------------------------- */
+  'mdp-mail': function (el) { state.mdp.email = el.value; state.mdp.erreur = ''; },
+  /* Les deux saisies ne passent PAS par `state` : voir `mdpSaisie` en tête de
+     fichier. Un `save()` déclenché par autre chose recopierait sinon le mot de
+     passe dans le navigateur. */
+  'mdp-pwd': function (el) { mdpSaisie.pwd = el.value; state.mdp.erreur = ''; },
+  'mdp-pwd2': function (el) { mdpSaisie.pwd2 = el.value; state.mdp.erreur = ''; },
+
+
   'inv-pwd': function (el) { state.inv.pwd = el.value; },
   'inv-pwd2': function (el) { state.inv.pwd2 = el.value; },
   'charge-libelle': function (el) { state.nc.libelle = el.value; },
@@ -13507,6 +13775,7 @@ var changes = {
 var VIEWS = {
   'login': viewLogin,
   'invitation': viewInvitation,
+  'motdepasse': viewMotDePasse,
   'p-attente': viewPrestaAttente,
   'bienvenue': viewBienvenue,
   'sejour': viewSejour,
@@ -13656,10 +13925,72 @@ window.addEventListener('beforeunload', save);
 
 load();
 
+/* ==========================================================================
+   LE LIEN DE RÉCUPÉRATION SE LIT EN TOUT PREMIER (session 33, D-169)
+   ==========================================================================
+
+   Quand quelqu'un clique sur le lien reçu par e-mail, Supabase le renvoie ici
+   avec ses jetons **dans le `#`** :
+
+     https://warme-house.vercel.app/#access_token=…&type=recovery&…
+
+   Or le `#` est précisément là où MAISON WARME range ses adresses (`#/admin`,
+   `#/livret/…`). Les deux se disputent le même endroit. Trois précautions :
+
+   ① on lit **avant tout le reste**, avant même d'ouvrir le cahier partagé —
+      sinon le routeur voit `access_token=…` comme une page inconnue et renvoie
+      à la connexion, en emportant les jetons avec lui ;
+   ② la bibliothèque Supabase a reçu l'ordre de **ne pas** lire l'adresse
+      toute seule (`detectSessionInUrl: false`, voir `data.js`) : à deux, on ne
+      saurait jamais qui lit le premier ;
+   ③ les jetons sont mis **hors de `state`** (`recupJetons`), donc hors du
+      navigateur : ils valent un mot de passe pendant une heure.
+
+   On traite aussi le cas du lien **périmé** : Supabase renvoie alors
+   `error_description=…` au lieu des jetons. Sans ça, l'écran resterait muet
+   sur la seule chose qui compte (règle 4). */
+function lireLienRecuperation() {
+  var brut = location.hash || '';
+  if (brut.indexOf('access_token=') < 0 && brut.indexOf('error_') < 0) return null;
+
+  var p = new URLSearchParams(brut.replace(/^#/, ''));
+  var erreur = p.get('error_description') || p.get('error');
+  var acces = p.get('access_token');
+  var rafraichi = p.get('refresh_token');
+  var genre = p.get('type');
+
+  // L'adresse est nettoyée tout de suite : un jeton ne doit pas rester
+  // affiché dans la barre du navigateur, ni partir dans un historique.
+  try { history.replaceState(null, '', location.pathname + location.search + '#/mot-de-passe'); }
+  catch (e) { location.hash = '#/mot-de-passe'; }
+
+  if (erreur) {
+    return { etape: 'demande', message: /expired|invalid/i.test(erreur)
+      ? 'Ce lien a expiré ou a déjà servi — ils ne valent qu’une heure, et une seule fois. Redemande-en un ci-dessous.'
+      : 'Ce lien n’a pas pu être ouvert. Redemande-en un ci-dessous.' };
+  }
+  if (!acces || !rafraichi) {
+    return { etape: 'demande', message: 'Ce lien est incomplet : il a peut-être été coupé par ta ' +
+      'messagerie. Redemande-en un ci-dessous, et clique dessus plutôt que de le recopier.' };
+  }
+  // `type=recovery` est ce que Supabase écrit pour un mot de passe oublié. On
+  // ne l'exige pas durement : certaines messageries réécrivent les liens.
+  recupJetons = { acces: acces, rafraichi: rafraichi };
+  return { etape: genre === 'invite' ? 'nouveau' : 'nouveau', message: '' };
+}
+
+var lienRecu = lireLienRecuperation();
+
 /* Le cahier partagé s'ouvre AVANT le premier dessin. Dans l'autre ordre,
    l'écran de connexion s'affichait une fraction de seconde en annonçant une
    panne de réseau qui n'existait pas, bouton grisé à l'appui. */
 var cahierPret = typeof DB !== 'undefined' && DB.demarrer();
+
+if (lienRecu) {
+  state.mdp.etape = lienRecu.etape;
+  state.mdp.message = lienRecu.message;
+  state.mdp.erreur = '';
+}
 
 if (!location.hash) location.replace(homePath());
 render();
@@ -13674,7 +14005,12 @@ render();
    le navigateur et faisait office de laissez-passer. On ne referme que si
    l'appareil n'a vraiment aucune session — pas si le réseau est simplement
    coupé, sinon on empêcherait de travailler dans un logement sans wifi. */
-if (cahierPret) {
+if (cahierPret && !lienRecu) {
+  /* `!lienRecu` : celui qui arrive par un lien de récupération ne doit PAS
+     être emmené ailleurs. Sans ce garde-fou, une session encore ouverte sur
+     l'appareil (le cas courant : Marc oublie son mot de passe sur son propre
+     ordinateur) le renverrait au tableau de bord avant qu'il ait rien choisi,
+     et le lien serait consommé pour rien. */
   DB.relireProfil()
     .then(function (p) {
       if (!p) return DB.sessionLocale().then(fermerSiPersonne);

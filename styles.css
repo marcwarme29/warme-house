@@ -459,6 +459,13 @@ textarea.inp { min-height: 90px; resize: vertical; line-height: 1.5; }
 .login-err   { margin-top: 16px; padding: 10px 12px; border-radius: 10px; background: #F7E7DF;
                color: #B04A26; font: 600 13px/1.45 Figtree, sans-serif; text-align: center; }
 
+/* Le lien discret de l'écran de connexion (« Mot de passe oublié ? ») et de
+   l'écran qui suit. Cible tactile de 44 px comme partout ailleurs (règle 26). */
+.login-lien  { display: block; width: 100%; margin-top: 14px; min-height: 44px;
+               font: 600 13px Figtree, sans-serif; color: var(--terra-d);
+               text-align: center; background: transparent; }
+.login-lien:hover { text-decoration: underline; }
+
 /* ==========================================================================
    Interface prestataire — mobile plein écran
    ========================================================================== */
