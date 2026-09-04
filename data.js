@@ -2303,6 +2303,41 @@ var DB = (function () {
      raison }] }`, ou lève une erreur dont le message est **déjà en français
      et déjà compréhensible** — c'est `/api/mail` qui le rédige, pour que la
      traduction des refus du service d'envoi vive au même endroit. */
+  /* PRÉVENIR LE PROPRIÉTAIRE QU'UN MÉNAGE COMMENCE (session 34, D-174)
+
+     Appelée depuis le téléphone de la PRESTATAIRE, au moment où elle appuie
+     sur « Commencer la mission ». Elle ne choisit ni le destinataire ni le
+     texte : `api/mission-commencee.js` décide de tout, et le script 15 vérifie
+     que la mission est bien la sienne.
+
+     **Elle ne doit jamais gêner son travail** : la mission a déjà démarré
+     quand on l'appelle, et un échec ici ne change rien à ce qu'elle voit.
+     C'est pourquoi elle ne rejette pas — elle rend toujours un compte rendu,
+     que l'appelant peut noter dans la console. */
+  function signalerDebutMenage(missionId) {
+    if (!dispo || !profil || !missionId) return Promise.resolve({ envoye: false, raison: 'hors-ligne' });
+    return jetonDeSession().then(function (jeton) {
+      if (!jeton) return { envoye: false, raison: 'sans-jeton' };
+      return fetch('/api/mission-commencee', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jeton: jeton, mission: missionId })
+      }).then(function (r) {
+        return r.text().then(function (corps) {
+          var j = null;
+          try { j = JSON.parse(corps); } catch (e) { j = null; }
+          if (!r.ok) {
+            return { envoye: false, raison: (j && (j.code || j.erreur)) ||
+              (r.status === 404 ? 'pas-publie' : 'refus-' + r.status) };
+          }
+          return j || { envoye: false, raison: 'reponse-vide' };
+        });
+      });
+    }).catch(function (e) {
+      return { envoye: false, raison: (e && e.message) || 'echec' };
+    });
+  }
+
   function envoyerMail(expediteur, envois) {
     if (!dispo) return Promise.reject(new Error(derniereErreur || 'Connexion indisponible.'));
     if (!profil) return Promise.reject(new Error('Il faut être connecté pour envoyer des e-mails.'));
@@ -2432,7 +2467,8 @@ var DB = (function () {
     ecouter: ecouter,
     taire: taire,
     demenager: demenager,
-    envoyerMail: envoyerMail
+    envoyerMail: envoyerMail,
+    signalerDebutMenage: signalerDebutMenage
   };
 
 })();

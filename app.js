@@ -1084,6 +1084,11 @@ function upgrade() {
   if (typeof mr.actif !== 'boolean') mr.actif = false;
   if (typeof mr.auto !== 'boolean') mr.auto = false;
   if (typeof mr.copie !== 'boolean') mr.copie = false;
+  /* Session 34 (D-174) — l'alerte « un ménage vient de commencer ». Déclarée
+     ici comme ailleurs (règle 9), sinon elle serait relue du cahier puis jetée
+     au rechargement suivant. Éteinte par défaut : on n'envoie jamais ce qui
+     n'a pas été demandé. */
+  if (typeof mr.alerteDebut !== 'boolean') mr.alerteDebut = false;
   if (typeof mr.expNom !== 'string' || !mr.expNom) mr.expNom = 'MAISON WARME';
   if (typeof mr.expMail !== 'string') mr.expMail = '';
   /* Session 30 (D-161) — l'heure fixe choisie par Marc pour l'envoi
@@ -1107,6 +1112,10 @@ function upgrade() {
      avant que l'un ait fini. Le garde-fou manquait ici, comme il manquait pour
      les missions en D-116 : c'est la même faute, une table plus loin. */
   reparerResasEnDouble();
+  /* Et les missions qui en découlaient (session 34, D-172). APRÈS les
+     réservations : la réparation des séjours peut rattacher des missions, et
+     on veut compter sur l'état final, pas sur l'intermédiaire. */
+  reparerMissionsEnDouble();
 
   /* Session 30 (D-160) — les charges d'un logement (eau, électricité,
      assurance, crédit…). Un logement supprimé n'a plus de charges à porter,
@@ -2509,6 +2518,123 @@ function resaKey(pid, r) { return pid + ':' + r.start + ':' + r.end; }
 
    Rend la liste des identifiants écartés, pour que l'appelant puisse les dire
    au cahier partagé : `pousser()` ne sait qu'ajouter et modifier (règle 12). */
+/* DEUX MISSIONS POUR LE MÊME MÉNAGE (session 34, D-172)
+
+   Signalé le 29 août : *« j'ai toujours des missions qui apparaissent en
+   double »*.
+
+   LA CAUSE, ET ELLE EST MÉCANIQUE. `ajouterResa()` appelle
+   `creerMissionDepart()` **sans jamais demander si le ménage de ce jour
+   existe déjà**, et `slugMission()` tire un identifiant **au hasard**
+   (D-116, pour ne plus avoir deux missions au même identifiant). Deux
+   réservations qui finissent le même jour dans le même logement — c'est-à-dire
+   le doublon de D-171 — produisent donc **deux missions distinctes**, que rien
+   ne rapproche. Supprimer le séjour en double ne les défait pas non plus :
+   `retirerResa()` ne retire que les missions rattachées à CE séjour-là.
+
+   ON NE SUPPRIME QUE CE QUI EST VIDE. C'est la règle 15, et elle prime sur le
+   confort : une mission prise, commencée, terminée, photographiée ou
+   commentée porte du travail réel — celui d'une personne qu'on paie. On ne la
+   touche jamais. On n'écarte qu'une mission **« disponible », sans preneur,
+   sans photo, sans compte rendu, sans note et sans annonce partie**, et
+   seulement s'il en reste au moins une autre pour le même ménage.
+
+   S'IL Y A DEUX MISSIONS ET QUE LES DEUX PORTENT DU TRAVAIL, ON NE FAIT RIEN
+   ET ON LE DIT (règle 4) : c'est au propriétaire de trancher, et le bandeau
+   de la page Missions le lui demande, en nommant le jour et le logement. */
+function missionOccupee(m) {
+  if (!m) return true;
+  if (m.status !== 'dispo') return true;                       // prise, en cours, terminée, annulée
+  if (m.taker || m.provider) return true;
+  if (Object.keys((state.photos || {})[m.id] || {}).length) return true;
+  if ((state.reports || {})[m.id]) return true;
+  if ((m.note || '').trim()) return true;
+  if ((state.mailsEnvoyes || {})[m.id]) return true;           // déjà annoncée à quelqu'un (D-151)
+  return false;
+}
+
+/** La clé d'un même ménage : un logement, un jour, une prestation. */
+function cleMission(m) { return m.prop + '|' + m.date + '|' + m.type; }
+
+function reparerMissionsEnDouble() {
+  var parCle = {};
+  var retires = [];
+
+  (state.missions || []).forEach(function (m) {
+    if (!m || !m.prop || !m.date) return;
+    if (m.status === 'annulee') return;         // une annulée ne double personne
+    var cle = cleMission(m);
+    (parCle[cle] || (parCle[cle] = [])).push(m);
+  });
+
+  Object.keys(parCle).forEach(function (cle) {
+    var lot = parCle[cle];
+    if (lot.length < 2) return;
+
+    /* On garde la plus avancée : terminée > en cours > prise > disponible.
+       À égalité, la première de la liste — l'ordre est stable, donc le
+       résultat est le même sur les deux appareils, ce qui compte plus que
+       le critère lui-même. */
+    var rang = { termine: 3, encours: 2, prise: 1, dispo: 0 };
+    var garde = lot.reduce(function (a, b) {
+      return (rang[b.status] || 0) > (rang[a.status] || 0) ? b : a;
+    });
+
+    lot.forEach(function (m) {
+      if (m === garde) return;
+      if (missionOccupee(m)) return;            // du travail dedans : on n'y touche pas
+      retires.push(m.id);
+    });
+  });
+
+  if (!retires.length) return retires;
+
+  state.missions = state.missions.filter(function (m) { return retires.indexOf(m.id) < 0; });
+  Object.keys(state.mailsEnvoyes || {}).forEach(function (id) {
+    if (retires.indexOf(id) >= 0) delete state.mailsEnvoyes[id];
+  });
+
+  // Règle 12 : `pousser()` ne sait qu'ajouter et modifier.
+  if (typeof DB !== 'undefined' && DB.estDispo() && DB.profil() && DB.supprimerMission) {
+    retires.forEach(function (id) { DB.supprimerMission(id); });
+  }
+  return retires;
+}
+
+/** Les ménages en double que la réparation N'A PAS pu défaire, parce que les
+    deux portent du travail. On les NOMME plutôt que de choisir à la place du
+    propriétaire (règle 15), et le bandeau de la page Missions les affiche. */
+function missionsEnDoubleRestantes() {
+  var parCle = {}, out = [];
+  (state.missions || []).forEach(function (m) {
+    if (!m || !m.prop || !m.date || m.status === 'annulee') return;
+    (parCle[cleMission(m)] || (parCle[cleMission(m)] = [])).push(m);
+  });
+  Object.keys(parCle).forEach(function (cle) {
+    if (parCle[cle].length > 1) out.push(parCle[cle]);
+  });
+  return out;
+}
+
+/** Lequel de deux exemplaires est le mieux renseigné ? (D-162, réutilisé D-171) */
+function scoreResa(x) {
+  return (nomGeneriqueResa(x.guest) ? 0 : 4) + (x.guestOk ? 3 : 0) +
+    (x.tel || x.tel4 ? 2 : 0) + (x.mail ? 2 : 0) +
+    (x.montant !== null && x.montant !== undefined ? 1 : 0) +
+    (x.arriveePrevue ? 1 : 0) + (x.guests ? 1 : 0);
+}
+
+/** Ce que le jeté avait et que le gardé n'a pas n'est jamais perdu (D-91). */
+function fusionnerChampsResa(garde, jete) {
+  ['guest', 'guests', 'tel', 'tel4', 'mail', 'arriveePrevue', 'commentaire', 'montant', 'plat'].forEach(function (k) {
+    var vide = garde[k] === undefined || garde[k] === null || garde[k] === '' ||
+      (k === 'guest' && nomGeneriqueResa(garde[k]));
+    if (vide && jete[k] !== undefined && jete[k] !== null && jete[k] !== '') garde[k] = jete[k];
+  });
+  if (jete.guestOk) garde.guestOk = true;
+  if (jete.demarchable) garde.demarchable = true;
+}
+
 function reparerResasEnDouble() {
   var ecartes = [];
 
@@ -2521,24 +2647,9 @@ function reparerResasEnDouble() {
       var deja = parUid[r.uid];
       if (!deja) { parUid[r.uid] = r; gardees.push(r); return; }
 
-      // Lequel des deux est le mieux renseigné ?
-      var score = function (x) {
-        return (nomGeneriqueResa(x.guest) ? 0 : 4) + (x.guestOk ? 3 : 0) +
-          (x.tel || x.tel4 ? 2 : 0) + (x.mail ? 2 : 0) +
-          (x.montant !== null && x.montant !== undefined ? 1 : 0) +
-          (x.arriveePrevue ? 1 : 0) + (x.guests ? 1 : 0);
-      };
-      var garde = score(r) > score(deja) ? r : deja;
+      var garde = scoreResa(r) > scoreResa(deja) ? r : deja;
       var jete = garde === r ? deja : r;
-
-      // Ce que le jeté avait et que le gardé n'a pas n'est pas perdu.
-      ['guest', 'guests', 'tel', 'tel4', 'mail', 'arriveePrevue', 'commentaire', 'montant', 'plat'].forEach(function (k) {
-        var vide = garde[k] === undefined || garde[k] === null || garde[k] === '' ||
-          (k === 'guest' && nomGeneriqueResa(garde[k]));
-        if (vide && jete[k] !== undefined && jete[k] !== null && jete[k] !== '') garde[k] = jete[k];
-      });
-      if (jete.guestOk) garde.guestOk = true;
-      if (jete.demarchable) garde.demarchable = true;
+      fusionnerChampsResa(garde, jete);
 
       // Les missions du jeté suivent celui qu'on garde, si les clés diffèrent.
       var cleJetee = resaKey(pid, jete), cleGardee = resaKey(pid, garde);
@@ -2552,11 +2663,61 @@ function reparerResasEnDouble() {
       if (jete.id) ecartes.push(jete.id);
     });
 
-    if (ecartes.length) {
-      state.resas[pid] = gardees.sort(function (a, b) {
-        return a.start < b.start ? -1 : a.start > b.start ? 1 : 0;
-      });
-    }
+    /* ------------------------------------------------------------------
+       DEUXIÈME PASSE — LES MÊMES NUITS SOUS DEUX IDENTIFIANTS (session 34, D-171)
+
+       La passe ci-dessus ne rapproche que par `uid`. Or le cas le plus
+       fréquent chez Marc n'est PAS deux fois le même identifiant : c'est
+       **le même séjour publié par deux calendriers différents**, donc avec
+       deux `uid` sans aucun rapport.
+
+       C'est la conséquence directe de D-125 : une réservation prise sur
+       Airbnb bloque les mêmes dates sur Booking, et le calendrier de Booking
+       ne fait aucune différence entre « réservé » et « fermé » — on prend donc
+       tout. Le même séjour entre deux fois, sous deux identifiants.
+
+       Deux voyageurs ne peuvent pas occuper **exactement les mêmes nuits dans
+       le même logement** : mêmes dates de début ET de fin = même séjour. C'est
+       la seule règle qu'on s'autorise ici. Un chevauchement PARTIEL n'est pas
+       traité — il peut être une vraie erreur de saisie, et fusionner au
+       jugé serait deviner (règle 15).
+
+       ET ON SE SOUVIENT DE CELUI QU'ON ÉCARTE (règle 12, D-146) : sans cela la
+       relève suivante le recrée une heure plus tard, puisqu'il figure toujours
+       dans le calendrier de sa plateforme. C'est **exactement** le « ça revient
+       systématiquement » signalé le 29 août.
+       ------------------------------------------------------------------ */
+    var parDates = {};
+    gardees.slice().forEach(function (r) {
+      if (!r || !r.start || !r.end) return;
+      var cle = r.start + '_' + r.end;
+      var deja = parDates[cle];
+      if (!deja) { parDates[cle] = r; return; }
+
+      var garde = scoreResa(r) > scoreResa(deja) ? r : deja;
+      var jete = garde === r ? deja : r;
+
+      fusionnerChampsResa(garde, jete);
+
+      /* Les dates étant identiques, `resaKey()` l'est aussi et les missions
+         n'ont pas à être rattachées — mais on le vérifie plutôt que de le
+         supposer, c'est la leçon de D-116. */
+      var cleJetee = resaKey(pid, jete), cleGardee = resaKey(pid, garde);
+      if (cleJetee !== cleGardee) {
+        state.missions.forEach(function (m) { if (m.fromResa === cleJetee) m.fromResa = cleGardee; });
+      }
+
+      // Qu'il ne revienne pas au prochain relevé.
+      oublierSejourIcal(pid, jete);
+
+      parDates[cle] = garde;
+      gardees = gardees.filter(function (x) { return x !== jete; });
+      if (jete.id) ecartes.push(jete.id);
+    });
+
+    state.resas[pid] = gardees.sort(function (a, b) {
+      return a.start < b.start ? -1 : a.start > b.start ? 1 : 0;
+    });
   });
 
   /* LE DIRE AU CAHIER (règle 12). Le doublon écarté peut très bien être celui
@@ -5450,6 +5611,46 @@ function mailtoVoyageur(f) {
 /* Le même constat, tous logements confondus, à l'endroit où le propriétaire
    va justement chercher ses missions (session 21, D-117). C'est là qu'il a
    vu « rien », et c'est là qu'il faut le lui dire. */
+/* LES DOUBLONS QU'ON NE S'AUTORISE PAS À DÉFAIRE (session 34, D-172)
+
+   `reparerMissionsEnDouble()` écarte les ménages en double **vides**. Quand
+   les deux portent du travail — l'une prise par Sofia, l'autre déjà terminée
+   par Doriane —, choisir à la place du propriétaire serait deviner (règle 15)
+   et pourrait effacer une mission qu'il faut payer.
+
+   On le DIT donc, en nommant le logement et le jour, avec un lien vers chaque
+   mission. Un doublon qu'on laisse sans rien dire est pire qu'un doublon
+   (règle 4). */
+function bandeauMissionsEnDouble() {
+  if (state.auth !== 'owner') return '';
+  var lots = missionsEnDoubleRestantes();
+  if (!lots.length) return '';
+
+  return '<div class="card" style="margin-top:18px;padding:18px 20px;background:var(--amber-bg);' +
+    'border-left:3px solid var(--amber-t)">' +
+    '<div style="font:700 14px Figtree,sans-serif;color:var(--amber-t)">⚠️ ' + lots.length +
+      ' ménage' + (lots.length > 1 ? 's sont' : ' est') + ' en double, et ' +
+      (lots.length > 1 ? 'ils portent' : 'il porte') + ' du travail des deux côtés</div>' +
+    '<p class="sec-note" style="margin:6px 0 10px">Les doublons <strong>vides</strong> ont été ' +
+      'retirés tout seuls. Ceux-ci ne l\'ont pas été : chacun a été pris, commencé, photographié ' +
+      'ou terminé par quelqu\'un. <strong>Je ne choisis pas à ta place</strong> — regarde les deux, ' +
+      'garde celui qui a vraiment été fait, et supprime l\'autre depuis sa fiche.</p>' +
+    '<div class="stack" style="gap:8px">' + lots.slice(0, 6).map(function (lot) {
+      var p = prop(lot[0].prop);
+      return '<div style="border-radius:12px;background:rgba(255,255,255,.55);padding:10px 12px">' +
+        '<div style="font:700 13px Figtree,sans-serif">' + esc(p.short || p.name) + ' · ' +
+          esc(fmtDate(lot[0].date)) + '</div>' +
+        '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px">' + lot.map(function (m) {
+          return '<button type="button" class="btn btn--xs" style="background:var(--cream);color:var(--ink-soft)"' +
+            act('nav', { path: '#/admin/missions/' + m.id }) + '>' +
+            esc(decorate(m).statusLabel) + ' →</button>';
+        }).join('') + '</div></div>';
+    }).join('') + '</div>' +
+    (lots.length > 6 ? '<p class="sec-note" style="margin:8px 0 0">… et ' + (lots.length - 6) +
+      ' autre(s).</p>' : '') +
+  '</div>';
+}
+
 function bandeauTousMenagesManquants() {
   var lignes = (state.props || []).filter(function (p) { return !p.gone; })
     .map(function (p) { return { p: p, n: departsSansMission(p.id).length }; })
@@ -5540,6 +5741,7 @@ function viewOwnerMissions() {
         (state.showNew ? 'Fermer le formulaire' : '+ Créer une mission') + '</button>' +
     '</div>' + form +
     bandeauTousMenagesManquants() +
+    bandeauMissionsEnDouble() +
     bandeauMissionsAAnnoncer() +
 
     '<div class="chiprow" style="margin:20px 0 16px">' + filters.map(function (f) {
@@ -8185,6 +8387,14 @@ function carteMailReglages() {
 
       bascule('mail-copie', !!r.copie, 'M’envoyer une copie de ce qui part',
         'Tu reçois le récapitulatif de chaque envoi, pour le vérifier de tes yeux.') +
+
+      /* PRÉVENIR QUAND UN MÉNAGE COMMENCE (session 34, D-174). Demandé par
+         Marc. C'est le téléphone de la prestataire qui déclenche l'envoi, au
+         moment où elle appuie sur « Commencer la mission ». */
+      bascule('mail-debut', !!r.alerteDebut, 'Me prévenir quand un ménage commence',
+        'Tu reçois un e-mail dès qu’une prestataire appuie sur « Commencer la mission », avec le ' +
+        'logement, le jour et l’heure. Il part à l’adresse ci-dessus. ' +
+        '<strong>Il faut avoir collé le script 15</strong> — mode d’emploi §39.') +
 
       /* L'ENVOI À HEURE FIXE, MÊME APPLICATION FERMÉE (session 30, D-161).
          `auto` (ci-dessus) ne joue qu'au relevé des calendriers, donc quand
@@ -11019,6 +11229,23 @@ function start(id) {
   }
   save();
   if (typeof DB !== 'undefined' && DB.estDispo()) DB.majMission(m);
+
+  /* PRÉVENIR LE PROPRIÉTAIRE (session 34, D-174). Demandé par Marc.
+     **Après** `majMission`, jamais avant : le serveur ne répondra que si la
+     mission est déjà « en cours » dans le cahier partagé, c'est son verrou.
+     Et surtout : on n'attend pas la réponse, et un échec ne se voit pas sur
+     l'écran de la prestataire. Ce n'est pas son affaire, sa mission a démarré
+     — la trace va dans la console, que Marc peut me recopier. */
+  if (typeof DB !== 'undefined' && DB.estDispo() && DB.signalerDebutMenage) {
+    setTimeout(function () {
+      DB.signalerDebutMenage(id).then(function (b) {
+        if (b && !b.envoye && typeof console !== 'undefined' && console.warn) {
+          console.warn('Alerte « ménage commencé » non partie :', b.raison || b.erreur);
+        }
+      });
+    }, 400);
+  }
+
   go('#/app/missions/' + id + '/checklist');
 }
 
@@ -11217,11 +11444,52 @@ function prendrePhoto(mid, sid) {
     if (ecrit) {
       state.mMsg = '';
       envoiPhoto(mid, sid, res.image);      // dépôt dans le casier, en arrière-plan
-    } else {
-      delete ph[sid];
-      state.mMsg = 'La mémoire de ce téléphone est pleine : la photo n\'a pas pu être gardée. ' +
-        'Supprime une photo déjà prise sur cette mission, puis réessaie.';
+      render();
+      setTimeout(function () { flash = null; }, 700);
+      return;
     }
+
+    /* LA MÉMOIRE DU TÉLÉPHONE EST PLEINE — ET CE N'EST PAS UNE RAISON POUR
+       JETER LE TRAVAIL (session 34, D-173)
+
+       Signalé le 29 août : *« ma prestataire n'a pas pu enregistrer les photos
+       malgré plusieurs tentatives »*. Voici ce qui se passait, mot pour mot :
+       la photo était posée dans `state.photos`, `save()` échouait parce que le
+       navigateur refuse d'écrire au-delà de sa réserve — une photo réduite
+       pèse ~60 Ko, et une mission en compte une dizaine —, et on faisait
+       alors `delete ph[sid]`. **La photo était effacée sans être envoyée
+       nulle part.** Elle recommençait, et ça recommençait à l'identique : le
+       message parlait de « supprimer une photo déjà prise », geste qu'elle ne
+       pouvait pas deviner et qui, sur une mission en cours, n'aurait rien
+       libéré (`libererPlace()` protège la mission courante, à juste titre).
+
+       Les doublons de missions (D-172) aggravaient tout : deux fois plus de
+       missions dans la réserve, donc deux fois moins de place pour les photos.
+
+       CE QU'ON FAIT MAINTENANT. Le casier partagé, lui, a toute la place du
+       monde, et c'est LUI qui compte : c'est là que le propriétaire regarde.
+       On envoie donc la photo **quand même**, et on ne garde localement qu'un
+       **marqueur de quelques octets** à la place de l'image. L'étape reste
+       validée, la photo arrive chez Marc, et seule la vignette manque sur le
+       téléphone — les écrans savent déjà afficher ce cas (« Validé sans
+       photo » y était prévu depuis la session 15).
+
+       Et si même le marqueur ne passe pas, alors seulement on renonce — mais
+       on l'aura dit, et la photo sera partie. */
+    ph[sid] = 'envoyee';                    // quelques octets au lieu de 60 Ko
+    state.photos[mid] = ph;
+    var ecritLeger = save();
+
+    envoiPhoto(mid, sid, res.image);        // le casier passe avant le téléphone
+
+    state.mMsg = ecritLeger
+      ? 'La mémoire de ce téléphone est pleine : la photo est bien partie chez le propriétaire, ' +
+        'et l’étape est validée — mais la vignette ne peut pas être gardée ici. ' +
+        'Tu peux continuer normalement.'
+      : 'La mémoire de ce téléphone est pleine. La photo est partie chez le propriétaire, ' +
+        'mais cet appareil ne peut plus rien garder : préviens le propriétaire, et termine la ' +
+        'mission dès que possible pour libérer de la place.';
+
     render();
     setTimeout(function () { flash = null; }, 700);
   });
@@ -12342,6 +12610,11 @@ var actions = {
   },
   'mail-copie': function () {
     state.mailReglages.copie = !state.mailReglages.copie;
+    save(); render();
+  },
+  /* L'alerte « un ménage vient de commencer » (session 34, D-174). */
+  'mail-debut': function () {
+    state.mailReglages.alerteDebut = !state.mailReglages.alerteDebut;
     save(); render();
   },
   /* L'envoi à heure fixe, robot compris (session 30, D-161). */
