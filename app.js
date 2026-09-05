@@ -1717,9 +1717,27 @@ function retirerResa(pid, resa, motif) {
      ce qu'on supprimait ne tenait. Les missions **annulées**, elles, ne sont
      pas supprimées : elles partent par `pousser()` comme n'importe quelle
      modification — c'est ce qui porte le message jusqu'au téléphone. */
+  /* ET ON REGARDE SI LE CAHIER A VRAIMENT EFFACÉ (session 35, D-176)
+
+     Jusqu'ici on lançait la suppression sans jamais lire la réponse.
+     `supprimerLigne()` rend pourtant `false` dans deux cas — le cahier a
+     refusé, ou il n'a rien trouvé à effacer — et le message était rangé dans
+     `DB.derniereErreur()` où **personne n'allait le chercher**.
+
+     Conséquence exacte, et c'est le symptôme signalé par Marc : la
+     réservation disparaissait de son écran (le `filter` ci-dessus a bien
+     lieu), l'écriture suivante ne la renvoyait pas — `pousser()` n'envoie que
+     ce qui est dans `state` —, mais **la ligne restait dans le cahier**. À la
+     relecture suivante, `resasDepuisBase()` la rapportait. Supprimée à
+     l'écran, jamais supprimée dans le cahier, et **de retour à chaque
+     ouverture**. C'est la règle 4 : une écriture refusée doit se VOIR. */
+  var promesse = Promise.resolve(true);
   if (typeof DB !== 'undefined' && DB.estDispo() && DB.profil()) {
-    missionsRetirees.forEach(function (id) { DB.supprimerMission(id); });
-    DB.supprimerResa(resa.id);
+    var travaux = missionsRetirees.map(function (id) { return DB.supprimerMission(id); });
+    travaux.push(DB.supprimerResa(resa.id));
+    promesse = Promise.all(travaux).then(function (rs) {
+      return rs.every(function (ok) { return ok !== false; });
+    }, function () { return false; });
   }
 
   // Plus personne n'arrive ce jour-là : la mission de la veille n'est plus
@@ -1735,8 +1753,9 @@ function retirerResa(pid, resa, motif) {
   }
 
   // Rendu à l'appelant pour qu'il puisse le DIRE : « la mission de Sofia a été
-  // annulée, elle en sera prévenue » (règle 4).
-  return { supprimees: missionsRetirees.length, annulees: missionsAnnulees };
+  // annulée, elle en sera prévenue » (règle 4). `promesse` dit si le cahier
+  // partagé a réellement effacé (D-176).
+  return { supprimees: missionsRetirees.length, annulees: missionsAnnulees, promesse: promesse };
 }
 
 /* Fusion d'un lot de réservations venu d'une source extérieure (iCal, Beds24).
@@ -2542,15 +2561,43 @@ function resaKey(pid, r) { return pid + ':' + r.start + ':' + r.end; }
    S'IL Y A DEUX MISSIONS ET QUE LES DEUX PORTENT DU TRAVAIL, ON NE FAIT RIEN
    ET ON LE DIT (règle 4) : c'est au propriétaire de trancher, et le bandeau
    de la page Missions le lui demande, en nommant le jour et le logement. */
-function missionOccupee(m) {
-  if (!m) return true;
-  if (m.status !== 'dispo') return true;                       // prise, en cours, terminée, annulée
-  if (m.taker || m.provider) return true;
+/* DU TRAVAIL RÉEL, C'EST-À-DIRE QUELQUE CHOSE QU'ON PERDRAIT. */
+function travailReel(m) {
   if (Object.keys((state.photos || {})[m.id] || {}).length) return true;
   if ((state.reports || {})[m.id]) return true;
   if ((m.note || '').trim()) return true;
   if ((state.mailsEnvoyes || {})[m.id]) return true;           // déjà annoncée à quelqu'un (D-151)
   return false;
+}
+
+var RANG_MISSION = { termine: 3, encours: 2, prise: 1, dispo: 0 };
+
+/* CE QUE LE TABLEAU DE CONTRÔLE DE MARC A APPRIS (session 35, D-175)
+
+   Les quatre ménages en double de son cahier avaient tous la même forme :
+   d'un côté une mission réellement avancée (`encours`, `prise`, `termine`),
+   de l'autre une mission **restée « disponible » mais portant quand même un
+   preneur**. Autrement dit une contradiction : « personne ne l'a prise » et
+   « elle est à Sofia » en même temps.
+
+   La première version comptait ce preneur comme du travail, et refusait donc
+   d'écarter le doublon : les quatre partaient au bandeau, à la main, alors
+   qu'il n'y avait rien à arbitrer. Or **un preneur inscrit sur une mission
+   encore « disponible » n'est pas du travail** : c'est un reste. Le travail,
+   ce sont les photos, le compte rendu, la note, l'annonce déjà partie — les
+   choses qu'on perdrait vraiment.
+
+   LA PRUDENCE RESTE, ET ELLE EST PRÉCISE : on n'écarte une telle mission que
+   si celle qu'on garde est **strictement plus avancée**. Si les deux sont
+   « disponibles » avec un preneur, on ne tranche pas — on ne saurait pas
+   laquelle est la bonne, et c'est exactement le cas où il faut demander. */
+function missionOccupee(m, garde) {
+  if (!m) return true;
+  if (travailReel(m)) return true;
+  if (m.status !== 'dispo') return true;                       // prise, en cours, terminée, annulée
+  if (!m.taker) return false;                                  // vide et sans preneur
+  // Preneur inscrit sur une mission encore « disponible » : contradiction.
+  return !(garde && (RANG_MISSION[garde.status] || 0) > 0);
 }
 
 /** La clé d'un même ménage : un logement, un jour, une prestation. */
@@ -2575,14 +2622,13 @@ function reparerMissionsEnDouble() {
        À égalité, la première de la liste — l'ordre est stable, donc le
        résultat est le même sur les deux appareils, ce qui compte plus que
        le critère lui-même. */
-    var rang = { termine: 3, encours: 2, prise: 1, dispo: 0 };
     var garde = lot.reduce(function (a, b) {
-      return (rang[b.status] || 0) > (rang[a.status] || 0) ? b : a;
+      return (RANG_MISSION[b.status] || 0) > (RANG_MISSION[a.status] || 0) ? b : a;
     });
 
     lot.forEach(function (m) {
       if (m === garde) return;
-      if (missionOccupee(m)) return;            // du travail dedans : on n'y touche pas
+      if (missionOccupee(m, garde)) return;     // du travail dedans : on n'y touche pas
       retires.push(m.id);
     });
   });
@@ -12930,6 +12976,16 @@ var actions = {
         'Le message part sur son téléphone à la prochaine relecture. Elle peut aussi ' +
         'appuyer sur ⟳ pour le voir tout de suite.');
     }
+
+    // Le cahier partagé a-t-il vraiment effacé ? (D-176, même règle que
+    // l'autre chemin de suppression : sinon la ligne revient à la relecture.)
+    b.promesse.then(function (ok) {
+      if (ok) return;
+      var pourquoi = (typeof DB !== 'undefined' && DB.erreur && DB.erreur()) || '';
+      alert('⚠️ Elle a disparu de cet écran, mais le cahier partagé ne l\'a PAS effacée' +
+        (pourquoi ? ' :\n\n' + pourquoi : '.') +
+        '\n\nElle reviendra donc à la prochaine ouverture. Recopie-moi ce message.');
+    });
   },
   /* « J'ai compris » sur une annulation. Range la notification **sur ce
      téléphone-ci** : un prestataire n'a pas le droit d'effacer une ligne du
@@ -13096,12 +13152,29 @@ var actions = {
     }
     if (!confirm(avertir + 'Cette suppression est définitive.')) return;
     var oublie2 = oublierSejourIcal(pid, r);          // D-146 : il ne doit pas revenir
-    retirerResa(pid, r, 'La réservation a été supprimée par le propriétaire.');
+    var bilan = retirerResa(pid, r, 'La réservation a été supprimée par le propriétaire.');
     save(); render();
-    if (oublie2) {
-      alert('Réservation supprimée.\n\nElle vient d\'un calendrier de plateforme : ' +
-        'elle y figure peut-être encore, mais MAISON WARME ne la reprendra plus.');
-    }
+
+    /* ON ATTEND LA RÉPONSE DU CAHIER AVANT DE DIRE « C'EST FAIT » (D-176).
+       Une suppression qui n'a pas atteint le cahier revient à la relecture
+       suivante : c'est le « ça réapparaît systématiquement » du 29 août. Le
+       dire est la seule chose utile — et le message du cahier est déjà écrit
+       en français par `messageClair()`. */
+    bilan.promesse.then(function (ok) {
+      if (ok) {
+        if (oublie2) {
+          alert('Réservation supprimée.\n\nElle vient d\'un calendrier de plateforme : ' +
+            'elle y figure peut-être encore, mais MAISON WARME ne la reprendra plus.');
+        }
+        return;
+      }
+      var pourquoi = (typeof DB !== 'undefined' && DB.erreur && DB.erreur()) || '';
+      state.mMsg = '';
+      alert('⚠️ Elle a disparu de cet écran, mais le cahier partagé ne l\'a PAS effacée' +
+        (pourquoi ? ' :\n\n' + pourquoi : '.') +
+        '\n\nElle reviendra donc à la prochaine ouverture. Recopie-moi ce message : ' +
+        'c\'est exactement ce qu\'il me faut pour le réparer.');
+    });
   },
 
   /* Livret d'accueil ------------------------------------------------------ */
