@@ -602,6 +602,12 @@ function initialState() {
        la règle 12 (« une suppression doit être dite ») appliquée à la source :
        la dire au cahier partagé ne suffit pas si la source la réécrit. */
     icalOublies: {},
+    /* Les fiches de prestataires supprimées (session 36, D-177). Même rôle
+       qu'`icalOublies` pour les séjours : sans cette mémoire, une fiche
+       effacée sur l'ordinateur revient depuis le téléphone, qui la porte
+       encore et la renvoie au premier enregistrement. Voyage dans les
+       réglages (`CLES_REGLAGES` de `data.js`). */
+    fichesSupprimees: {},
     // Le relevé iCal en cours et son compte rendu, par logement (D-114).
     // Ce sont des attentes de réponse, pas des données : `load()` les remet à zéro.
     icalEnCours: null,
@@ -613,6 +619,7 @@ function initialState() {
     // d'écran, replié à chaque ouverture.
     outilsOuverts: false,
     mailReglagesOuvert: false,        // le réglage d'envoi, replié par défaut (D-167)
+    agentMsg: '',                     // résultat d'une suppression de fiche (D-177)
     stepAvecPhoto: true,              // ce que sera la prochaine étape ajoutée (D-170)
 
     /* PRÉVENIR LES PRESTATAIRES PAR E-MAIL (session 27, D-150)
@@ -785,6 +792,7 @@ function load() {
   state.icalAutoEnCours = false;      // la relève automatique en cours (session 24)
   state.outilsOuverts = false;        // les outils de mise en service (session 24, D-138)
   state.mailReglagesOuvert = false;   // le réglage d'envoi d'e-mails (session 31, D-167)
+  state.agentMsg = '';                // le résultat d'une suppression de fiche (session 36, D-177)
   state.stepAvecPhoto = true;         // la prochaine étape ajoutée (session 33, D-170)
   /* L'écran « mot de passe oublié » repart toujours de zéro (session 33) : une
      demande en cours n'est pas une donnée, et une adresse laissée là ferait
@@ -1111,6 +1119,14 @@ function upgrade() {
      automatique tourne (D-133) — passent tous deux par « pas connue → créer »
      avant que l'un ait fini. Le garde-fou manquait ici, comme il manquait pour
      les missions en D-116 : c'est la même faute, une table plus loin. */
+  /* Une fiche supprimée ne réapparaît pas, d'où qu'elle vienne (D-177). */
+  if (!state.fichesSupprimees || typeof state.fichesSupprimees !== 'object') state.fichesSupprimees = {};
+  if (Object.keys(state.fichesSupprimees).length) {
+    state.agents = (state.agents || []).filter(function (a) {
+      return !a || !state.fichesSupprimees[a.id];
+    });
+  }
+
   reparerResasEnDouble();
   /* Et les missions qui en découlaient (session 34, D-172). APRÈS les
      réservations : la réparation des séjours peut rattacher des missions, et
@@ -8595,6 +8611,29 @@ function fmtDateHeure(iso) {
     String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
 }
 
+/* LE RÉSULTAT D'UNE SUPPRESSION DE FICHE, IMPOSSIBLE À MANQUER (session 36, D-177)
+
+   Le message existait depuis la session 28 (D-155) — mais il partait dans
+   `state.migMsg`, qui s'affiche en petit, sous le titre, et sert aussi aux
+   messages de mise en service. Marc a signalé **trois fois** que « la
+   prestataire revient », sans jamais mentionner de message : il ne l'avait
+   pas vu. Un diagnostic qu'on n'aperçoit pas ne diagnostique rien (règle 4).
+
+   Il a donc son propre bandeau, en haut de la page, vert quand ça a marché et
+   ambre quand ça a raté — et il ne s'enregistre pas (règle 7). */
+function bandeauAgentMsg() {
+  if (!state.agentMsg) return '';
+  var bon = /^✅/.test(state.agentMsg);
+  return '<div class="card" style="margin-top:16px;padding:16px 18px;background:' +
+      (bon ? 'var(--green-bg)' : 'var(--amber-bg)') + ';border-left:3px solid ' +
+      (bon ? 'var(--green-t)' : 'var(--amber-t)') + '" role="status">' +
+    '<div style="font:600 13.5px/1.6 Figtree,sans-serif;color:var(--ink-soft)">' +
+      esc(state.agentMsg) + '</div>' +
+    '<button type="button" class="btn btn--xs" style="background:transparent;color:var(--muted);' +
+      'padding-left:0;margin-top:6px"' + act('agent-msg-vu') + '>Fermer</button>' +
+    '</div>';
+}
+
 function viewOwnerAgents() {
   // Les mois glissent avec le calendrier : un mois enregistré l'an dernier
   // peut être sorti de la liste. On retombe alors sur le mois en cours.
@@ -8802,7 +8841,7 @@ function viewOwnerAgents() {
           ';min-height:42px;font-size:13px"' + act('toggle-new-agent') + '>' +
           (state.showNewAgent ? 'Fermer' : '+ Ajouter un prestataire') + '</button>' +
       '</div>' +
-    '</div>' + messageCahier() + form + blocMailReglages() +
+    '</div>' + bandeauAgentMsg() + messageCahier() + form + blocMailReglages() +
 
     '<div class="cols" style="margin-top:22px;gap:12px">' +
       '<div class="kpi" style="min-width:200px"><div class="v num">' +
@@ -13694,6 +13733,13 @@ var actions = {
       if (typeof DB !== 'undefined' && DB.estDispo() && DB.profil()) DB.detacherMission(m.id);
     });
     state.agents = state.agents.filter(function (x) { return x.id !== id; });
+    /* ON SE SOUVIENT DE LA SUPPRESSION (session 36, D-177), avant même de la
+       dire au cahier. C'est ce qui manquait : la ligne pouvait très bien être
+       effacée du cahier et **revenir depuis le téléphone de Marc**, dont la
+       copie de `state.agents` la portait encore et la renvoyait au premier
+       enregistrement. Trois signalements pour ce seul défaut. */
+    state.fichesSupprimees = state.fichesSupprimees || {};
+    state.fichesSupprimees[id] = true;
     if (state.me === id) state.me = null;
     if (state.openAgent === id) state.openAgent = null;
     if (state.openReglages === id) state.openReglages = null;
@@ -13704,20 +13750,46 @@ var actions = {
        vivent (session 19), une fiche effacée ici reviendrait à la première
        relecture. Un refus se voit, il n'est pas avalé (règle 4). */
     if (typeof DB !== 'undefined' && DB.estDispo() && DB.profil()) {
+      /* ET SON COMPTE, S'IL EN A UN (session 36, D-177). Supprimer la fiche ne
+         retire aucun droit : c'est le COMPTE que la base regarde (règle 10).
+         Sans ce geste, la personne continue de voir ses missions sur son
+         téléphone alors qu'elle a disparu de l'écran du propriétaire — deux
+         écrans qui se contredisent, le pire des symptômes (règle 7).
+         On ne SUPPRIME pas le compte : cela demanderait la clé `service_role`,
+         interdite (règle 2). On lui retire ses logements, ce qui suffit. */
+      if (a.uid && DB.delierCompte) {
+        DB.delierCompte(a.uid).catch(function (e) {
+          state.agentMsg = '⚠️ La fiche de ' + a.name + ' est supprimée, mais son COMPTE garde ses ' +
+            'droits : ' + ((e && e.message) || 'raison inconnue') + ' Elle voit donc peut-être ' +
+            'encore ses missions. Recopie-moi cette phrase.';
+          render();
+        });
+      }
+
       DB.supprimerFiche(id).then(function (ok) {
-        if (ok) return;
+        if (ok) {
+          state.agentMsg = '✅ ' + a.name + ' est supprimée' +
+            (a.uid ? ', et son compte n\u2019a plus accès à aucun logement.' : '.') +
+            ' Elle ne reviendra plus, même depuis un autre appareil.';
+          render();
+          return;
+        }
         /* ON DIT CE QUI VA SE PASSER, PAS SEULEMENT CE QUI A RATÉ (session 28,
-           D-155). Sans cette phrase, la fiche revenait à la relecture suivante
-           et le bouton passait pour cassé : deux écrans qui se contredisent
-           font conclure à une panne, et c'est le pire des symptômes (règle 7). */
-        state.migMsg = '⚠️ La fiche de ' + a.name + ' a été retirée de cet écran, mais PAS du cahier ' +
-          'partagé : ' + (DB.erreur() || 'raison inconnue') + ' La fiche reviendra donc ' +
-          'à la prochaine relecture — ce n\u2019est pas le bouton qui est cassé. Recopie-moi ' +
-          'cette phrase telle quelle.';
+           D-155). ⚠️ Ce message partait dans `state.migMsg`, qui s'affiche en
+           petit et se mélange aux messages de mise en service : trois
+           signalements plus tard, Marc ne l'avait jamais remarqué. Il a
+           désormais son propre bandeau, en haut de la page « Prestataires »,
+           impossible à manquer (session 36, D-177). */
+        state.agentMsg = '⚠️ La fiche de ' + a.name + ' a été retirée de cet écran, mais le cahier ' +
+          'partagé ne l\u2019a PAS effacée : ' + (DB.erreur() || 'raison inconnue') +
+          ' Ce n\u2019est pas le bouton qui est cassé. MAISON WARME se souvient maintenant de la ' +
+          'suppression et la redemandera à chaque ouverture, donc elle ne devrait plus revenir sur ' +
+          'ton écran — mais recopie-moi cette phrase, c\u2019est elle qui dit pourquoi.';
         render();
       });
     }
   },
+  'agent-msg-vu': function () { state.agentMsg = ''; render(); },
   'toggle-perm': function (el) {
     var a = state.agents.find(function (x) { return x.id === el.dataset.ag; });
     if (!a) return;

@@ -901,8 +901,17 @@ var DB = (function () {
     if (!lignes.length) return;                  // rien écrit encore : on garde le local
     var parId = {};
     (state.agents || []).forEach(function (a) { parId[a.id] = a; });
+    var effacees = state.fichesSupprimees || {};
 
     lignes.forEach(function (l) {
+      /* SUPPRIMÉE, DONC PAS RELUE (session 36, D-177). Et on redemande sa
+         suppression : si la ligne est encore là, c'est que le premier essai
+         a échoué ou qu'un autre appareil l'a réécrite. Une suppression qui ne
+         porte sur rien est sans effet — la répéter ne coûte rien. */
+      if (effacees[l.id]) {
+        supprimerLigne('prestataires', l.id);
+        return;
+      }
       var a = parId[l.id];
       if (!a) {
         a = { id: l.id };
@@ -991,6 +1000,14 @@ var DB = (function () {
        elle doit voyager, sinon le doublon supprimé sur l'ordinateur revient
        depuis le téléphone (règle 14). */
     'icalOublies',
+    /* Session 36 (D-177) : les fiches de prestataires supprimées. Même
+       principe et même raison que `icalOublies` juste au-dessus : sans cette
+       mémoire, une fiche effacée sur l'ordinateur **revient depuis le
+       téléphone**, dont la copie de `state.agents` la contient encore et la
+       renvoie au premier enregistrement. C'est la règle 12 poussée jusqu'au
+       bout : dire une suppression au cahier ne suffit pas quand une autre
+       source la réécrit. */
+    'fichesSupprimees',
     /* Session 27 (D-150) : les réglages de l'envoi d'e-mails — est-ce
        branché, l'adresse qui envoie, faut-il prévenir tout seul.
        ⚠️ AUCUNE CLÉ SECRÈTE ICI : la clé du service d'envoi vit chez Vercel,
@@ -2069,8 +2086,12 @@ var DB = (function () {
       .filter(function (v) { return v.id && v.stars && bienExiste(v.pid); });
     var avis = avisVivants.map(avisVersBase);
     var avisAgents = avisVivants.map(avisPresta).filter(Boolean);
+    /* UNE FICHE SUPPRIMÉE NE REPART JAMAIS (session 36, D-177). Sans ce
+       filtre, l'appareil qui n'a pas encore appris la suppression la
+       réenvoie, et elle réapparaît chez tout le monde. */
+    var effacees = state.fichesSupprimees || {};
     var fiches = (state.agents || [])
-      .filter(function (a) { return a.id && !a.gone; })
+      .filter(function (a) { return a.id && !a.gone && !effacees[a.id]; })
       .map(function (a) { return prestataireVersBase(a, moi); });
     var stocks = stocksVersBase();
     var reglages = reglagesVersBase(moi);
@@ -2418,6 +2439,10 @@ var DB = (function () {
     // et c'est le point le plus délicat de la couche (une erreur ici fait
     // disparaître des prestataires ou leur retire tous leurs droits).
     appliquerComptes: comptesDepuisBase,
+    /* Exposée pour la même raison qu'`appliquerComptes` (session 36) : c'est
+       le chemin par lequel une fiche supprimée revenait, et il faut pouvoir
+       l'éprouver sans compte Supabase. */
+    appliquerPrestataires: prestatairesDepuisBase,
     /* Exposée pour la même raison qu'`appliquerComptes` : c'est un point où une
        erreur fait **disparaître du travail** — les liens iCal y sont passés
        (D-124) — et il faut pouvoir l'éprouver sans compte Supabase. */
