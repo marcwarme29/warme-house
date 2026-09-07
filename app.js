@@ -13749,7 +13749,34 @@ var actions = {
        `pousser()` ne sait qu'ajouter et modifier. Depuis que les fiches y
        vivent (session 19), une fiche effacée ici reviendrait à la première
        relecture. Un refus se voit, il n'est pas avalé (règle 4). */
-    if (typeof DB !== 'undefined' && DB.estDispo() && DB.profil()) {
+    /* AUCUNE BRANCHE MUETTE (session 37, D-179)
+
+       Marc a signalé, après la session 36 : *« aucun message n'apparaît, et le
+       prestataire revient toujours »*. C'est une information précise : le code
+       de la session 36 écrit **toujours** un message, vert ou ambre — sauf
+       dans un cas, celui où la condition ci-dessous est fausse et où **tout le
+       bloc est sauté**. Rien n'était alors demandé au cahier partagé, et rien
+       n'était dit. Le silence lui-même était le symptôme.
+
+       On nomme donc ce cas-là aussi, en distinguant ses trois raisons : elles
+       n'ont pas le même remède, et les confondre ferait chercher au mauvais
+       endroit (règle 5). */
+    var dbPrete = typeof DB !== 'undefined' && DB.estDispo() && DB.profil();
+
+    if (!dbPrete) {
+      var manque = (typeof DB === 'undefined')
+        ? 'la couche de données n\u2019est pas chargée (recharge la page)'
+        : !DB.estDispo()
+          ? 'le cahier partagé n\u2019est pas joignable — connexion coupée, ou projet Supabase en pause'
+          : 'aucun compte n\u2019est reconnu par le cahier partagé — déconnecte-toi et reconnecte-toi';
+      state.agentMsg = '⚠️ ' + a.name + ' a été retirée de cet écran, mais RIEN n\u2019a été demandé ' +
+        'au cahier partagé : ' + manque + '. Elle reviendra donc à la prochaine ouverture. ' +
+        'MAISON WARME se souvient de la suppression et la redemandera dès que ce sera possible. ' +
+        'Recopie-moi cette phrase.';
+      render();
+    }
+
+    if (dbPrete) {
       /* ET SON COMPTE, S'IL EN A UN (session 36, D-177). Supprimer la fiche ne
          retire aucun droit : c'est le COMPTE que la base regarde (règle 10).
          Sans ce geste, la personne continue de voir ses missions sur son
@@ -13765,6 +13792,11 @@ var actions = {
           render();
         });
       }
+
+      /* Un message AVANT l'aller-retour : si la réponse ne revient jamais —
+         réseau qui pend, page refermée —, l'écran ne reste pas muet. */
+      state.agentMsg = '⏳ Suppression de ' + a.name + ' demandée au cahier partagé…';
+      render();
 
       DB.supprimerFiche(id).then(function (ok) {
         if (ok) {
@@ -13786,10 +13818,17 @@ var actions = {
           'suppression et la redemandera à chaque ouverture, donc elle ne devrait plus revenir sur ' +
           'ton écran — mais recopie-moi cette phrase, c\u2019est elle qui dit pourquoi.';
         render();
+      }, function (e) {
+        // La demande elle-même n'a pas abouti : encore un cas différent, et il
+        // ne doit pas non plus rester muet (session 37, D-179).
+        state.agentMsg = '⚠️ La demande de suppression de ' + a.name + ' n\u2019a pas abouti : ' +
+          ((e && e.message) || 'raison inconnue') + '. Recopie-moi cette phrase.';
+        render();
       });
     }
   },
   'agent-msg-vu': function () { state.agentMsg = ''; render(); },
+  'panne-recharger': function () { location.reload(); },
   'toggle-perm': function (el) {
     var a = state.agents.find(function (x) { return x.id === el.dataset.ag; });
     if (!a) return;
@@ -14230,7 +14269,73 @@ var VIEWS = {
 
 var lastKey = null;
 
+/* ==========================================================================
+   LE FILET DE SÉCURITÉ (session 37, D-178)
+   ==========================================================================
+
+   Signalé le 7 septembre : *« elle était en train de remplir les photos de la
+   mission, elle s'est retirée de la page, et quand elle est revenue dessus la
+   page était bloquée : elle ne pouvait même plus enregistrer ou prendre une
+   photo, tout était bloqué. »*
+
+   CE QUI SE PASSE QUAND UN ÉCRAN PLANTE, ET POURQUOI ÇA FIGE TOUT.
+   `render()` faisait exactement ceci :
+
+       document.getElementById('app').innerHTML = view();
+
+   Si `view()` lève une erreur — une donnée incomplète, une valeur inattendue —,
+   l'affectation n'a jamais lieu : **l'ancien écran reste à l'image**, intact et
+   parfaitement trompeur. La personne appuie sur un bouton, l'action s'exécute,
+   `render()` est rappelé, `view()` relève la même erreur… et rien ne bouge
+   jamais. L'application a l'air gelée, alors qu'elle tourne.
+
+   C'est la règle 13 sous sa forme la plus cruelle : un écran qui a l'air de
+   marcher. Et la règle 4 : l'échec était **entièrement avalé** — aucune trace
+   à l'écran, seulement dans une console que personne n'ouvre.
+
+   CE QU'ON FAIT MAINTENANT : on attrape. L'écran est remplacé par un message
+   lisible, avec le détail exact de la panne à recopier, un bouton pour
+   recharger, et — pour un prestataire — la garantie écrite que son travail
+   n'est pas perdu (les photos déjà validées sont dans le casier partagé).
+
+   ⚠️ CE FILET NE RÉPARE RIEN. Il rend la panne VISIBLE et RÉCUPÉRABLE, ce qui
+   est très différent. Le message est fait pour être recopié : c'est lui qui
+   dira quel écran, et sur quelle donnée. */
+function ecranDePanne(e) {
+  var detail = (e && (e.message || e.toString())) || 'erreur inconnue';
+  var ou = (route && route.name) || 'inconnu';
+  /* Gardé pour que la personne puisse le recopier même après avoir touché à
+     l'écran. Pas enregistré : une panne n'est pas une donnée (règle 7). */
+  dernierePanne = { ou: ou, detail: detail, at: new Date().toISOString() };
+
+  return '<div class="login"><div class="login-card" style="max-width:560px">' +
+    '<div class="login-logo">MAISON WARME</div>' +
+    '<p class="login-err" role="alert" style="text-align:left">' +
+      '<strong>Cet écran n’a pas pu s’afficher.</strong><br>' +
+      'Ton travail n’est pas perdu : tout ce qui a déjà été validé est enregistré. ' +
+      'Recharge la page, tu retrouveras ta mission là où tu l’as laissée.</p>' +
+    '<button type="button" class="btn btn--primary" style="margin-top:18px"' +
+      act('panne-recharger') + '>Recharger la page</button>' +
+    '<p class="login-hint" style="text-align:left;margin-top:18px">' +
+      '<strong>À recopier au propriétaire</strong> (c’est ce qui permet de réparer) :<br>' +
+      '<span class="num" style="font-size:11.5px">écran « ' + esc(ou) + ' » — ' + esc(detail) + '</span></p>' +
+    '</div></div>';
+}
+
+var dernierePanne = null;
+
 function render() {
+  try {
+    rendreVraiment();
+  } catch (e) {
+    if (typeof console !== 'undefined' && console.error) console.error('MAISON WARME —', e);
+    try {
+      document.getElementById('app').innerHTML = ecranDePanne(e);
+    } catch (e2) { /* même le message d'erreur a échoué : il ne reste rien à faire */ }
+  }
+}
+
+function rendreVraiment() {
   var r = guard();
   if (!r) return;               // une redirection est en cours, le hashchange rappellera render()
   route = r;
@@ -14282,7 +14387,15 @@ document.addEventListener('click', function (e) {
   var fn = actions[el.dataset.a];
   if (!fn) return;
   e.preventDefault();
-  fn(el, e);
+  /* Même filet que pour `render()` (session 37, D-178) : une action qui lève
+     une erreur laissait l'écran dans un état à moitié modifié, sans un mot.
+     Le geste suivant repartait de cet état, et la panne se propageait. */
+  try {
+    fn(el, e);
+  } catch (err) {
+    if (typeof console !== 'undefined' && console.error) console.error('MAISON WARME —', err);
+    try { document.getElementById('app').innerHTML = ecranDePanne(err); } catch (e2) { /* rien à faire */ }
+  }
 });
 
 document.addEventListener('input', function (e) {
