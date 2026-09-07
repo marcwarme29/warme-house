@@ -560,6 +560,14 @@ var DB = (function () {
     lignes.forEach(function (l) { connus[l.id] = true; });
 
     lignes.forEach(function (l) {
+      /* SUPPRIMÉE, DONC PAS RELUE (session 38, D-180). Et on redemande sa
+         suppression : si la ligne est encore là, c'est que le premier essai a
+         échoué ou qu'un autre appareil l'a réécrite. Une suppression qui ne
+         porte sur rien est sans effet — la répéter ne coûte rien. */
+      if (state.supprimes && state.supprimes.resas && state.supprimes.resas[l.id]) {
+        supprimerLigne('reservations', l.id);
+        return;
+      }
       var r = {
         id: l.id, uid: l.uid || '', source: l.source, plat: l.plat, guest: l.guest,
         guests: l.guests, start: l.start_date, end: l.end_date,
@@ -738,6 +746,13 @@ var DB = (function () {
     // Même règle de fusion que les logements et les séjours : une mission
     // créée à l'instant ne doit pas disparaître avant d'être partie.
     var enAttente = (state.missions || []).filter(function (m) { return !connues[m.id]; });
+
+    /* Les missions supprimées ne reviennent pas non plus (session 38, D-180). */
+    lignes = lignes.filter(function (l) {
+      if (!state.supprimes || !state.supprimes.missions || !state.supprimes.missions[l.id]) return true;
+      supprimerLigne('missions', l.id);
+      return false;
+    });
 
     state.missions = lignes.map(function (l) {
       var sejour = sejourLie(l.reservation_id);
@@ -1008,6 +1023,11 @@ var DB = (function () {
        bout : dire une suppression au cahier ne suffit pas quand une autre
        source la réécrit. */
     'fichesSupprimees',
+    /* Session 38 (D-180) : les séjours et les missions supprimés. Même
+       principe que les deux listes ci-dessus, étendu aux lignes saisies à la
+       main — que rien ne retenait, et qui revenaient donc depuis le second
+       appareil du propriétaire. */
+    'supprimes',
     /* Session 27 (D-150) : les réglages de l'envoi d'e-mails — est-ce
        branché, l'adresse qui envoie, faut-il prévenir tout seul.
        ⚠️ AUCUNE CLÉ SECRÈTE ICI : la clé du service d'envoi vit chez Vercel,
@@ -1064,11 +1084,47 @@ var DB = (function () {
      réponses, et il faut les deux : on **vide la file d'écriture avant de
      lire** (voir `viderFileEcriture()`), et une valeur vide venue du cahier ne
      remplace **jamais** une valeur locale qui, elle, contient quelque chose. */
+  /* LES MÉMOIRES DE SUPPRESSION S'ADDITIONNENT, ELLES NE SE REMPLACENT PAS
+     (session 38, D-180)
+
+     Ces trois réglages ne sont pas des valeurs, ce sont des **listes de choses
+     qu'on ne veut plus revoir**. Les traiter comme les autres serait un piège :
+     l'ordinateur en a cinq, le téléphone en a trois, le téléphone relit et
+     **écrase** la liste de cinq par la sienne — deux suppressions oubliées, et
+     les lignes reviennent. Exactement la faute de D-124, sous un autre angle.
+
+     On fusionne donc, toujours, dans les deux sens. Une entrée n'en sort
+     jamais autrement que par la purge des plus anciennes (`purgerSupprimes`).
+     C'est le seul cas où « le cahier ajoute au navigateur » est la bonne
+     règle — parce qu'on n'ajoute que des oublis, jamais des données. */
+  var REGLAGES_CUMULATIFS = { icalOublies: 1, fichesSupprimees: 1, supprimes: 1 };
+
+  function fusionnerOublis(local, distant) {
+    if (!distant || typeof distant !== 'object') return local;
+    if (!local || typeof local !== 'object') return distant;
+    var out = {};
+    Object.keys(local).forEach(function (k) { out[k] = local[k]; });
+    Object.keys(distant).forEach(function (k) {
+      var d = distant[k], l = out[k];
+      // Deux niveaux possibles : { id: true } ou { pid: { uid: true } }.
+      if (d && typeof d === 'object' && !Array.isArray(d)) {
+        out[k] = fusionnerOublis(l && typeof l === 'object' ? l : {}, d);
+      } else if (d) {
+        out[k] = d;
+      }
+    });
+    return out;
+  }
+
   function reglagesDepuisBase(lignes) {
     lignes.forEach(function (l) {
       if (CLES_REGLAGES.indexOf(l.cle) < 0) return;
       var v = l.valeur;
       if (v === null || v === undefined) return;
+      if (REGLAGES_CUMULATIFS[l.cle]) {
+        state[l.cle] = fusionnerOublis(state[l.cle], v);
+        return;
+      }
       if (REGLAGES_NON_VIDES[l.cle] && (!Array.isArray(v) || !v.length)) return;
       if (reglageVide(v) && !reglageVide(state[l.cle])) return;
       state[l.cle] = v;
@@ -2070,16 +2126,25 @@ var DB = (function () {
     var moi = profil.id;
     var biens = (state.props || []).map(function (p) { return bienVersBase(p, moi); });
     var secrets = (state.props || []).map(secretsVersBase);
+    /* RIEN DE CE QUI A ÉTÉ SUPPRIMÉ NE REPART (session 38, D-180). Sans ce
+       filtre, l'appareil qui n'a pas encore appris la suppression réenvoie la
+       ligne, et elle réapparaît chez tout le monde. C'est la cause des
+       « réservations que je supprime et qui reviennent toujours ». */
+    var effaces = (state.supprimes || {});
+    var resasEffacees = effaces.resas || {};
+    var missionsEffacees = effaces.missions || {};
+
     var resas = [], voyageurs = [];
     Object.keys(state.resas || {}).forEach(function (pid) {
       (state.resas[pid] || []).forEach(function (r) {
+        if (resasEffacees[r.id]) return;
         resas.push(resaVersBase(r, pid));
         var v = resaVoyageur(r, pid);
         if (v) voyageurs.push(v);
       });
     });
     var missionsVivantes = (state.missions || [])
-      .filter(function (m) { return m.id && m.date && bienExiste(m.prop); });
+      .filter(function (m) { return m.id && m.date && bienExiste(m.prop) && !missionsEffacees[m.id]; });
     var missions = missionsVivantes.map(missionVersBase);
     var preneurs = missionsVivantes.map(missionPreneur).filter(Boolean);
     var avisVivants = (state.avis || [])
@@ -2443,6 +2508,11 @@ var DB = (function () {
        le chemin par lequel une fiche supprimée revenait, et il faut pouvoir
        l'éprouver sans compte Supabase. */
     appliquerPrestataires: prestatairesDepuisBase,
+    /* Exposées pour la même raison (session 38) : ce sont les deux chemins par
+       lesquels un séjour ou une mission supprimés revenaient, et il faut
+       pouvoir les éprouver sans compte Supabase. */
+    appliquerResas: resasDepuisBase,
+    appliquerMissions: missionsDepuisBase,
     /* Exposée pour la même raison qu'`appliquerComptes` : c'est un point où une
        erreur fait **disparaître du travail** — les liens iCal y sont passés
        (D-124) — et il faut pouvoir l'éprouver sans compte Supabase. */

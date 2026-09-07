@@ -608,6 +608,18 @@ function initialState() {
        encore et la renvoie au premier enregistrement. Voyage dans les
        réglages (`CLES_REGLAGES` de `data.js`). */
     fichesSupprimees: {},
+    /* LES SÉJOURS ET LES MISSIONS SUPPRIMÉS (session 38, D-180).
+
+       `icalOublies` ne retient que les séjours venus d'un CALENDRIER, et ne
+       protège que de la source extérieure. Or le tableau du 5 septembre l'a
+       montré : **dix séjours sur treize sont saisis à la main**. Ceux-là
+       n'étaient retenus nulle part — et revenaient depuis le second appareil,
+       exactement comme la fiche du prestataire (D-177).
+
+       Ici on retient **tout ce qu'on supprime**, quelle que soit son origine :
+       `{ resas: { id: true }, missions: { id: true } }`. Voyage dans les
+       réglages, sinon le téléphone ne l'apprend jamais (règle 14). */
+    supprimes: { resas: {}, missions: {} },
     // Le relevé iCal en cours et son compte rendu, par logement (D-114).
     // Ce sont des attentes de réponse, pas des données : `load()` les remet à zéro.
     icalEnCours: null,
@@ -1124,6 +1136,24 @@ function upgrade() {
   if (Object.keys(state.fichesSupprimees).length) {
     state.agents = (state.agents || []).filter(function (a) {
       return !a || !state.fichesSupprimees[a.id];
+    });
+  }
+
+  /* Et un séjour ou une mission supprimés non plus (session 38, D-180). */
+  if (!state.supprimes || typeof state.supprimes !== 'object') state.supprimes = { resas: {}, missions: {} };
+  if (!state.supprimes.resas) state.supprimes.resas = {};
+  if (!state.supprimes.missions) state.supprimes.missions = {};
+  purgerSupprimes();
+  if (Object.keys(state.supprimes.resas).length) {
+    Object.keys(state.resas || {}).forEach(function (pid) {
+      state.resas[pid] = (state.resas[pid] || []).filter(function (r) {
+        return !r || !state.supprimes.resas[r.id];
+      });
+    });
+  }
+  if (Object.keys(state.supprimes.missions).length) {
+    state.missions = (state.missions || []).filter(function (m) {
+      return !m || !state.supprimes.missions[m.id];
     });
   }
 
@@ -1747,6 +1777,13 @@ function retirerResa(pid, resa, motif) {
      relecture suivante, `resasDepuisBase()` la rapportait. Supprimée à
      l'écran, jamais supprimée dans le cahier, et **de retour à chaque
      ouverture**. C'est la règle 4 : une écriture refusée doit se VOIR. */
+  /* ON RETIENT LA SUPPRESSION AVANT DE LA DIRE (session 38, D-180) : même si
+     le cahier refuse, ou si un autre appareil renvoie la ligne, elle ne
+     reviendra pas. C'est ce qui manquait pour les séjours saisis à la main —
+     `oublierSejourIcal()` ne couvre que ceux venus d'un calendrier. */
+  oublier('resas', resa.id);
+  missionsRetirees.forEach(function (id) { oublier('missions', id); });
+
   var promesse = Promise.resolve(true);
   if (typeof DB !== 'undefined' && DB.estDispo() && DB.profil()) {
     var travaux = missionsRetirees.map(function (id) { return DB.supprimerMission(id); });
@@ -2651,6 +2688,7 @@ function reparerMissionsEnDouble() {
 
   if (!retires.length) return retires;
 
+  retires.forEach(function (id) { oublier('missions', id); });
   state.missions = state.missions.filter(function (m) { return retires.indexOf(m.id) < 0; });
   Object.keys(state.mailsEnvoyes || {}).forEach(function (id) {
     if (retires.indexOf(id) >= 0) delete state.mailsEnvoyes[id];
@@ -2676,6 +2714,47 @@ function missionsEnDoubleRestantes() {
     if (parCle[cle].length > 1) out.push(parCle[cle]);
   });
   return out;
+}
+
+/* LA MÉMOIRE DES SUPPRESSIONS (session 38, D-180)
+
+   Trois fois le même défaut, sur trois tables : un séjour (D-146), une fiche
+   de prestataire (D-177), et maintenant une mission. La forme est toujours la
+   même — *dire une suppression au cahier ne suffit pas quand une autre source
+   la réécrit* (règle 12) — et la « source » n'est pas toujours une plateforme :
+   c'est le plus souvent **le second appareil du propriétaire**, dont la copie
+   porte encore la ligne et la renvoie au premier enregistrement.
+
+   `icalOublies` ne couvrait que les séjours venus d'un CALENDRIER. Or dix des
+   treize séjours de Marc sont **saisis à la main** : rien ne les retenait.
+
+   ⚠️ CE N'EST PAS UNE LISTE QUI ENFLE SANS FIN. On garde les 400 dernières
+   suppressions de chaque sorte — largement au-delà de ce qu'un rattrapage
+   demande — et on jette les plus anciennes. Sans cette borne, la liste
+   finirait par peser dans chaque enregistrement, défaut déjà payé sur les
+   photos en session 15. */
+var MAX_SUPPRIMES = 400;
+
+function oublier(sorte, id) {
+  if (!id) return;
+  if (!state.supprimes) state.supprimes = { resas: {}, missions: {} };
+  if (!state.supprimes[sorte]) state.supprimes[sorte] = {};
+  state.supprimes[sorte][id] = true;
+}
+
+function estSupprime(sorte, id) {
+  return !!(id && state.supprimes && state.supprimes[sorte] && state.supprimes[sorte][id]);
+}
+
+function purgerSupprimes() {
+  ['resas', 'missions'].forEach(function (sorte) {
+    var cles = Object.keys(state.supprimes[sorte] || {});
+    if (cles.length <= MAX_SUPPRIMES) return;
+    var garder = cles.slice(cles.length - MAX_SUPPRIMES);
+    var neuf = {};
+    garder.forEach(function (k) { neuf[k] = true; });
+    state.supprimes[sorte] = neuf;
+  });
 }
 
 /** Lequel de deux exemplaires est le mieux renseigné ? (D-162, réutilisé D-171) */
@@ -2785,6 +2864,7 @@ function reparerResasEnDouble() {
   /* LE DIRE AU CAHIER (règle 12). Le doublon écarté peut très bien être celui
      qui, lui, était déjà enregistré : le supprimer par son identifiant règle
      les deux cas, et une suppression qui ne porte sur rien est sans effet. */
+  ecartes.forEach(function (id) { oublier('resas', id); });
   if (ecartes.length && typeof DB !== 'undefined' && DB.estDispo() && DB.profil() && DB.supprimerResa) {
     ecartes.forEach(function (id) { DB.supprimerResa(id); });
   }
@@ -12313,6 +12393,7 @@ var actions = {
     if (!confirm(avertir)) return;
 
     state.missions = state.missions.filter(function (x) { return x.id !== m.id; });
+    oublier('missions', m.id);          // elle ne doit pas revenir (D-180)
     delete state.reports[m.id];
     delete state.photos[m.id];
     Object.keys(state.photosEnvoi).forEach(function (k) {
