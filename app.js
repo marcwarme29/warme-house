@@ -619,7 +619,7 @@ function initialState() {
        Ici on retient **tout ce qu'on supprime**, quelle que soit son origine :
        `{ resas: { id: true }, missions: { id: true } }`. Voyage dans les
        réglages, sinon le téléphone ne l'apprend jamais (règle 14). */
-    supprimes: { resas: {}, missions: {} },
+    supprimes: { resas: {}, missions: {}, creneaux: {} },
     // Le relevé iCal en cours et son compte rendu, par logement (D-114).
     // Ce sont des attentes de réponse, pas des données : `load()` les remet à zéro.
     icalEnCours: null,
@@ -1140,9 +1140,10 @@ function upgrade() {
   }
 
   /* Et un séjour ou une mission supprimés non plus (session 38, D-180). */
-  if (!state.supprimes || typeof state.supprimes !== 'object') state.supprimes = { resas: {}, missions: {} };
+  if (!state.supprimes || typeof state.supprimes !== 'object') state.supprimes = { resas: {}, missions: {}, creneaux: {} };
   if (!state.supprimes.resas) state.supprimes.resas = {};
   if (!state.supprimes.missions) state.supprimes.missions = {};
+  if (!state.supprimes.creneaux) state.supprimes.creneaux = {};
   purgerSupprimes();
   if (Object.keys(state.supprimes.resas).length) {
     Object.keys(state.resas || {}).forEach(function (pid) {
@@ -1614,6 +1615,12 @@ function rattacherArrivee(pid, resa) {
 
 /** Ajoute une réservation déjà normalisée et crée sa mission de départ. */
 function ajouterResa(pid, resa) {
+  /* SAISIR UN SÉJOUR À LA MAIN ROUVRE SES DATES (session 39, D-181).
+     Le propriétaire vient de dire « finalement, si, il y a bien quelque chose
+     ici » : la mémoire du créneau n'a plus lieu d'être, et la garder
+     empêcherait le calendrier de mettre ce séjour à jour plus tard. */
+  if (resa && resa.source !== 'ical') rouvrirCreneau(pid, resa);
+
   state.resas[pid] = resasOf(pid).concat([resa]).sort(function (a, b) {
     return a.start < b.start ? -1 : a.start > b.start ? 1 : 0;
   });
@@ -1741,7 +1748,7 @@ function annulerMission(m, motif) {
 }
 
 /** Retire une réservation : sa mission est supprimée, ou annulée avec un mot. */
-function retirerResa(pid, resa, motif) {
+function retirerResa(pid, resa, motif, parLeProprietaire) {
   state.resas[pid] = resasOf(pid).filter(function (x) { return x !== resa; });
   var cle = resaKey(pid, resa);
 
@@ -1783,6 +1790,18 @@ function retirerResa(pid, resa, motif) {
      `oublierSejourIcal()` ne couvre que ceux venus d'un calendrier. */
   oublier('resas', resa.id);
   missionsRetirees.forEach(function (id) { oublier('missions', id); });
+
+  /* LE CRÉNEAU N'EST BLOQUÉ QUE SUR UN GESTE DU PROPRIÉTAIRE (session 39, D-181).
+
+     `retirerResa()` sert aussi aux retraits AUTOMATIQUES : un séjour annulé
+     sur la plateforme (D-145), ou dont les dates ont bougé. Bloquer ces
+     dates-là serait une faute — une période rouverte puis réservée pour de
+     vrai ne reviendrait jamais, et personne ne comprendrait pourquoi.
+
+     Retenir l'IDENTIFIANT reste inoffensif dans tous les cas : un séjour
+     recréé en reçoit un neuf. Retenir les DATES, non. On ne le fait donc que
+     lorsque c'est Marc qui a cliqué « Supprimer ». */
+  if (parLeProprietaire) oublierCreneau(pid, resa);
 
   var promesse = Promise.resolve(true);
   if (typeof DB !== 'undefined' && DB.estDispo() && DB.profil()) {
@@ -1896,7 +1915,14 @@ function fusionnerResas(pid, lot, source, plat) {
 
     /* Un séjour supprimé à la main ne revient pas (D-146). On ne le compte pas
        non plus comme « inchangé » : il est écarté, et le bilan le dit. */
-    if (source === 'ical' && sejourOublie(pid, incoming.uid)) { bilan.ignorees++; return; }
+    /* Un séjour supprimé à la main ne revient pas (D-146, élargi en D-181).
+       Deux mémoires : son identifiant de plateforme quand il en a un, et son
+       CRÉNEAU — logement + dates — qui reste stable même quand l'événement
+       n'a aucun identifiant. Sans la seconde, un événement sans `UID:`
+       revenait à chaque relève, indéfiniment. */
+    if (source === 'ical' && (sejourOublie(pid, incoming.uid) || creneauOublie(pid, incoming))) {
+      bilan.ignorees++; return;
+    }
 
     var connue = resasOf(pid).find(function (x) {
       return (incoming.uid && x.uid === incoming.uid) ||
@@ -2735,6 +2761,54 @@ function missionsEnDoubleRestantes() {
    photos en session 15. */
 var MAX_SUPPRIMES = 400;
 
+/* LE TROU QUE LA MÉMOIRE PAR IDENTIFIANT NE POUVAIT PAS BOUCHER (session 39, D-181)
+
+   `slugResa()` finit par `jeton(12)` : **l'identifiant interne d'un séjour est
+   tiré au hasard**. Un séjour recréé par la relève reçoit donc un identifiant
+   NEUF — et la mémoire de D-180, qui retient des identifiants, ne le
+   reconnaît pas. Elle protège du second appareil, pas de la relève.
+
+   Restait donc `icalOublies`, qui retient l'identifiant DE LA PLATEFORME
+   (`uid`). Sauf qu'un événement de calendrier **peut ne pas en avoir** :
+   `analyserIcs()` écrit `uid: cour.uid || null` quand la ligne `UID:` manque —
+   ce qui arrive sur certains exports (périodes fermées, Google Agenda, et une
+   partie de ce que publie Booking). Alors :
+
+     · `oublierSejourIcal()` refuse d'enregistrer (il exige un `uid`) ;
+     · `sejourOublie(pid, '')` rend toujours faux ;
+     · `fusionnerResas()` ne retrouve aucun séjour local (il vient d'être
+       supprimé) et **le recrée**.
+
+   Résultat : le séjour revient à CHAQUE relève, indéfiniment, avec un
+   identifiant différent à chaque fois. C'est le « encore et toujours » du
+   12 septembre, et aucune des trois mémoires précédentes ne pouvait l'arrêter.
+
+   ON RETIENT DONC AUSSI LE CRÉNEAU — logement + dates —, la seule chose qui
+   reste stable quand tout le reste change.
+
+   ⚠️ DEUX GARDE-FOUS, parce que bloquer des dates est plus fort que bloquer
+   une ligne :
+     · le créneau ne bloque QUE les séjours venus d'un CALENDRIER. Un séjour
+       que le propriétaire saisit lui-même n'est jamais refusé — sinon il ne
+       pourrait plus rien créer sur ces dates, et il chercherait longtemps ;
+     · et le saisir à la main **efface la mémoire de ce créneau** : c'est le
+       geste qui dit « finalement, si, il y a bien quelque chose ici ». */
+function cleCreneau(pid, debut, fin) { return pid + '|' + debut + '|' + fin; }
+
+function oublierCreneau(pid, resa) {
+  if (!resa || !resa.start || !resa.end) return;
+  oublier('creneaux', cleCreneau(pid, resa.start, resa.end));
+}
+
+function creneauOublie(pid, resa) {
+  return estSupprime('creneaux', cleCreneau(pid, resa.start, resa.end));
+}
+
+function rouvrirCreneau(pid, resa) {
+  if (!resa || !state.supprimes || !state.supprimes.creneaux) return;
+  delete state.supprimes.creneaux[cleCreneau(pid, resa.start, resa.end)];
+}
+
 function oublier(sorte, id) {
   if (!id) return;
   if (!state.supprimes) state.supprimes = { resas: {}, missions: {} };
@@ -2747,7 +2821,8 @@ function estSupprime(sorte, id) {
 }
 
 function purgerSupprimes() {
-  ['resas', 'missions'].forEach(function (sorte) {
+  ['resas', 'missions', 'creneaux'].forEach(function (sorte) {
+    if (!state.supprimes[sorte]) state.supprimes[sorte] = {};
     var cles = Object.keys(state.supprimes[sorte] || {});
     if (cles.length <= MAX_SUPPRIMES) return;
     var garder = cles.slice(cles.length - MAX_SUPPRIMES);
@@ -13079,7 +13154,7 @@ var actions = {
     /* Et on retient qu'on n'en veut plus : sinon la relève le recrée dans
        l'heure, puisqu'il est toujours publié par la plateforme (D-146). */
     var oublie = oublierSejourIcal(f.pid, f.r);
-    var b = retirerResa(f.pid, f.r, 'La réservation a été supprimée par le propriétaire.');
+    var b = retirerResa(f.pid, f.r, 'La réservation a été supprimée par le propriétaire.', true);
     save();
     go('#/admin/calendrier');
     if (!b.annulees.length && oublie) {
@@ -13272,7 +13347,7 @@ var actions = {
     }
     if (!confirm(avertir + 'Cette suppression est définitive.')) return;
     var oublie2 = oublierSejourIcal(pid, r);          // D-146 : il ne doit pas revenir
-    var bilan = retirerResa(pid, r, 'La réservation a été supprimée par le propriétaire.');
+    var bilan = retirerResa(pid, r, 'La réservation a été supprimée par le propriétaire.', true);
     save(); render();
 
     /* ON ATTEND LA RÉPONSE DU CAHIER AVANT DE DIRE « C'EST FAIT » (D-176).
