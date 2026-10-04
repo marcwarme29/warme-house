@@ -548,6 +548,12 @@ function initialState() {
     missions: clone(MISSIONS),
     photos: {},                       // { missionId: { stepId: photo enregistrée sur l'appareil } }
     photosEnvoi: {},                  // { 'missionId:stepId': 'encours' | 'ok' | 'erreur' } — dépôt dans le casier (lot 2)
+    /* Missions dont l'avancement n'a pas été accepté par le cahier partagé
+       (session 40, D-182) : { missionId: { status, raison, at } }. C'est une
+       donnée, pas un état d'écran : elle doit survivre au rechargement pour
+       que le téléphone réessaie, et pour que le bandeau reste affiché tant
+       que le propriétaire n'a rien reçu. */
+    avancementsBloques: {},
     /* DÉCLARÉE ICI, ET PAS SEULEMENT DANS `upgrade()` (session 22). `load()`
        ne recopie que les clés que `initialState()` connaît : une clé posée
        uniquement par `upgrade()` est **relue puis jetée** à chaque
@@ -895,6 +901,7 @@ function upgrade() {
   // Un envoi resté « encours » à la fermeture de la page n'a jamais abouti :
   // on le rouvre, pour que le filet de fin de mission le reprenne.
   if (!state.photosEnvoi) state.photosEnvoi = {};
+  if (!state.avancementsBloques || typeof state.avancementsBloques !== 'object') state.avancementsBloques = {};
   Object.keys(state.photosEnvoi).forEach(function (k) {
     if (state.photosEnvoi[k] === 'encours') state.photosEnvoi[k] = 'erreur';
   });
@@ -4335,7 +4342,8 @@ function prestaShell(head, body, foot, opts) {
       '<span class="presta-msg-x">✕</span></div>'
     : '';
   return '<div class="presta">' + head +
-    '<div class="presta-body' + (opts.flush ? ' presta-body--flush' : '') + '">' + msg + body + '</div>' +
+    '<div class="presta-body' + (opts.flush ? ' presta-body--flush' : '') + '">' + msg +
+      bandeauAvancementsBloques() + body + '</div>' +
     (foot || '') +
     (opts.noTabs ? '' : tabBar()) +
     '</div>';
@@ -5430,6 +5438,65 @@ function alerteBiensNonConfies() {
     '</div>';
 }
 
+/* LE PROPRIÉTAIRE SUR SON TÉLÉPHONE (session 40, D-183).
+
+   Signalé le 4 octobre : « sur l'ordinateur c'est très bien, mais sur
+   téléphone… ». Le menu y était une bande qui défilait de côté, en haut de la
+   page : trois rubriques visibles sur onze, rien pour dire qu'il y en avait
+   d'autres, un grand bouton « Se déconnecter » à la meilleure place, et le
+   tout disparaissait dès qu'on descendait dans la page — pour changer de
+   rubrique, il fallait remonter tout en haut.
+
+   Sous 1 000 px de large, c'est désormais le geste habituel d'une application
+   de téléphone : une barre fixe en bas de l'écran avec les quatre rubriques
+   de tous les jours, et « Plus » qui ouvre la liste complète. Rien ne change
+   sur l'ordinateur, où le rail vertical reste tel quel.
+
+   L'ouverture du menu est une POSITION D'AFFICHAGE (règle 7) : une variable
+   de module, jamais dans `state`, donc jamais enregistrée. */
+var OWNER_TABS = ['dash', 'calendrier', 'missions', 'agents'];
+var OWNER_TAB_COURT = { dash: 'Accueil', calendrier: 'Calendrier', missions: 'Missions', agents: 'Équipe' };
+var OWNER_TAB_ICONE = { dash: '⌂', calendrier: '▦', missions: '✓', agents: '☺' };
+var menuProprioOuvert = false;
+
+function barreProprio(page, openCount) {
+  var dansPlus = OWNER_TABS.indexOf(page) < 0;
+  var onglets = OWNER_TABS.map(function (k) {
+    var n = OWNER_NAV.filter(function (x) { return x.key === k; })[0];
+    var on = page === k && !menuProprioOuvert;
+    return '<button type="button"' + (on ? ' aria-current="page"' : '') + ' style="--nav:' + n.color + '"' +
+      act('nav', { path: n.path }) + '>' +
+      '<span class="onav-i" aria-hidden="true">' + OWNER_TAB_ICONE[k] + '</span>' +
+      '<span class="onav-l">' + OWNER_TAB_COURT[k] + '</span>' +
+      (k === 'missions' && openCount > 0 ? '<span class="onav-b num">' + openCount + '</span>' : '') +
+      '</button>';
+  }).join('');
+  return '<nav class="onav" aria-label="Rubriques">' + onglets +
+    '<button type="button" aria-expanded="' + menuProprioOuvert + '"' +
+      ((dansPlus || menuProprioOuvert) ? ' aria-current="page"' : '') + act('menu-proprio') + '>' +
+      '<span class="onav-i" aria-hidden="true">☰</span><span class="onav-l">Plus</span></button>' +
+    '</nav>';
+}
+
+function menuProprio(page, openCount) {
+  if (!menuProprioOuvert) return '';
+  return '<div class="omenu" role="dialog" aria-label="Toutes les rubriques">' +
+    '<div class="omenu-fond"' + act('menu-proprio') + '></div>' +
+    '<div class="omenu-feuille">' +
+      '<div class="omenu-t">Toutes les rubriques</div>' +
+      OWNER_NAV.map(function (n) {
+        return '<button type="button" class="omenu-l"' + (page === n.key ? ' aria-current="page"' : '') +
+          ' style="--nav:' + n.color + '"' + act('nav', { path: n.path }) + '>' +
+          '<span class="rail-dot"></span>' + esc(n.label) +
+          (n.key === 'missions' && openCount > 0 ? '<span class="rail-badge num">' + openCount + '</span>' : '') +
+          '</button>';
+      }).join('') +
+      '<div class="omenu-pied">' + esc(compteConnecte()) + '</div>' +
+      '<button type="button" class="omenu-l omenu-sortie"' + act('logout') + '>Se déconnecter</button>' +
+    '</div>' +
+  '</div>';
+}
+
 function ownerShell(page, content) {
   var openCount = state.missions.filter(function (m) { return m.status === 'dispo'; }).length;
 
@@ -5458,6 +5525,7 @@ function ownerShell(page, content) {
       '</div>' +
     '</aside>' +
     '<main class="owner-main">' + alerteEnvoi() + alerteScripts() + alerteBiensNonConfies() + content + '</main>' +
+    barreProprio(page, openCount) + menuProprio(page, openCount) +
     '</div>';
 }
 
@@ -5972,7 +6040,7 @@ function viewOwnerMissions() {
          13, c'est après qui ? » — et il fallait ouvrir chaque ligne pour y
          répondre. La vignette du logement (D-129) remplace la pastille de
          couleur : on reconnaît une maison plus vite qu'un point vert. */
-      '<div class="thead"><span style="width:96px">Date</span><span style="flex:1.5">Bien</span>' +
+      '<div class="thead thead--fiches"><span style="width:96px">Date</span><span style="flex:1.5">Bien</span>' +
       '<span style="flex:1.2">Voyageur</span>' +
       '<span style="flex:1">Type</span><span style="width:120px">Créneau</span>' +
       '<span style="flex:1">Statut</span><span style="width:70px;text-align:right">Prix</span>' +
@@ -5985,18 +6053,19 @@ function viewOwnerMissions() {
           : m.redoLabel ? '<span class="badge badge--terra">Reprise demandée</span>' : '';
         if (m.raw.note) extra += '<span class="badge badge--soft" title="' + esc(m.raw.note) + '">✎ Note</span>';
 
-        return '<button type="button" class="trow trow--link" aria-label="' +
+        return '<button type="button" class="trow trow--link trow--mission" aria-label="' +
             esc((done ? 'Revoir' : 'Ouvrir') + ' la mission ' + m.typeLabel + ' — ' + m.propName + ', ' + m.dateLabel) + '"' +
             act('nav', { path: '#/admin/missions/' + m.id }) + '>' +
-          '<span class="num" style="width:96px;font-weight:600">' + esc(m.dateLabel) + '</span>' +
-          '<span style="flex:1.5;display:flex;align-items:center;gap:9px;min-width:0">' +
+          '<span class="num tm-date" style="width:96px;font-weight:600">' + esc(m.dateLabel) + '</span>' +
+          '<span class="tm-bien" style="flex:1.5;display:flex;align-items:center;gap:9px;min-width:0">' +
             vignetteBien(m.raw.prop, m.color) + '<span style="min-width:0">' + esc(m.propName) + '</span></span>' +
-          '<span style="flex:1.2;min-width:0;color:var(--ink-soft)">' + esc(m.voyageurLabel) + '</span>' +
-          '<span style="flex:1;color:var(--muted3)">' + esc(m.typeLabel) + '</span>' +
-          '<span class="num" style="width:120px;color:var(--muted3)">' + esc(m.windowLabel) + '</span>' +
-          '<span style="flex:1;display:flex;align-items:center;gap:7px;flex-wrap:wrap">' +
+          '<span class="tm-voy" style="flex:1.2;min-width:0;color:var(--ink-soft)">' + esc(m.voyageurLabel) +
+            '<span class="tm-mobile"> · ' + esc(m.typeLabel) + (m.windowLabel ? ' · ' + esc(m.windowLabel) : '') + '</span></span>' +
+          '<span class="tm-type" style="flex:1;color:var(--muted3)">' + esc(m.typeLabel) + '</span>' +
+          '<span class="num tm-creneau" style="width:120px;color:var(--muted3)">' + esc(m.windowLabel) + '</span>' +
+          '<span class="tm-statut" style="flex:1;display:flex;align-items:center;gap:7px;flex-wrap:wrap">' +
             '<span class="badge ' + m.statusCls + '">' + esc(m.statusLabel) + '</span>' + extra + '</span>' +
-          '<span class="num" style="width:70px;text-align:right;font-weight:600">' + esc(m.priceLabel) + '</span>' +
+          '<span class="num tm-prix" style="width:70px;text-align:right;font-weight:600">' + esc(m.priceLabel) + '</span>' +
           '<span class="trow-go">' + (done ? 'Revoir →' : 'Ouvrir →') + '</span>' +
           '</button>';
       }).join('') : '<p class="empty">' +
@@ -8067,30 +8136,30 @@ function viewOwnerStats() {
     '<h2 class="sec-title" style="margin-top:26px">Par logement</h2>' +
     '<div class="card" style="padding:0;overflow:hidden">' +
       '<div class="table-scroll">' +
-        '<div class="thead" style="min-width:920px"><span style="flex:1.8">Logement</span>' +
+        '<div class="thead thead--fiches" style="min-width:920px"><span style="flex:1.8">Logement</span>' +
           '<span style="width:150px">Occupation</span><span style="width:90px;text-align:right">Nuits</span>' +
           '<span style="width:90px;text-align:right">Séjours</span><span style="width:100px;text-align:right">Revenus</span>' +
           '<span style="width:100px;text-align:right">Prix / nuit</span><span style="width:100px;text-align:right">Ménage</span>' +
           '<span style="width:100px;text-align:right">Net</span></div>' +
         lignes.map(function (l) {
           var ouvert = state.statBien === l.p.id;
-          return '<button type="button" class="trow trow--link" style="min-width:920px;width:100%"' +
+          return '<button type="button" class="trow trow--link trow--statbien" style="min-width:920px;width:100%"' +
               ' aria-expanded="' + ouvert + '" aria-label="Détail de ' + esc(l.p.name) + '"' +
               act('stat-bien', { pid: l.p.id }) + '>' +
-            '<span style="flex:1.8;display:flex;align-items:center;gap:9px;min-width:0">' +
+            '<span class="ts-nom" style="flex:1.8;display:flex;align-items:center;gap:9px;min-width:0">' +
               vignetteBien(l.p.id, l.p.color) +
               '<span style="min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' +
                 esc(l.p.name) + '</span>' +
               '<span style="color:var(--muted2);flex:none">' + (ouvert ? '▾' : '▸') + '</span></span>' +
-            '<span style="width:150px;display:flex;align-items:center;gap:9px">' +
+            '<span class="ts-jauge" style="width:150px;display:flex;align-items:center;gap:9px">' +
               '<span class="jauge"><span style="width:' + l.taux + '%;background:' + l.p.color + '"></span></span>' +
               '<span class="num" style="font-weight:700;width:44px;text-align:right">' + l.taux + ' %</span></span>' +
-            '<span class="num" style="width:90px;text-align:right">' + l.nuits + '</span>' +
-            '<span class="num" style="width:90px;text-align:right">' + l.sejours + '</span>' +
-            '<span class="num" style="width:100px;text-align:right;font-weight:600">' + l.revenus + ' €</span>' +
-            '<span class="num" style="width:100px;text-align:right;color:var(--muted3)">' + l.adr + ' €</span>' +
-            '<span class="num" style="width:100px;text-align:right;color:var(--terra-d)">' + (l.depenses ? '− ' + l.depenses + ' €' : '—') + '</span>' +
-            '<span class="num" style="width:100px;text-align:right;font-weight:700">' + l.net + ' €</span>' +
+            '<span class="num" data-l="Nuits" style="width:90px;text-align:right">' + l.nuits + '</span>' +
+            '<span class="num" data-l="Séjours" style="width:90px;text-align:right">' + l.sejours + '</span>' +
+            '<span class="num" data-l="Revenus" style="width:100px;text-align:right;font-weight:600">' + l.revenus + ' €</span>' +
+            '<span class="num" data-l="Prix / nuit" style="width:100px;text-align:right;color:var(--muted3)">' + l.adr + ' €</span>' +
+            '<span class="num" data-l="Ménage" style="width:100px;text-align:right;color:var(--terra-d)">' + (l.depenses ? '− ' + l.depenses + ' €' : '—') + '</span>' +
+            '<span class="num" data-l="Net" style="width:100px;text-align:right;font-weight:700">' + l.net + ' €</span>' +
             '</button>' +
             (ouvert ? detailStatBien(l, mois) : '');
         }).join('') +
@@ -8199,6 +8268,24 @@ function diagnosticPresta(a) {
     return ko('Son compte a disparu du cahier partagé',
       'Sa fiche garde le souvenir d’un compte qui n’existe plus. Rien de ce que tu coches ne peut l’atteindre.',
       'Ouvre « ⚙ Réglages et accès » → « Détacher le compte », puis invite-la à nouveau.');
+  }
+
+  /* 1 bis. LE COMPTE DÉSIGNE-T-IL BIEN CETTE FICHE ? (session 40, D-182)
+     Supprimer une fiche détache son compte (D-177) : `legacy_id` vidé,
+     logements retirés. Si une autre fiche de la même personne gardait ce
+     compte, elle le croit encore relié — et les missions qu'on lui attribue
+     partent au nom d'une fiche que le compte ne reconnaît plus. */
+  if (c.legacy_id && c.legacy_id !== a.id) {
+    return ko('Son compte est relié à une autre fiche',
+      'Le cahier partagé rattache son compte à « ' + esc(c.legacy_id) + ' », pas à cette fiche. Les missions ' +
+      'que tu lui attribues ici ne peuvent pas être validées depuis son téléphone.',
+      'Appuie sur « Renvoyer ses droits » ci-dessous.');
+  }
+  if (!c.legacy_id) {
+    return ko('Son compte a été détaché de sa fiche',
+      'C’est ce que fait la suppression d’une fiche. Tant que c’est le cas, ce qu’elle termine sur son ' +
+      'téléphone <strong>n’arrive pas chez toi</strong>.',
+      'Appuie sur « Renvoyer ses droits » ci-dessous.');
   }
 
   // 2. Son métier, tel qu'il est inscrit dans le COMPTE. La base refuse toute
@@ -9221,10 +9308,24 @@ function viewStockUnBien() {
   return picker + rows;
 }
 
+/* SUR TÉLÉPHONE, LES STOCKS S'OUVRENT « UN LOGEMENT À LA FOIS » (session 40,
+   D-183). Le tableau croisé fait 900 px de large : sur un écran de 375 px on
+   n'en voyait que la première colonne de logements. Tant que le propriétaire
+   n'a pas choisi lui-même un onglet pendant cette visite, le téléphone prend
+   la vue faite pour lui (D-158). Le choix reste une position d'affichage,
+   jamais enregistrée (règle 7). */
+var stockOngletChoisi = false;
+function ongletStocks() {
+  var petit = typeof matchMedia === 'function' && matchMedia('(max-width: 620px)').matches;
+  if (state.stockTab === 'matrice' && petit && !stockOngletChoisi) return 'unbien';
+  return state.stockTab;
+}
+
 function viewOwnerStocks() {
   var content;
+  var onglet = ongletStocks();
 
-  if (state.stockTab === 'matrice') {
+  if (onglet === 'matrice') {
     var visible = state.stockGroup === 'Tous' ? groups() : [state.stockGroup];
     content =
       '<div class="chiprow" style="margin-top:20px">' +
@@ -9270,7 +9371,7 @@ function viewOwnerStocks() {
           }).join('') : '<p class="empty">Rien sous le seuil dans cette catégorie.</p>') +
           '</div></div>';
       }).join('') + '</div>' + formNewArticle();
-  } else if (state.stockTab === 'unbien') {
+  } else if (onglet === 'unbien') {
     content = viewStockUnBien();
   } else {
     /* Biens retenus pour les courses. Tant que rien n'a été décoché, ils y sont tous. */
@@ -9370,7 +9471,7 @@ function viewOwnerStocks() {
       '<div><h1 class="page-title">Stocks</h1>' +
       '<p class="page-sub">Dernier relevé du prestataire. Ajuste le seuil de chaque article pour piloter la liste de courses.</p></div>' +
       '<div class="seg">' + [['matrice', 'Tableau'], ['unbien', 'Un logement à la fois'], ['courses', 'Liste de courses']].map(function (t) {
-        return '<button type="button" aria-pressed="' + (state.stockTab === t[0]) + '"' + act('stock-tab', { t: t[0] }) + '>' + t[1] + '</button>';
+        return '<button type="button" aria-pressed="' + (onglet === t[0]) + '"' + act('stock-tab', { t: t[0] }) + '>' + t[1] + '</button>';
       }).join('') + '</div>' +
     '</div>' + content);
 }
@@ -11439,7 +11540,7 @@ function take(id) {
            Le propriétaire devait le retraduire lui-même en « Sofia », et
            quand il n'y arrivait pas la mission lui revenait terminée mais
            sans personne — ni « acceptée par », ni rémunération à verser. */
-        if (typeof DB !== 'undefined' && DB.estDispo()) DB.majMission(m);
+        envoyerAvancement(m);
         save();
         go('#/app/missions/' + id);
       })
@@ -11468,7 +11569,7 @@ function start(id) {
     state.draft = { id: id, prop: m.prop, qty: Object.assign({}, state.stock[m.prop]) };
   }
   save();
-  if (typeof DB !== 'undefined' && DB.estDispo()) DB.majMission(m);
+  envoyerAvancement(m);
 
   /* PRÉVENIR LE PROPRIÉTAIRE (session 34, D-174). Demandé par Marc.
      **Après** `majMission`, jamais avant : le serveur ne répondra que si la
@@ -11572,6 +11673,94 @@ function envoiPhoto(mid, sid, image) {
 
 /* Deuxième chance, au moment de terminer : tout ce qui n'est pas parti repart.
    C'est le filet pour une mission faite dans un logement sans réseau. */
+/* L'AVANCEMENT D'UNE MISSION, ET CE QUI ARRIVE QUAND LE CAHIER LE REFUSE
+   (session 40, D-182).
+
+   Signalé le 4 octobre : Doriane faisait ses ménages au Château, son
+   téléphone les affichait terminés, et chez Marc rien n'avait bougé. Le
+   cahier refusait en silence — la mission n'était pas inscrite à son nom —
+   et le téléphone ne lisait même pas la réponse.
+
+   Désormais : un refus est retenu dans `state.avancementsBloques`, il est
+   DIT sur le téléphone de la prestataire (bandeau en haut de ses écrans), et
+   il est retenté à chaque relecture du cahier. Le jour où le propriétaire a
+   réparé le lien (fiche reliée, mission attribuée), le travail part tout seul
+   — rien n'a été perdu entre-temps, puisque `missionsDepuisBase()` n'écrase
+   plus un avancement que le cahier n'a pas encore reçu. */
+function envoyerAvancement(m) {
+  if (!m || typeof DB === 'undefined' || !DB.estDispo() || !DB.profil()) return Promise.resolve(null);
+  if (DB.profil().role !== 'provider') return Promise.resolve(null);
+  return Promise.resolve(DB.majMission(m)).then(function (b) {
+    if (!b) return b;                                   // rien n'a été tenté
+    if (!state.avancementsBloques) state.avancementsBloques = {};
+    var avant = !!state.avancementsBloques[m.id];
+    if (b.ok) {
+      delete state.avancementsBloques[m.id];
+      if (m.status === 'termine') {
+        renvoyerPhotosManquantes(m.id).then(function (n) { if (n) save(); });
+      }
+    } else {
+      state.avancementsBloques[m.id] = { status: m.status, raison: b.raison || 'erreur',
+                                         message: b.message || '', at: nowHM() };
+    }
+    if (avant !== !!state.avancementsBloques[m.id] || b.reprise) { save(); render(); }
+    return b;
+  });
+}
+
+/** Retente ce que le cahier n'a pas encore accepté (appelé après chaque relecture). */
+var relanceEnCours = false;
+function relancerAvancements() {
+  if (relanceEnCours || state.auth !== 'presta') return;
+  var moi = state.me;
+  /* `missionsDepuisBase()` y a déjà inscrit ce que le cahier ignore encore :
+     un ménage terminé ici et resté « pris » là-bas, ou une mission que le
+     cahier ne lui rend même plus. C'est ainsi que les ménages faits AVANT
+     cette mise à jour — ceux de Doriane — sont retrouvés. */
+  var ids = Object.keys(state.avancementsBloques || {});
+  var aFaire = ids.map(mission).filter(function (m) { return m && m.taker === moi && m.status !== 'dispo'; });
+  Object.keys(state.avancementsBloques || {}).forEach(function (id) {
+    if (!mission(id)) delete state.avancementsBloques[id];   // supprimée entre-temps
+  });
+  if (!aFaire.length) return;
+  relanceEnCours = true;
+  aFaire.reduce(function (chaine, m) {
+    return chaine.then(function () { return envoyerAvancement(m); });
+  }, Promise.resolve()).catch(function () { }).then(function () {
+    relanceEnCours = false;
+    save(); render();
+  });
+}
+
+/** Le bandeau qui dit à la prestataire ce qui n'est pas arrivé chez le propriétaire. */
+function bandeauAvancementsBloques() {
+  var b = state.avancementsBloques || {};
+  var ids = Object.keys(b).filter(function (id) { return mission(id) && b[id].raison !== 'a-verifier'; });
+  if (!ids.length) return '';
+  var liste = ids.map(function (id) {
+    var m = mission(id);
+    return '<li><strong>' + esc(service(m.type).label) + '</strong> du ' + esc(fmtDate(m.date)) +
+      ' · ' + esc(prop(m.prop).name) + '</li>';
+  }).join('');
+  var erreur = ids.some(function (id) { return b[id].raison === 'erreur'; });
+  return '<div class="card" role="alert" style="padding:14px 16px;margin-bottom:14px;' +
+      'border:2px solid var(--terra,#C0603A);background:#FFF4EC">' +
+    '<div style="font:700 15px Figtree,sans-serif;margin-bottom:6px">⚠️ ' +
+      (ids.length > 1 ? ids.length + ' missions ne sont pas arrivées' : 'Une mission n\u2019est pas arrivée') +
+      ' chez le propriétaire</div>' +
+    '<ul style="margin:0 0 8px 18px;padding:0;font-size:14px">' + liste + '</ul>' +
+    '<p class="sec-note" style="margin:0 0 6px">' +
+      (erreur
+        ? 'Le cahier partagé n\u2019a pas répondu. Vérifie ta connexion : ton téléphone réessaiera tout seul.'
+        : 'Ton téléphone a bien tout gardé — checklist, photos, compte rendu. Mais le cahier partagé ' +
+          'refuse de l\u2019enregistrer de ta part : <strong>cette mission n\u2019y est pas à ton nom</strong>.') +
+    '</p>' +
+    (erreur ? '' : '<p class="sec-note" style="margin:0 0 10px"><strong>Préviens le propriétaire</strong> ' +
+      '(montre-lui cet écran). Dès qu\u2019il aura remis la mission à ton nom, elle partira toute seule.</p>') +
+    '<button type="button" class="btn btn--primary btn--sm"' + act('avancements-relancer') + '>Réessayer maintenant</button>' +
+  '</div>';
+}
+
 function renvoyerPhotosManquantes(mid) {
   if (typeof DB === 'undefined' || !DB.estDispo() || !DB.profil()) return Promise.resolve(0);
   var ph = state.photos[mid] || {};
@@ -11840,7 +12029,7 @@ function finish(id) {
      avec le nombre de photos réellement déposées. */
   renvoyerPhotosManquantes(id).then(function (n) {
     if (n) { save(); render(); }
-    if (typeof DB !== 'undefined' && DB.estDispo()) DB.majMission(m);
+    envoyerAvancement(m);
   });
 
   /* LE RELEVÉ DE STOCK, LUI AUSSI (session 19, audit du stockage). Il partait
@@ -11863,7 +12052,9 @@ function editRooms(pid, fn) {
 
 var actions = {
   /* Navigation ---------------------------------------------------------- */
-  nav: function (el) { go(el.dataset.path); },
+  nav: function (el) { menuProprioOuvert = false; go(el.dataset.path); },
+  /* Le menu « Plus » du propriétaire sur téléphone (session 40, D-183). */
+  'menu-proprio': function () { menuProprioOuvert = !menuProprioOuvert; render(); },
   'back-list': function () { go(state.auth === 'presta' ? '#/app/missions' : '#/admin'); },
   'open-mission': function (el) { go('#/app/missions/' + el.dataset.id); },
   'open-bien': function (el) {
@@ -11998,6 +12189,7 @@ var actions = {
     else go('#/login');
   },
   logout: function () {
+    menuProprioOuvert = false;
     state.auth = null;
     state.me = null;
     state.draft = null;
@@ -12360,12 +12552,15 @@ var actions = {
        que le propriétaire relit. On pousse donc la mission dans la foulée. */
     verserProblemes(m.id);
     save();
-    if (typeof DB !== 'undefined' && DB.estDispo() && DB.profil()) DB.majMission(m);
+    envoyerAvancement(m);
     go('#/app/missions/' + m.id + '/checklist');
   },
 
   /* Une photo en grand, par-dessus l'écran (session 16). Ce n'est pas une
      donnée : elle n'est pas enregistrée, et `load()` la referme. */
+  /* Le bouton du bandeau « n'est pas arrivée chez le propriétaire » (D-182). */
+  'avancements-relancer': function () { relancerAvancements(); },
+
   'photo-plein': function (el) { state.photoPlein = el.dataset.p; render(); },
   'photo-fermer': function () { state.photoPlein = null; render(); },
 
@@ -12405,7 +12600,7 @@ var actions = {
     save(); render();
 
     var m = mid ? mission(mid) : null;
-    if (m && typeof DB !== 'undefined' && DB.estDispo() && DB.profil()) DB.majMission(m);
+    if (m) envoyerAvancement(m);
   },
 
   /* ATTRIBUER UNE MISSION À LA MAIN (session 25, D-142).
@@ -12628,7 +12823,7 @@ var actions = {
     state.openReglages = state.openReglages === el.dataset.ag ? null : el.dataset.ag;
     save(); render();
   },
-  'stock-tab': function (el) { state.stockTab = el.dataset.t; save(); render(); },
+  'stock-tab': function (el) { stockOngletChoisi = true; state.stockTab = el.dataset.t; save(); render(); },
   'stock-group': function (el) { state.stockGroup = el.dataset.g; save(); render(); },
   'stock-un-bien': function (el) { state.stockUnBien = el.dataset.pid; save(); render(); },
   'stock-step': function (el) {

@@ -2008,3 +2008,126 @@ textarea.inp { min-height: 90px; resize: vertical; line-height: 1.5; }
   background: var(--cream);
   font: 500 13.5px/1.4 Figtree, sans-serif;
 }
+
+/* ==========================================================================
+   Le propriétaire sur son téléphone (session 40, D-183)
+   Sous 1 000 px : en-tête réduit au nom, barre fixe en bas avec les quatre
+   rubriques de tous les jours, et « Plus » qui ouvre la liste complète.
+   Au-dessus, rien ne change : le rail vertical reste maître.
+   ========================================================================== */
+
+.onav, .omenu { display: none; }
+
+@media (max-width: 999px) {
+  .rail { padding: calc(10px + var(--safe-top)) 16px 10px; }
+  .rail-logo { font-size: 19px; }
+  .rail-nav, .rail-foot { display: none; }
+
+  .owner-main { padding-bottom: calc(96px + var(--safe-bottom)); }
+
+  .onav {
+    display: flex;
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 100;
+    padding: 6px 4px calc(8px + var(--safe-bottom));
+    background: rgba(251,247,241,.97);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    border-top: 1px solid rgba(36,30,26,.09);
+    box-shadow: 0 -6px 20px -14px rgba(36,30,26,.35);
+  }
+  .onav button {
+    flex: 1;
+    position: relative;
+    min-height: 54px;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 3px;
+    border-radius: 14px;
+    cursor: pointer;
+    color: var(--muted2);
+  }
+  .onav-i { font-size: 19px; line-height: 1; }
+  .onav-l { font: 600 11px Figtree, sans-serif; }
+  .onav button[aria-current="page"] { color: var(--ink); background: rgba(36,30,26,.06); }
+  .onav button[aria-current="page"] .onav-i { color: var(--nav, var(--terra)); }
+  .onav-b {
+    position: absolute; top: 3px; left: calc(50% + 6px);
+    font: 700 10px Figtree, sans-serif;
+    background: var(--terra); color: #fff;
+    padding: 2px 6px; border-radius: 999px;
+  }
+
+  .omenu { display: block; position: fixed; inset: 0; z-index: 95; }
+  .omenu-fond { position: absolute; inset: 0; background: rgba(20,16,13,.42); }
+  .omenu-feuille {
+    position: absolute; left: 0; right: 0; bottom: 0;
+    max-height: 82vh; overflow-y: auto;
+    background: var(--ink);
+    border-radius: 22px 22px 0 0;
+    padding: 18px 14px calc(84px + var(--safe-bottom));
+    animation: monte .2s ease both;
+  }
+  @keyframes monte { from { transform: translateY(30px); opacity: 0; } to { transform: none; opacity: 1; } }
+  .omenu-t { font: 700 12px Figtree, sans-serif; letter-spacing: .07em; text-transform: uppercase;
+             color: rgba(247,239,228,.5); padding: 0 10px 10px; }
+  .omenu-l {
+    display: flex; align-items: center; gap: 11px; width: 100%;
+    min-height: 48px; padding: 10px 12px; border-radius: 13px;
+    font: 600 15px Figtree, sans-serif; color: rgba(247,239,228,.85);
+    text-align: left; cursor: pointer;
+  }
+  .omenu-l .rail-dot { width: 8px; height: 8px; border-radius: 999px; background: var(--nav, var(--terra)); flex: none; }
+  .omenu-l .rail-badge { margin-left: auto; font: 700 11px Figtree, sans-serif; background: var(--terra);
+                         color: #fff; padding: 2px 8px; border-radius: 999px; }
+  .omenu-l[aria-current="page"] { background: rgba(247,239,228,.12); color: #F7EFE4; }
+  .omenu-pied { font: 500 12px/1.5 Figtree, sans-serif; color: rgba(247,239,228,.45);
+                padding: 14px 12px 4px; border-top: 1px solid rgba(247,239,228,.1); margin-top: 10px; }
+  .omenu-sortie { color: #F2B8A2; }
+}
+
+/* LES TABLEAUX D'ORDINATEUR, EN FICHES SUR TÉLÉPHONE (session 40, D-183).
+   Les listes Missions et « Par logement » étaient des tableaux de 760 à
+   920 px de large, coupés et écrasés : textes qui se chevauchent, statut et
+   prix hors de l'écran. Sous 620 px, chaque ligne devient une fiche lisible. */
+@media (max-width: 620px) {
+  .table-scroll .thead--fiches { display: none; }
+
+  .trow--mission {
+    min-width: 0 !important;
+    display: grid;
+    grid-template-columns: 1fr auto;
+    grid-template-areas: "date prix" "bien bien" "voy voy" "statut go";
+    gap: 6px 12px;
+    padding: 14px 16px;
+    text-align: left;
+  }
+  .trow--mission > span { width: auto !important; flex: none !important; }
+  .trow--mission .tm-date   { grid-area: date; font-size: 15px; }
+  .trow--mission .tm-prix   { grid-area: prix; }
+  .trow--mission .tm-bien   { grid-area: bien; font-weight: 700; }
+  .trow--mission .tm-voy    { grid-area: voy; color: var(--muted3) !important; font-size: 13px; }
+  .trow--mission .tm-type, .trow--mission .tm-creneau { display: none; }
+  .trow--mission .tm-statut { grid-area: statut; }
+  .trow--mission .trow-go   { grid-area: go; align-self: center; }
+
+  .trow--statbien {
+    min-width: 0 !important;
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px 10px;
+    padding: 14px 16px;
+    text-align: left;
+  }
+  .trow--statbien > span { width: auto !important; flex: none !important; text-align: left !important; }
+  .trow--statbien .ts-nom   { grid-column: 1 / -1; font-weight: 700; }
+  .trow--statbien .ts-jauge { grid-column: 1 / -1; }
+  .trow--statbien .ts-jauge .jauge { flex: 1; }
+  .trow--statbien [data-l]::before {
+    content: attr(data-l);
+    display: block;
+    font: 600 10px Figtree, sans-serif; letter-spacing: .05em; text-transform: uppercase;
+    color: var(--muted2); margin-bottom: 2px;
+  }
+}
+/* Le type et le créneau rejoignent la ligne du voyageur sur téléphone. */
+.tm-mobile { display: none; }
+@media (max-width: 620px) { .tm-mobile { display: inline; } }

@@ -747,6 +747,41 @@ var DB = (function () {
     // créée à l'instant ne doit pas disparaître avant d'être partie.
     var enAttente = (state.missions || []).filter(function (m) { return !connues[m.id]; });
 
+    /* SUR LE TÉLÉPHONE D'UN PRESTATAIRE (session 40, D-182). Il ne crée
+       jamais de mission : ce qu'il garde en mémoire sans que le cahier le lui
+       rende n'est donc pas « en attente d'envoi », c'est une copie fantôme.
+       Une mission LIBRE fantôme s'efface — la proposer, c'est inviter à faire
+       un ménage que le cahier refusera d'enregistrer. Une mission qu'il a
+       prise ou faite, elle, reste : c'est son travail, et la relance de
+       `relancerAvancements()` (app.js) dira pourquoi elle ne part pas. */
+    var presta = profil && profil.role === 'provider';
+    var moi = presta && typeof state.me === 'string' ? state.me : null;
+    var aRelancer = function (id) {
+      if (!state.avancementsBloques) state.avancementsBloques = {};
+      if (!state.avancementsBloques[id]) state.avancementsBloques[id] = { raison: 'a-verifier' };
+    };
+    if (presta) {
+      enAttente = enAttente.filter(function (m) {
+        return m.status !== 'dispo' && (!moi || m.taker === moi);
+      });
+      enAttente.forEach(function (m) { if (moi) aRelancer(m.id); });
+    }
+    /* Ce que la prestataire a écrit et que le cahier n'a pas encore reçu ne
+       doit pas être effacé par la relecture — sinon le ménage terminé
+       redeviendrait « pris » sur son propre téléphone, et la preuve de son
+       travail disparaîtrait au moment où on en a besoin. Même règle que la
+       file d'écriture (règle 3), appliquée à ce qui a été REFUSÉ. */
+    var localParId = {};
+    if (presta) (state.missions || []).forEach(function (m) { localParId[m.id] = m; });
+    var RANG = { dispo: 0, prise: 1, encours: 2, termine: 3 };
+    var enAvance = function (local, l) {
+      if (!local || !moi || local.taker !== moi) return false;
+      if (l.status === 'annulee' || !(local.status in RANG) || !(l.status in RANG)) return false;
+      /* Le propriétaire a demandé une reprise : c'est lui qui a raison. */
+      if ((l.redo || '') !== (local.redo || '')) return false;
+      return RANG[local.status] > RANG[l.status];
+    };
+
     /* Les missions supprimées ne reviennent pas non plus (session 38, D-180). */
     lignes = lignes.filter(function (l) {
       if (!state.supprimes || !state.supprimes.missions || !state.supprimes.missions[l.id]) return true;
@@ -782,6 +817,13 @@ var DB = (function () {
         };
       }
       if (l.next_guest) m.next = l.next_guest;
+      var local = localParId[l.id];
+      if (enAvance(local, l)) {
+        aRelancer(l.id);
+        m.status = local.status;
+        m.taker = local.taker;
+        return m;                    // son compte rendu local est gardé tel quel
+      }
       if (l.report) state.reports[l.id] = l.report;
       return m;
     }).concat(enAttente);
@@ -1307,6 +1349,11 @@ var DB = (function () {
       if (jeSuisLeProprio) {
         if (!Array.isArray(a.props)) a.props = l.props || [];
         if (ecartDeDroits(a, l)) aRenvoyer = true;
+        /* Un compte qui ne désigne plus cette fiche — détaché par la
+           suppression d'une autre fiche de la même personne (D-177) — se
+           recolle tout seul (session 40, D-182). Sans quoi ce qu'elle termine
+           sur son téléphone n'arrive plus jamais ici. */
+        if ((l.legacy_id || '') !== a.id) aRenvoyer = true;
       } else {
         a.kind = l.kind || a.kind;
         a.props = l.props || [];
@@ -1441,9 +1488,57 @@ var DB = (function () {
        écrit donc son nom dans la ligne, une fois pour toutes — cette colonne
        est faite pour ça (`taker_legacy`, script 02). */
     if (m.taker) maj.taker_legacy = m.taker;
-    return client.from('missions').update(maj).eq('id', m.id).then(function (r) {
-      if (r.error) derniereErreur = messageClair(r.error);
-      return !r.error;
+
+    /* UNE MISE À JOUR QUI NE TOUCHE AUCUNE LIGNE N'EST PAS UNE RÉUSSITE
+       (session 40, D-182). Signalé le 4 octobre : *« Doriane réalise bien les
+       missions au Château, mais de mon côté c'est comme si rien n'avait été
+       fait. »*
+
+       Les règles du cahier (script 01, `missions_presta_maj`) ne laissent un
+       prestataire modifier une mission que si elle est **à son nom**
+       (`provider_id`). Quand elle ne l'est pas — compte détaché par la
+       suppression d'une fiche (D-177), mission attribuée à une fiche sans
+       compte, mission restée « libre » dans le cahier mais gardée en mémoire
+       sur le téléphone —, Supabase ne rend **aucune erreur** : il modifie zéro
+       ligne et répond « c'est fait ». Et cette fonction rendait « réussi »,
+       que personne ne lisait d'ailleurs. Le téléphone affichait « terminée »,
+       le cahier n'avait rien reçu. C'est la règle 22, une sixième fois.
+
+       On redemande donc la ligne écrite. Zéro ligne, c'est un échec, et il
+       est rendu avec sa raison pour que le téléphone puisse le DIRE (règle 4).
+
+       Et une seule tentative de rattrapage, étroite : si la mission est
+       encore « libre » dans le cahier sur un logement que ce compte a le
+       droit de prendre, on la prend d'abord (`prendre_mission`, qui tranche
+       seul les doublons), puis on réécrit. C'est exactement ce que la
+       prestataire croyait avoir fait. Rien d'autre n'est tenté : une mission
+       prise par quelqu'un d'autre reste à l'autre. */
+    var ecrire = function () {
+      return client.from('missions').update(maj).eq('id', m.id).select('id');
+    };
+    var ok = function (r) { return !!(r && !r.error && Array.isArray(r.data) && r.data.length); };
+
+    return ecrire().then(function (r) {
+      if (r && r.error) throw r.error;
+      if (ok(r)) return { ok: true };
+      if (m.status === 'dispo') return { ok: false, raison: 'pas-a-moi' };
+      return client.rpc('prendre_mission', { mission_id: m.id }).then(function (p) {
+        if (p && p.error) return { ok: false, raison: 'pas-a-moi' };
+        return ecrire().then(function (r2) {
+          if (r2 && r2.error) throw r2.error;
+          return ok(r2) ? { ok: true, reprise: true } : { ok: false, raison: 'pas-a-moi' };
+        });
+      });
+    }).then(function (b) {
+      if (!b.ok) {
+        derniereErreur = 'le cahier partagé n\u2019a pas accepté cette mission de ta part : ' +
+          'elle n\u2019y est pas inscrite à ton nom.';
+        b.message = derniereErreur;
+      }
+      return b;
+    }).catch(function (e) {
+      derniereErreur = messageClair(e);
+      return { ok: false, raison: 'erreur', message: derniereErreur };
     });
   }
 
@@ -1806,7 +1901,15 @@ var DB = (function () {
      qu'elle existe. Même famille de faute que la règle 4 du §6. */
   function majComptesLies() {
     if (!dispo || !profil || profil.role !== 'owner') return Promise.resolve(false);
-    var lies = (state.agents || []).filter(function (a) { return a.uid; });
+    /* Deux fiches pour le même compte (une personne saisie deux fois) : la
+       première seule écrit. Sans ce filtre, elles se renverraient le compte
+       à chaque relecture, chacune effaçant l'autre (session 40, D-182). */
+    var vus = {};
+    var lies = (state.agents || []).filter(function (a) {
+      if (!a.uid || vus[a.uid]) return false;
+      vus[a.uid] = true;
+      return true;
+    });
     if (!lies.length) return Promise.resolve(true);
     return lies.reduce(function (chaine, a) {
       return chaine.then(function (ok) {
@@ -1988,6 +2091,13 @@ var DB = (function () {
 
       if (typeof upgrade === 'function') upgrade();
       premiereLectureFaite = true;
+
+      /* Ce que la prestataire a fait et que le cahier n'a pas reçu repart à
+         chaque relecture (session 40, D-182). Sans attendre la réponse : la
+         lecture est finie, l'écran peut se dessiner. */
+      if (profil.role === 'provider' && typeof relancerAvancements === 'function') {
+        setTimeout(relancerAvancements, 0);
+      }
 
       /* Ce que le cahier n'avait pas, on le lui rend — mais SEULEMENT si on
          est le propriétaire (précisé en session 19). Sur le téléphone d'un
