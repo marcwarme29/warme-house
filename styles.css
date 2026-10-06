@@ -1465,7 +1465,7 @@ textarea.inp { min-height: 90px; resize: vertical; line-height: 1.5; }
 /* Planning tous logements (rubrique Calendrier) ---------------------------- */
 
 .plan-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
-.plan { min-width: min-content; }
+.plan { min-width: min-content; width: 100%; }
 
 .plan-row { display: flex; align-items: stretch; border-bottom: 1px solid rgba(36,30,26,.07); }
 .plan-row:last-child { border-bottom: 0; }
@@ -1490,17 +1490,19 @@ textarea.inp { min-height: 90px; resize: vertical; line-height: 1.5; }
 .plan-prop-n { display: block; font: 700 13.5px Figtree, sans-serif; }
 .plan-prop-s { display: block; font: 600 11px Figtree, sans-serif; color: var(--muted2); margin-top: 2px; }
 
-.plan-days { position: relative; flex: none; height: 52px; }
+/* Le mois entier s'étire sur la largeur disponible ; jamais moins de 26 px par
+   jour — en dessous, on fait défiler (session 41, D-184). */
+.plan-days { position: relative; flex: 1 1 auto; min-width: calc(var(--nj, 31) * 26px); height: 52px; }
 .plan-row--head .plan-days { height: 40px; }
 .plan-cells { position: absolute; inset: 0; display: flex; }
 
-.plan-cell { width: 38px; flex: none; border-right: 1px solid rgba(36,30,26,.05); }
+.plan-cell { flex: 1 1 0; min-width: 0; border-right: 1px solid rgba(36,30,26,.05); }
 .plan-cell--we { background: rgba(36,30,26,.028); }
 .plan-cell--today { background: var(--amber-bg); }
 
 .plan-day {
-  width: 38px;
-  flex: none;
+  flex: 1 1 0;
+  min-width: 0;
   border-right: 1px solid rgba(36,30,26,.05);
   display: flex;
   flex-direction: column;
@@ -1516,6 +1518,7 @@ textarea.inp { min-height: 90px; resize: vertical; line-height: 1.5; }
 
 .plan-bar {
   position: absolute;
+  min-width: 22px;
   top: 9px;
   height: 34px;
   border-radius: 999px;

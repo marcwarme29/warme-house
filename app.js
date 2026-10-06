@@ -847,7 +847,7 @@ function load() {
      ou un onglet ouvert. `load()` la remet donc sur aujourd'hui, à la même
      valeur que le bouton « Aujourd'hui » (trois jours de recul, pour voir les
      départs de la veille). */
-  state.planStart = jourPlus(TODAY, -3);
+  state.planStart = premierJourDuMois(TODAY);   // le mois en cours depuis la session 41 (D-184)
   if (state.bienvenue) state.bienvenue.enCours = false;
   if (state.inv) state.inv.enCours = false;
 
@@ -6367,6 +6367,118 @@ function photosDeLaMission(mid, rep) {
   return null;
 }
 
+/* CE QUI EST DÉJÀ ARRIVÉ D'UNE MISSION PAS ENCORE CLOSE (session 41, D-185)
+
+   Signalé le 6 octobre : *« J'ai beaucoup de missions "en cours" que la
+   prestataire n'a sûrement pas validées comme terminées, mais du coup je n'ai
+   aucune info sur le ménage réalisé pour la valider moi-même. »*
+
+   L'information existait, et c'est ce qui rend le défaut irritant : chaque
+   photo part dans le casier **au moment où elle est prise** (`envoiPhoto`), pas
+   à la fin. Mais l'écran du propriétaire ne savait trouver les photos qu'à
+   travers le compte rendu — qui n'est écrit qu'au « Terminer » — et affichait
+   « La checklist s'affichera ici une fois la mission terminée ». Une mission
+   jamais close restait donc muette, alors que ses photos étaient là.
+
+   On demande donc au casier les photos de **toutes les étapes à photo** de la
+   checklist actuelle du logement. Ce qui n'y est pas n'a simplement pas été
+   déposé — on ne peut pas savoir si l'étape a été faite (règle 5). Les étapes
+   sans photo, elles, ne laissent aucune trace avant le « Terminer » : on le dit.
+   Cache à part (`'~' + id`) : ce lot-ci est demandé d'après la checklist du
+   logement, celui de la revue d'après le compte rendu figé. */
+function photosDuCasier(m) {
+  var cle = '~' + m.id;
+  if (photosParMission[cle]) return photosParMission[cle];
+  if (photosDemandees[cle]) return null;
+  if (typeof DB === 'undefined' || !DB.estDispo() || !DB.profil()) return {};
+  var etapes = [];
+  rooms(m.prop).forEach(function (r) {
+    (r.steps || []).forEach(function (st) { if (st.id && st.photo) etapes.push(st.id); });
+  });
+  if (!etapes.length) { photosParMission[cle] = {}; return photosParMission[cle]; }
+  photosDemandees[cle] = true;
+  DB.urlsPhotos(m.id, etapes)
+    .then(function (urls) { photosParMission[cle] = urls || {}; render(); })
+    .catch(function () { photosParMission[cle] = {}; render(); });
+  return null;
+}
+
+/** Combien de photos du casier, pour une mission pas encore close (null = on cherche). */
+function nbPhotosRecues(m) {
+  var lot = photosDuCasier(m);
+  return lot === null ? null : Object.keys(lot).length;
+}
+
+/** La checklist du logement, avec ce qui est déjà arrivé dans le casier. */
+function carteAvancementEnCours(m, d) {
+  var lot = photosDuCasier(m);
+  var cherche = lot === null;
+  lot = lot || {};
+  var demandees = 0, recues = 0;
+  rooms(m.prop).forEach(function (r) {
+    (r.steps || []).forEach(function (st) {
+      if (!st.photo) return;
+      demandees++;
+      if (lot[st.id] || photoLocale(m.id, st.id)) recues++;
+    });
+  });
+  var qui = m.taker ? agent(m.taker).name : 'la prestataire';
+
+  var entete = '<div class="card" style="padding:18px 20px">' +
+    '<div style="font:700 16px Figtree,sans-serif">' +
+      (cherche ? 'Je cherche les photos déjà envoyées…'
+        : recues ? recues + ' photo' + (recues > 1 ? 's' : '') + ' reçue' + (recues > 1 ? 's' : '') +
+            ' sur ' + demandees + ' demandée' + (demandees > 1 ? 's' : '')
+          : 'Aucune photo reçue pour l’instant') + '</div>' +
+    '<p class="sec-note" style="margin:6px 0 0">' +
+      (closeALaMain(m)
+        ? 'Tu as marqué cette mission comme faite à la main. Voici ce que ' + esc(qui) + ' avait envoyé avant.'
+        : 'Chaque photo arrive au moment où ' + esc(qui) + ' la prend, sans attendre la fin. ' +
+          (recues ? 'Si le ménage te paraît fait, tu peux le clore toi-même dans l’encadré à droite.'
+                  : 'Aucune n’est arrivée : le ménage n’a peut-être pas commencé, ou les photos sont ' +
+                    'restées sur son téléphone faute de réseau.')) +
+    '</p>' +
+    '<p class="sec-note" style="margin:6px 0 0">Les étapes <strong>sans photo</strong> ne laissent aucune ' +
+      'trace avant « Terminer » : on ne peut pas savoir si elles ont été faites.</p>' +
+    (cherche ? '' : '<button type="button" class="btn btn--xs" style="margin-top:12px;background:var(--cream);' +
+      'color:var(--ink-soft)"' + act('photos-revoir', { id: m.id }) + '>↻ Revoir les photos</button>') +
+  '</div>';
+
+  var pieces = rooms(m.prop).map(function (r) {
+    var steps = r.steps || [];
+    if (!steps.length) return '';
+    var n = steps.filter(function (st) { return st.photo && (lot[st.id] || photoLocale(m.id, st.id)); }).length;
+    var avecPhoto = steps.filter(function (st) { return st.photo; }).length;
+    return '<div class="card" style="padding:18px 20px">' +
+      '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">' +
+        '<span class="dot" style="background:' + d.color + '"></span>' +
+        '<span style="font:700 16px Figtree,sans-serif;flex:1;min-width:0">' + esc(r.name) + '</span>' +
+        (avecPhoto ? '<span class="badge num ' + (n === avecPhoto ? 'badge--green' : n ? 'badge--amber' : 'badge--soft') + '">' +
+          n + '/' + avecPhoto + ' 📷</span>' : '') +
+      '</div>' +
+      '<div class="revue-grid">' + steps.map(function (st) {
+        var url = st.photo ? (lot[st.id] || photoLocale(m.id, st.id)) : null;
+        var thumb = url
+          ? '<button type="button" class="revue-thumb" style="padding:0;overflow:hidden;cursor:zoom-in"' +
+              act('photo-plein', { p: '~' + m.id + ':' + st.id }) + ' aria-label="Voir en grand la photo · ' + esc(st.label) + '">' +
+              '<img src="' + esc(url) + '" alt="Photo · ' + esc(st.label) + '" ' +
+              'style="width:100%;height:100%;object-fit:cover;display:block"></button>'
+          : '<span class="revue-thumb revue-thumb--none">' + (st.photo ? (cherche ? '…' : '—') : '·') + '</span>';
+        return '<div class="revue-step">' + thumb +
+          '<div class="grow">' +
+            '<div style="font:600 13.5px/1.3 Figtree,sans-serif">' + esc(st.label) + '</div>' +
+            '<div style="font:500 11.5px Figtree,sans-serif;color:var(--muted2);margin-top:3px">' +
+              (!st.photo ? 'Sans photo · on ne sait pas encore'
+                : url ? 'Photo reçue'
+                  : cherche ? 'Recherche…' : 'Pas de photo reçue') + '</div>' +
+          '</div></div>';
+      }).join('') + '</div>' +
+    '</div>';
+  }).join('');
+
+  return entete + (pieces || '<div class="card"><p class="empty">Ce logement n’a pas de checklist.</p></div>');
+}
+
 /* LA PHOTO GARDÉE SUR L'APPAREIL (session 16)
 
    Le casier partagé n'est pas le seul endroit où vit une photo : elle est
@@ -6394,7 +6506,7 @@ function vueGrandePhoto() {
     url = pb ? pb.photo : '';
   } else {
     var c = p.split(':');
-    url = (photosParMission[c[0]] || {})[c[1]] || photoLocale(c[0], c[1]) || '';
+    url = (photosParMission[c[0]] || {})[c[1]] || photoLocale(c[0].replace(/^~/, ''), c[1]) || '';
   }
   if (!url) return '';
   return '<div class="photo-plein"' + act('photo-fermer') + '>' +
@@ -6497,7 +6609,11 @@ function viewOwnerMission() {
 
   /* Colonne de gauche : la checklist telle qu'elle a été exécutée. */
   var checklist = !fini
-    ? '<div class="card"><p class="empty">La checklist s\'affichera ici une fois la mission terminée.</p></div>'
+    ? (m.status === 'dispo'
+        ? '<div class="card"><p class="empty">Personne n’a encore pris cette mission : il n’y a rien à voir.</p></div>'
+        : carteAvancementEnCours(m, d))
+    : !repComplet && closeALaMain(m) && nbPhotosRecues(m)
+    ? carteAvancementEnCours(m, d)
     : !repComplet
     ? '<div class="card"><p class="empty">' + (closeALaMain(m)
         ? 'Pas de checklist ni de photos : tu as marqué cette mission comme faite à la main. Le ' +
@@ -6648,7 +6764,12 @@ function viewOwnerMission() {
     '<h2 style="font:700 16px Figtree,sans-serif;margin:0 0 14px">Suivi</h2>' +
     [['Statut', d.statusLabel],
      ['Prestataire', m.taker ? agent(m.taker).name : 'Personne pour l\'instant'],
-     ['Étapes validées', d.done + ' / ' + d.total],
+     /* Les étapes validées ne quittent le téléphone qu'au « Terminer » : ici on
+        ne compterait que celles de CET appareil, donc zéro (session 41, D-185).
+        Les photos, elles, arrivent au fil de l'eau : c'est ce qu'on compte. */
+     m.status === 'dispo' ? ['Étapes validées', '—']
+       : ['Photos reçues', nbPhotosRecues(m) === null ? '…' : nbPhotosRecues(m) + ' / ' +
+           rooms(m.prop).reduce(function (n, r) { return n + (r.steps || []).filter(function (st) { return st.photo; }).length; }, 0)],
      ['Rémunération', d.priceLabel],
      ['Voyageur sortant', m.res ? m.res.guest + ' · ' + m.res.guests + ' voyageurs' : '—'],
      ['Prochaine arrivée', m.next ? m.next.guest + ' · ' + m.next.at : '—']].map(function (r) {
@@ -6695,7 +6816,8 @@ function viewOwnerMission() {
 
     '<div class="cols" style="margin-top:24px">' +
       '<section style="flex:1.7;min-width:min(100%,380px);display:flex;flex-direction:column;gap:14px">' +
-        '<h2 class="sec-title" style="margin:0">Checklist exécutée</h2>' + checklist +
+        '<h2 class="sec-title" style="margin:0">' + (fini && repComplet ? 'Checklist exécutée'
+          : fini ? 'Checklist' : 'Ce qui est déjà arrivé') + '</h2>' + checklist +
       '</section>' +
       '<section style="flex:1;min-width:min(100%,280px);display:flex;flex-direction:column;gap:14px">' +
         problemesCard + noteCard + suivi + recap + carteCloreMission(m) + quiCard +
@@ -6780,8 +6902,10 @@ function carteCloreMission(m) {
     return '<div class="card" style="padding:20px">' +
       '<h2 style="font:700 16px Figtree,sans-serif;margin:0">Terminée à la main</h2>' +
       '<p class="sec-note" style="margin:6px 0 0">Tu as marqué cette mission comme faite' +
-        (rep && rep.fini ? ', à ' + esc(rep.fini) : '') + '. Il n’y a donc ni checklist ni photos ' +
-        'à revoir&nbsp;: le ménage n’est pas passé par l’application.</p>' +
+        (rep && rep.fini ? ', à ' + esc(rep.fini) : '') + '. ' +
+        (nbPhotosRecues(m)
+          ? 'Les photos envoyées avant la clôture restent visibles à gauche&nbsp;; il n’y a pas de relevé de stock.</p>'
+          : 'Il n’y a donc ni checklist ni photos à revoir&nbsp;: le ménage n’est pas passé par l’application.</p>') +
       '<button type="button" class="btn btn--xs" style="margin-top:12px;background:var(--cream);' +
         'color:var(--ink-soft)"' + act('rouvrir-mission', { id: m.id }) + '>Ce n’était pas terminé</button>' +
     '</div>';
@@ -6797,8 +6921,11 @@ function carteCloreMission(m) {
         : 'À utiliser si <strong>tu as fait le ménage toi-même</strong>, ou si quelqu’un l’a fait ' +
           'sans passer par l’application. Elle sortira des missions disponibles.') +
     '</p>' +
-    '<p class="sec-note" style="margin:8px 0 0">Il n’y aura ni checklist ni photos — il n’y en a ' +
-      'pas eu. C’est écrit sur la fiche, pour qu’on ne croie pas à un travail bâclé.</p>' +
+    (nbPhotosRecues(m)
+      ? '<p class="sec-note" style="margin:8px 0 0">Les <strong>' + nbPhotosRecues(m) + ' photo(s)</strong> ' +
+        'déjà reçues restent visibles à gauche. Il n’y aura pas de relevé de stock.</p>'
+      : '<p class="sec-note" style="margin:8px 0 0">Il n’y aura ni checklist ni photos — il n’y en a ' +
+        'pas eu. C’est écrit sur la fiche, pour qu’on ne croie pas à un travail bâclé.</p>') +
     '<button type="button" class="btn btn--go btn--sm" style="width:100%;margin-top:14px"' +
       act('clore-mission', { id: m.id }) + '>Marquer comme terminée</button>' +
   '</div>';
@@ -6851,8 +6978,9 @@ function carteQuiAFait(m, ag, fini) {
    départ de l'un et l'arrivée de l'autre se voient le même jour (turnover).
    -------------------------------------------------------------------------- */
 
-var PLAN_JOURS = 31;    // nombre de jours affichés
-var PLAN_CASE = 38;     // largeur d'un jour en pixels — doit suivre styles.css
+/* (Session 41, D-184 : le nombre de jours affichés est celui du mois, calculé
+   dans `viewOwnerCal()`. L'ancienne constante `PLAN_JOURS = 31` est obsolète.) */
+/* `PLAN_CASE` (38 px par jour) : obsolète depuis la session 41 — les jours sont proportionnels (D-184). */
 
 /** Logements affichés dans le planning (null = tous). */
 function planPropIds() {
@@ -6862,8 +6990,21 @@ function planPropIds() {
   return l.length ? l : tous;
 }
 
+/* LE CALENDRIER AU MOIS (session 41, D-184). Demandé le 6 octobre : *« une
+   vue mensuelle plutôt que d'avancer de 7 jours en 7 jours. »* La fenêtre
+   était de 31 jours glissants, ouverte trois jours avant aujourd'hui, et les
+   flèches la décalaient d'une semaine : il fallait quatre clics pour passer
+   d'un mois à l'autre, et l'on ne voyait jamais un mois entier, du 1er au 30.
+   La fenêtre est désormais **le mois calendaire** de `state.planStart` — du 1er
+   au dernier jour —, et les flèches changent de mois. */
 function viewOwnerCal() {
-  var start = state.planStart, fin = jourPlus(start, PLAN_JOURS - 1);
+  var start = premierJourDuMois(state.planStart || TODAY);
+  var PLAN_JOURS = nbJoursMois(moisDe(start));
+  var fin = jourPlus(start, PLAN_JOURS - 1);
+  var nomMois = function (iso) { return MOIS_LONGS[parseInt(iso.slice(5, 7), 10) - 1]; };
+  var avant = moisPlus(moisDe(start), -1) + '-01', apres = moisPlus(moisDe(start), 1) + '-01';
+  var titreMois = nomMois(start).charAt(0).toUpperCase() + nomMois(start).slice(1) + ' ' + start.slice(0, 4);
+  var ceMois = moisDe(start) === moisDe(TODAY);
   var pids = planPropIds();
 
   // En-tête des jours.
@@ -6897,12 +7038,15 @@ function viewOwnerCal() {
 
       var coupeG = i0 < 0, coupeD = i1 > PLAN_JOURS;
       var g = Math.max(0, i0), dte = Math.min(PLAN_JOURS, i1);
-      var left = coupeG ? 0 : (g + 0.5) * PLAN_CASE;
-      var right = coupeD ? PLAN_JOURS * PLAN_CASE : (dte + 0.5) * PLAN_CASE;
+      /* En POURCENTAGE de la largeur du mois (session 41, D-184) : les jours
+         s'étirent pour que le mois entier tienne sur un écran d'ordinateur,
+         et se resserrent jusqu'à 26 px sur un téléphone, où l'on fait défiler. */
+      var left = coupeG ? 0 : (g + 0.5) / PLAN_JOURS * 100;
+      var right = coupeD ? 100 : (dte + 0.5) / PLAN_JOURS * 100;
       var pl = PLATS[r.plat] || PLATS['Direct'];
 
       return '<button type="button" class="plan-bar' + (coupeG ? ' plan-bar--g' : '') + (coupeD ? ' plan-bar--d' : '') + '"' +
-        ' style="left:' + Math.round(left + 2) + 'px;width:' + Math.max(26, Math.round(right - left - 4)) + 'px;background:' + pl.color + '"' +
+        ' style="left:calc(' + left.toFixed(3) + '% + 2px);width:calc(' + (right - left).toFixed(3) + '% - 4px);background:' + pl.color + '"' +
         ' title="' + esc(r.guest + ' · ' + fmtDate(r.start) + ' → ' + fmtDate(r.end) + ' · ' + r.plat) + '"' +
         act('open-resa', { rid: r.id }) + '>' +
         '<span class="plan-guest">' + esc(r.guest) + '</span></button>';
@@ -6920,7 +7064,7 @@ function viewOwnerCal() {
           '<span class="grow"><span class="plan-prop-n">' + esc(p.short) + '</span>' +
           '<span class="plan-prop-s num">' + taux + ' % occupé</span></span></button>' +
       '</div>' +
-      '<div class="plan-days" style="width:' + (PLAN_JOURS * PLAN_CASE) + 'px">' +
+      '<div class="plan-days" style="--nj:' + PLAN_JOURS + '">' +
         '<div class="plan-cells">' + fond + '</div>' + barres +
       '</div></div>';
   }).join('');
@@ -6931,16 +7075,16 @@ function viewOwnerCal() {
 
   return ownerShell('calendrier',
     '<div class="page-head">' +
-      '<div><h1 class="page-title">Calendrier</h1>' +
-      '<p class="page-sub">' + totalResas + ' séjour(s) du ' + fmtDate(start) + ' au ' + fmtDate(fin) +
+      '<div><h1 class="page-title">Calendrier · ' + esc(titreMois) + '</h1>' +
+      '<p class="page-sub">' + totalResas + ' séjour(s) ce mois-ci' +
         ' · cliquez sur une barre pour ouvrir la réservation</p></div>' +
       '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">' +
         '<button type="button" class="btn btn--xs" style="background:var(--cream);color:var(--ink-soft)"' +
-          act('plan-move', { j: '-7' }) + '>← 7 jours</button>' +
-        '<button type="button" class="btn btn--xs" style="background:var(--ink);color:#fff"' +
-          act('plan-today') + '>Aujourd’hui</button>' +
+          act('plan-mois', { d: avant }) + '>← ' + esc(nomMois(avant)) + '</button>' +
+        '<button type="button" class="btn btn--xs" style="' + (ceMois ? 'background:var(--ink);color:#fff'
+          : 'background:var(--terra);color:#fff') + '"' + act('plan-today') + '>Ce mois-ci</button>' +
         '<button type="button" class="btn btn--xs" style="background:var(--cream);color:var(--ink-soft)"' +
-          act('plan-move', { j: '7' }) + '>7 jours →</button>' +
+          act('plan-mois', { d: apres }) + '>' + esc(nomMois(apres)) + ' →</button>' +
         /* Créer un séjour depuis le calendrier (session 16). Il fallait
            jusqu'ici passer par « Biens & connexions », ouvrir le logement,
            puis son onglet « Réservations » : trois écrans pour saisir une
@@ -6978,7 +7122,7 @@ function viewOwnerCal() {
         '<div class="plan">' +
           '<div class="plan-row plan-row--head">' +
             '<div class="plan-name plan-name--head">Logement</div>' +
-            '<div class="plan-days" style="width:' + (PLAN_JOURS * PLAN_CASE) + 'px">' +
+            '<div class="plan-days" style="--nj:' + PLAN_JOURS + '">' +
               '<div class="plan-cells">' + entete + '</div></div>' +
           '</div>' +
           (lignes || '<p class="empty">Aucun logement.</p>') +
@@ -11671,8 +11815,6 @@ function envoiPhoto(mid, sid, image) {
     });
 }
 
-/* Deuxième chance, au moment de terminer : tout ce qui n'est pas parti repart.
-   C'est le filet pour une mission faite dans un logement sans réseau. */
 /* L'AVANCEMENT D'UNE MISSION, ET CE QUI ARRIVE QUAND LE CAHIER LE REFUSE
    (session 40, D-182).
 
@@ -11761,6 +11903,8 @@ function bandeauAvancementsBloques() {
   '</div>';
 }
 
+/* Deuxième chance, au moment de terminer : tout ce qui n'est pas parti repart.
+   C'est le filet pour une mission faite dans un logement sans réseau. */
 function renvoyerPhotosManquantes(mid) {
   if (typeof DB === 'undefined' || !DB.estDispo() || !DB.profil()) return Promise.resolve(0);
   var ph = state.photos[mid] || {};
@@ -12562,6 +12706,12 @@ var actions = {
   'avancements-relancer': function () { relancerAvancements(); },
 
   'photo-plein': function (el) { state.photoPlein = el.dataset.p; render(); },
+  /* Redemander au casier les photos d'une mission pas encore close (D-185). */
+  'photos-revoir': function (el) {
+    delete photosParMission['~' + el.dataset.id];
+    delete photosDemandees['~' + el.dataset.id];
+    render();
+  },
   'photo-fermer': function () { state.photoPlein = null; render(); },
 
   /* Propriétaire --------------------------------------------------------- */
@@ -12718,7 +12868,9 @@ var actions = {
         ? 'Elle sera portée au crédit de ' + qui + ' : ' + (m.price || 0) + ' € entreront dans ses gains.'
         : 'Personne n’y est rattaché : elle n’entrera dans les gains de personne. Si quelqu’un ' +
           'd’autre que toi l’a faite, dis-le juste en dessous, dans « Qui a fait cette mission ? ».') +
-      '\n\nIl n’y aura ni checklist ni photos : le ménage n’est pas passé par l’application.')) return;
+      (nbPhotosRecues(m)
+        ? '\n\nLes ' + nbPhotosRecues(m) + ' photo(s) déjà reçues restent visibles sur la fiche.'
+        : '\n\nIl n’y aura ni checklist ni photos : le ménage n’est pas passé par l’application.'))) return;
 
     m.status = 'termine';
     m.redo = '';
@@ -12735,6 +12887,7 @@ var actions = {
     var trace = null;
     if (!rep) {
       trace = { manuel: true, fini: heureDeCloture(m), at: new Date().toISOString() };
+      if (nbPhotosRecues(m)) trace.photosVues = nbPhotosRecues(m);   // session 41, D-185
       state.reports[m.id] = trace;
     }
 
@@ -13281,7 +13434,9 @@ var actions = {
     state.planStart = jourPlus(state.planStart, parseInt(el.dataset.j, 10) || 0);
     save(); render();
   },
-  'plan-today': function () { state.planStart = jourPlus(TODAY, -3); save(); render(); },
+  'plan-today': function () { state.planStart = premierJourDuMois(TODAY); save(); render(); },
+  /* Changer de mois (session 41, D-184). */
+  'plan-mois': function (el) { state.planStart = premierJourDuMois(el.dataset.d || TODAY); save(); render(); },
   'plan-prop': function (el) {
     var pid = el.dataset.pid;
     var l = Array.isArray(state.planProps) ? state.planProps.slice() : state.props.map(function (p) { return p.id; });
