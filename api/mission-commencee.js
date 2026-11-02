@@ -39,6 +39,20 @@
 
    AUCUNE DÉPENDANCE, `module.exports` : mêmes règles que les trois autres
    fichiers de ce dossier, pour les mêmes raisons.
+
+   UN SECOND GESTE DEPUIS LA SESSION 42 (D-191) : « J'AI LAISSÉ UN COMMENTAIRE »
+
+   Demandé le 2 novembre : *« recevoir des alertes quand le prestataire a
+   marqué un commentaire sur une mission »*. Exactement le même problème que
+   le début de ménage — c'est le téléphone de la prestataire qui sait, et il
+   ne connaît pas l'adresse du propriétaire — donc exactement la même porte,
+   avec `evenement: 'commentaire'`.
+
+   Ce qui change : la fonction du script 17 (`infos_commentaire_mission`)
+   accepte une mission prise, en cours OU terminée — on commente aussi après
+   coup —, et l'interrupteur est `alerteCommentaire`. Le texte vient de la
+   prestataire : il est coupé à 1 000 caractères et n'apparaît que dans le
+   corps de la lettre, jamais dans le destinataire ni l'expéditeur.
    ========================================================================== */
 
 const SUPABASE_URL = process.env.SUPABASE_URL || 'https://uwuuygcbpoppdzcummal.supabase.co';
@@ -153,6 +167,9 @@ module.exports = async function handler(req, res) {
   if (!jeton || !mission) {
     return res.status(400).json({ erreur: 'Il manque le jeton ou la mission.' });
   }
+  const commentaire = corps.evenement === 'commentaire';
+  const fonction = commentaire ? 'infos_commentaire_mission' : 'infos_debut_menage';
+  const script = commentaire ? '17-alerte-commentaire.sql' : '15-alerte-debut-menage.sql';
 
   /* --- Verrous 1 et 2 : la fonction du script 15 fait les deux -------------
      Elle s'exécute avec le jeton de l'appelante et ne répond que si la
@@ -162,7 +179,7 @@ module.exports = async function handler(req, res) {
   {
     const t = avecDelai(DELAI_MAX);
     try {
-      const r = await fetch(SUPABASE_URL + '/rest/v1/rpc/infos_debut_menage', {
+      const r = await fetch(SUPABASE_URL + '/rest/v1/rpc/' + fonction, {
         method: 'POST',
         signal: t.signal,
         headers: {
@@ -183,7 +200,7 @@ module.exports = async function handler(req, res) {
            prestataire n'a pas à lire ça. */
         if (/Could not find the function|schema cache/i.test(dit)) {
           return res.status(503).json({
-            erreur: 'Le script « 15-alerte-debut-menage.sql » n’a pas encore été collé dans Supabase.',
+            erreur: 'Le script « ' + script + ' » n’a pas encore été collé dans Supabase.',
             code: 'sans-script'
           });
         }
@@ -205,6 +222,9 @@ module.exports = async function handler(req, res) {
   /* --- Verrou 3 : le propriétaire a-t-il demandé cette alerte ? ----------- */
   if (!ligne.alerte_active) {
     return res.status(200).json({ envoye: false, raison: 'alerte-eteinte' });
+  }
+  if (commentaire && !String(corps.texte || '').trim() && !String(corps.sorte || '').trim()) {
+    return res.status(200).json({ envoye: false, raison: 'commentaire-vide' });
   }
 
   const destinataire = coupe(ligne.destinataire, 200).trim().toLowerCase();
@@ -239,6 +259,37 @@ module.exports = async function handler(req, res) {
   const logement = coupe(ligne.logement, 120) || 'un logement';
   const jour = dateLongue(ligne.jour);
   const creneau = coupe(ligne.creneau, 60);
+
+  /* Le commentaire (D-191). Le type est traduit ici, pas sur le téléphone :
+     la liste fermée ci-dessous est la seule chose qui puisse finir dans le
+     SUJET de la lettre. */
+  const SORTES = {
+    casse: 'Quelque chose est cassé', degat: 'Dégât ou tache importante',
+    manque: 'Il manque du matériel', acces: 'Problème d’accès au logement', autre: 'Commentaire'
+  };
+  if (commentaire) {
+    const sorte = SORTES[corps.sorte] || SORTES.autre;
+    const texte = coupe(corps.texte, 1000).trim();
+    const prestation = coupe(ligne.prestation, 80);
+    const lettreC = {
+      email: destinataire,
+      sujet: '💬 ' + sorte + ' — ' + logement,
+      texte:
+        qui + ' a laissé un commentaire sur une mission.\n\n' +
+        'Logement : ' + logement + '\n' +
+        'Mission du : ' + jour + (prestation ? ' (' + prestation + ')' : '') + '\n' +
+        'Type : ' + sorte + '\n' +
+        'Écrit à : ' + heureParis() + ' (heure de Paris)\n\n' +
+        (texte ? '« ' + texte + ' »\n\n' : '(sans texte — seulement le type, et peut-être une photo)\n\n') +
+        'La photo éventuelle et le détail sont dans la mission : MAISON WARME → Missions.\n\n' +
+        '— MAISON WARME\n' +
+        'Pour ne plus recevoir cette alerte : Prestataires → « Prévenir les prestataires par ' +
+        'e-mail » → décoche « Me prévenir quand un prestataire laisse un commentaire ».'
+    };
+    const envoi = await poster(cle, expediteur, lettreC);
+    if (!envoi.ok) return res.status(502).json({ envoye: false, erreur: envoi.raison });
+    return res.status(200).json({ envoye: true, a: destinataire });
+  }
 
   const lettre = {
     email: destinataire,

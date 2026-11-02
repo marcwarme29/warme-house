@@ -149,6 +149,89 @@ function destinatairesDe(m, prestataires) {
   }).map(function (a) { return { id: a.id, name: a.name || '', email: a.email }; });
 }
 
+/* ==========================================================================
+   LES MISSIONS PAS ENCORE PRISES À DEUX JOURS (session 42, D-192)
+
+   Demandé le 2 novembre : *« recevoir un mail quand une mission n'a pas été
+   prise sur les 2 prochains jours »*. Le robot passe déjà une fois par jour
+   (`vercel.json`) et lit déjà les missions libres : c'est la bonne place,
+   et la seule qui marche application fermée.
+
+   Une lettre au PROPRIÉTAIRE (l'adresse d'expédition validée, la même que
+   pour ses copies), qui liste les missions libres d'aujourd'hui, demain et
+   après-demain, avec pour chacune si elle a été annoncée ou non. Une seule
+   par jour. Indépendante de l'annonce aux prestataires : celle-ci peut être
+   éteinte, l'alerte part quand même — c'est justement quand personne
+   n'annonce que les missions restent libres.
+   ========================================================================== */
+var MOIS = ['janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet', 'août', 'septembre',
+  'octobre', 'novembre', 'décembre'];
+var JOURS = ['dimanche', 'lundi', 'mardi', 'mercredi', 'jeudi', 'vendredi', 'samedi'];
+
+function jourPlusIso(iso, n) {
+  var d = new Date(Date.parse(iso + 'T00:00:00Z') + n * 86400000);
+  return d.toISOString().slice(0, 10);
+}
+
+// « Demain » ne veut rien dire dans un e-mail lu plus tard (règle 22 bis).
+function dateEnLettres(iso) {
+  var d = new Date(Date.parse(iso + 'T00:00:00Z'));
+  if (isNaN(d)) return String(iso || '');
+  return JOURS[d.getUTCDay()] + ' ' + d.getUTCDate() + ' ' + MOIS[d.getUTCMonth()] + ' ' + d.getUTCFullYear();
+}
+
+async function alerterNonPrises(donnees, dh, poster, cle, expediteur, appUrl) {
+  var mr = donnees.mailReglages || {};
+  if (!mr.actif) return { agi: false, raison: 'L’envoi d’e-mails n’est pas branché dans MAISON WARME.' };
+  if (mr.alerteNonPrises === false) return { agi: false, raison: 'Alerte éteinte dans les réglages.' };
+  if (!adresseValide(mr.expMail)) return { agi: false, raison: 'Adresse du propriétaire manquante.' };
+  if (mr.dernierAlerteNonPrises === dh.jour) return { agi: false, raison: 'Déjà envoyée aujourd’hui.' };
+
+  var limite = jourPlusIso(dh.jour, 2);
+  var proprietes = {}; (donnees.properties || []).forEach(function (p) { proprietes[p.id] = p; });
+  var prestations = {}; (donnees.services || []).forEach(function (s) { prestations[s.key] = s; });
+  var annoncees = donnees.mailsEnvoyes || {};
+  var libres = (donnees.missions || []).filter(function (m) {
+    return m.status === 'dispo' && m.date >= dh.jour && m.date <= limite;
+  }).sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : 0; });
+  if (!libres.length) return { agi: false, raison: 'Aucune mission libre d’ici ' + limite + '.' };
+
+  var lignes = libres.map(function (m) {
+    var p = proprietes[m.property_id] || { name: 'Logement' };
+    var s = prestations[m.type] || { label: m.type || 'Mission' };
+    var a = annoncees[m.id];
+    return '• ' + dateEnLettres(m.date) + ' — ' + p.name + ' — ' + s.label +
+      (m.window_label ? ', ' + m.window_label : '') + (m.price ? ', ' + m.price + ' €' : '') +
+      '\n  ' + (a && a.a && a.a.length
+        ? 'annoncée à ' + a.a.length + ' personne(s), personne ne l’a encore acceptée'
+        : 'jamais annoncée aux prestataires');
+  });
+
+  var lettre = {
+    email: coupe(mr.expMail, 200).trim().toLowerCase(),
+    nom: mr.expNom || '',
+    sujet: '⚠️ ' + libres.length + ' mission(s) sans prestataire d’ici ' + dateEnLettres(limite),
+    texte:
+      'Bonjour,\n\n' +
+      libres.length + ' mission(s) prévue(s) entre aujourd’hui (' + dateEnLettres(dh.jour) + ') et ' +
+      dateEnLettres(limite) + ' n’ont encore été prises par personne :\n\n' +
+      lignes.join('\n') + '\n\n' +
+      'Que faire : ouvre MAISON WARME → Missions → « À venir ». Tu peux attribuer chaque mission à ' +
+      'quelqu’un (« Qui la fait ? »), ou l’annoncer aux prestataires par e-mail.\n' +
+      appUrl + '\n\n' +
+      '— MAISON WARME\n' +
+      'Pour ne plus recevoir cette alerte : Prestataires → « Prévenir les prestataires par e-mail » → ' +
+      'décoche « M’avertir des missions pas encore prises à 2 jours ».'
+  };
+  var r = await poster(cle, expediteur, lettre);
+  if (!r.ok) return { agi: false, erreur: r.raison, missions: libres.length };
+
+  // Une seule fois par jour : le marqueur rejoint les réglages (règle 4 : seulement si parti).
+  mr.dernierAlerteNonPrises = dh.jour;
+  donnees.mailReglages = mr;
+  return { agi: true, missions: libres.length, a: lettre.email };
+}
+
 module.exports = async function handler(req, res) {
   res.setHeader('Cache-Control', 'no-store');
 
@@ -170,6 +253,39 @@ module.exports = async function handler(req, res) {
   if (!donnees || donnees.erreur) {
     return res.status(200).json({ agi: false, raison: (donnees && donnees.erreur) || 'Aucune donnée.' });
   }
+
+  /* L'ALERTE « PAS ENCORE PRISES » PASSE AVANT TOUT LE RESTE (D-192) : elle ne
+     dépend ni de l'heure choisie pour l'annonce, ni de son interrupteur. Son
+     compte rendu est joint à CHAQUE réponse du robot, quelle qu'elle soit —
+     d'où la petite enveloppe autour de `res.json`. */
+  var alerte = null;
+  {
+    var cleB = process.env.BREVO_API_KEY || '', cleR = process.env.RESEND_API_KEY || '';
+    var mr0 = donnees.mailReglages || {};
+    if (cleB || cleR) {
+      var exp0 = {
+        nom: coupe(process.env.MAIL_EXPEDITEUR_NOM || mr0.expNom || 'MAISON WARME', 80),
+        email: coupe(process.env.MAIL_EXPEDITEUR || mr0.expMail || '', 200).trim().toLowerCase(),
+        repondreA: coupe(mr0.expMail || '', 200).trim().toLowerCase()
+      };
+      var url0 = 'https://' + (process.env.VERCEL_URL || 'warme-house.vercel.app') + '/';
+      try {
+        alerte = await alerterNonPrises(donnees, dh, cleB ? posterBrevo : posterResend, cleB || cleR, exp0, url0);
+        if (alerte.agi) {
+          await appelerRpc('cron_ecrire_reglage', { p_secret: secretAttendu, p_cle: 'mailReglages', p_valeur: donnees.mailReglages });
+        }
+      } catch (e) {
+        alerte = { agi: false, erreur: (e && e.message) || 'échec' };
+      }
+    } else {
+      alerte = { agi: false, raison: 'Aucun service d’envoi branché.' };
+    }
+  }
+  var jsonDOrigine = res.json.bind(res);
+  res.json = function (o) {
+    if (o && typeof o === 'object') o.alerteNonPrises = alerte;
+    return jsonDOrigine(o);
+  };
 
   var mr = donnees.mailReglages || {};
   if (!mr.actif || !mr.robotActif) {

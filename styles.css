@@ -2134,3 +2134,53 @@ textarea.inp { min-height: 90px; resize: vertical; line-height: 1.5; }
 /* Le type et le créneau rejoignent la ligne du voyageur sur téléphone. */
 .tm-mobile { display: none; }
 @media (max-width: 620px) { .tm-mobile { display: inline; } }
+
+/* ==========================================================================
+   LE MENU « + AJOUTER » DE L'ACCUEIL (session 42, D-189)
+   En haut à droite, au-dessus des chiffres clés ; sur téléphone, il passe sous
+   le titre, à pleine largeur, comme le reste de l'en-tête.
+   ========================================================================== */
+.dash-droite { display: flex; flex-direction: column; align-items: flex-end; gap: 12px; }
+.ajout-wrap { position: relative; }
+.ajout-btn { background: var(--terra); color: #fff; padding: 0 18px; font-weight: 700; }
+.ajout-btn span { font-size: 11px; margin-left: 4px; opacity: .85; }
+.ajout-menu {
+  position: absolute; right: 0; top: calc(100% + 8px); z-index: 40;
+  background: #fff; border-radius: 18px; box-shadow: var(--sh-panel);
+  padding: 6px; min-width: 280px; display: flex; flex-direction: column; gap: 2px;
+}
+.ajout-item {
+  display: flex; align-items: center; gap: 12px; width: 100%; min-height: 54px;
+  padding: 10px 14px; border-radius: 13px; background: transparent; text-align: left;
+}
+.ajout-item:hover, .ajout-item:focus-visible { background: var(--cream); }
+.ajout-ico { font-size: 22px; line-height: 1; flex: none; }
+.ajout-t { display: block; font: 700 14.5px Figtree, sans-serif; color: var(--ink); }
+.ajout-s { display: block; font: 500 12.5px/1.35 Figtree, sans-serif; color: var(--muted); margin-top: 2px; }
+
+/* La liste de courses d'une mission « stock » (D-190). */
+.liste-courses { display: flex; flex-direction: column; gap: 6px; }
+.lc-tete, .lc-ligne {
+  display: grid; grid-template-columns: minmax(0, 2.2fr) 80px 110px 110px; gap: 10px; align-items: center;
+}
+.lc-tete { font: 600 11px Figtree, sans-serif; letter-spacing: .05em; text-transform: uppercase; color: var(--muted2); padding: 0 4px; }
+.lc-ligne { background: #fff; border-radius: 12px; padding: 8px 10px; }
+.lc-art { font: 600 14px Figtree, sans-serif; }
+.lc-art small { font-weight: 500; color: var(--muted); }
+.lc-stock { font: 600 14px Figtree, sans-serif; color: var(--ink-soft); }
+.lc-inp { min-height: 44px; padding: 8px 10px; }
+
+@media (max-width: 620px) {
+  .dash-droite { width: 100%; align-items: stretch; }
+  .ajout-btn { width: 100%; }
+  .ajout-menu { left: 0; right: 0; min-width: 0; }
+  .lc-tete { display: none; }
+  .lc-ligne { grid-template-columns: 1fr 1fr 1fr; gap: 8px; align-items: end; }
+  .lc-stock { padding-bottom: 11px; }
+  .lc-art { grid-column: 1 / -1; }
+  .lc-ligne [data-lab]::before {
+    content: attr(data-lab); display: block;
+    font: 600 10px Figtree, sans-serif; letter-spacing: .05em; text-transform: uppercase;
+    color: var(--muted2); margin-bottom: 2px;
+  }
+}

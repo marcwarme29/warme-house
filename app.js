@@ -174,12 +174,31 @@ var ARTICLES = [
   ]]
 ];
 
+/* CE QU'UN SÉJOUR CONSOMME, ARTICLE PAR ARTICLE (session 42, D-190).
+
+   Sert à la liste de courses d'une mission « stock » : de quoi tenir un mois
+   = ce qu'un séjour consomme × le nombre de séjours attendus sur 30 jours.
+   Des ordres de grandeur pour un logement de 2 à 4 personnes, à ajuster par
+   Marc depuis la liste elle-même (la colonne « par séjour » se corrige, et
+   la correction est retenue). Le linge se lave, il ne se consomme pas : 0.
+   Un article ajouté par Marc part de 0 — on ne devine pas (règle 5) ; la
+   liste le dit. */
+var CONSO_PAR_SEJOUR = {
+  pq: 2, savon: 0.25, kit: 1, sacsdb: 0.1, nettsdb: 0.15, wc: 0.15, calcaire: 0.1,
+  vaisselle: 0.15, pastilles: 3, eponge: 1, lavette: 0.2, essuietout: 0.5, alu: 0.1,
+  film: 0.1, cuisson: 0.1, sel: 0.05, poivre: 0.05, huile: 0.15, vinaigre: 0.05,
+  sucre: 0.1, cafe: 8,
+  multi: 0.15, vitres: 0.1, sol: 0.1, javel: 0.1,
+  draps: 0, serviettes: 0, couette: 0, taies: 0
+};
+
 /* Liste d'articles de départ, à plat. Elle devient modifiable : voir state.articles,
    et les fonctions arts() / groups() / grouped() de la partie 3. */
 function baseArticles() {
   return ARTICLES.reduce(function (acc, g) {
     return acc.concat(g[1].map(function (a) {
-      return { key: a[0], label: a[1], unit: a[2], par: a[3], group: g[0] };
+      return { key: a[0], label: a[1], unit: a[2], par: a[3], group: g[0],
+               conso: CONSO_PAR_SEJOUR[a[0]] || 0 };
     }));
   }, []);
 }
@@ -626,6 +645,18 @@ function initialState() {
        `{ resas: { id: true }, missions: { id: true } }`. Voyage dans les
        réglages, sinon le téléphone ne l'apprend jamais (règle 14). */
     supprimes: { resas: {}, missions: {}, creneaux: {} },
+    /* LES SÉJOURS DONT UNE SAISIE N'EST PAS ENCORE ARRIVÉE AU CAHIER
+       (session 42, D-187) : `{ idDuSejour: heure de la saisie }`. Tant qu'une
+       entrée existe, la relecture garde la valeur tapée ici au lieu de la
+       remplacer par l'ancienne. Effacée par `data.js` quand l'envoi a réussi.
+       Propre à cet appareil : c'est SA saisie qui attend, celle d'aucun autre. */
+    resasModifiees: {},
+    /* CE QUE CHAQUE CALENDRIER A RAPPORTÉ LA DERNIÈRE FOIS QU'IL A RÉPONDU
+       (session 42, D-188) : `{ pid: { lien: ['uid', …] } }`. Sert à ne plus
+       bloquer TOUTES les annulations d'un logement parce qu'UN de ses liens
+       est en panne : les séjours de ce lien-là sont tenus pour toujours
+       présents, ceux des autres sont comparés normalement. */
+    icalVus: {},
     // Le relevé iCal en cours et son compte rendu, par logement (D-114).
     // Ce sont des attentes de réponse, pas des données : `load()` les remet à zéro.
     icalEnCours: null,
@@ -684,6 +715,12 @@ function initialState() {
     calMonth: CURRENT_MONTH,
     showNew: false,
     nm: { prop: '', type: 'menage', date: '', window: '11:00 → 15:00', price: 0, note: '' },
+    /* Le menu « + Ajouter » de l'accueil (session 42, D-189) : ouvert ou non
+       (position d'affichage, remise à zéro par `load()`), et le brouillon de
+       la mission en cours de création. */
+    menuAjout: false,
+    ajout: null,
+    ajoutMsg: '',
     stepDrafts: {},
     newRoom: '',
     newFeed: '',
@@ -807,6 +844,8 @@ function load() {
   state.migEnCours = false;
   state.majEnCours = false;           // le bouton « ⟳ » du prestataire (session 19)
   state.icalEnCours = null;           // un relevé de calendrier en cours (session 20)
+  state.menuAjout = false;            // le menu « + Ajouter » de l'accueil (session 42)
+  state.ajoutMsg = '';
   state.icalAutoEnCours = false;      // la relève automatique en cours (session 24)
   state.outilsOuverts = false;        // les outils de mise en service (session 24, D-138)
   state.mailReglagesOuvert = false;   // le réglage d'envoi d'e-mails (session 31, D-167)
@@ -1022,6 +1061,12 @@ function upgrade() {
     state.articles.forEach(function (a) { if (st[a.key] === undefined) st[a.key] = 0; });
   });
 
+  /* Session 42 (D-190) : ce qu'un séjour consomme. Les articles enregistrés
+     avant cette session ne le portent pas — règle 9, on le complète ici. */
+  (state.articles || []).forEach(function (a) {
+    if (a && typeof a.conso !== 'number') a.conso = CONSO_PAR_SEJOUR[a.key] || 0;
+  });
+
   state.articles.forEach(function (a) {
     if (state.seuils[a.key] === undefined) state.seuils[a.key] = 0;
   });
@@ -1116,6 +1161,11 @@ function upgrade() {
      au rechargement suivant. Éteinte par défaut : on n'envoie jamais ce qui
      n'a pas été demandé. */
   if (typeof mr.alerteDebut !== 'boolean') mr.alerteDebut = false;
+  /* Session 42 (D-191, D-192) — deux alertes DEMANDÉES par Marc le 2 novembre,
+     donc allumées par défaut : un commentaire laissé par une prestataire sur
+     une mission, et chaque jour les missions pas encore prises à deux jours. */
+  if (typeof mr.alerteCommentaire !== 'boolean') mr.alerteCommentaire = true;
+  if (typeof mr.alerteNonPrises !== 'boolean') mr.alerteNonPrises = true;
   if (typeof mr.expNom !== 'string' || !mr.expNom) mr.expNom = 'MAISON WARME';
   if (typeof mr.expMail !== 'string') mr.expMail = '';
   /* Session 30 (D-161) — l'heure fixe choisie par Marc pour l'envoi
@@ -1140,11 +1190,6 @@ function upgrade() {
      les missions en D-116 : c'est la même faute, une table plus loin. */
   /* Une fiche supprimée ne réapparaît pas, d'où qu'elle vienne (D-177). */
   if (!state.fichesSupprimees || typeof state.fichesSupprimees !== 'object') state.fichesSupprimees = {};
-  if (Object.keys(state.fichesSupprimees).length) {
-    state.agents = (state.agents || []).filter(function (a) {
-      return !a || !state.fichesSupprimees[a.id];
-    });
-  }
 
   /* Et un séjour ou une mission supprimés non plus (session 38, D-180). */
   if (!state.supprimes || typeof state.supprimes !== 'object') state.supprimes = { resas: {}, missions: {}, creneaux: {} };
@@ -1152,18 +1197,12 @@ function upgrade() {
   if (!state.supprimes.missions) state.supprimes.missions = {};
   if (!state.supprimes.creneaux) state.supprimes.creneaux = {};
   purgerSupprimes();
-  if (Object.keys(state.supprimes.resas).length) {
-    Object.keys(state.resas || {}).forEach(function (pid) {
-      state.resas[pid] = (state.resas[pid] || []).filter(function (r) {
-        return !r || !state.supprimes.resas[r.id];
-      });
-    });
-  }
-  if (Object.keys(state.supprimes.missions).length) {
-    state.missions = (state.missions || []).filter(function (m) {
-      return !m || !state.supprimes.missions[m.id];
-    });
-  }
+  // Session 42 (D-187, D-188) : règle 9, les deux endroits.
+  if (!state.resasModifiees || typeof state.resasModifiees !== 'object') state.resasModifiees = {};
+  if (!state.icalVus || typeof state.icalVus !== 'object') state.icalVus = {};
+  /* Le filtrage lui-même vit dans `appliquerOublis()` depuis la session 42 :
+     `data.js` l'appelle aussi juste avant chaque envoi (D-186). */
+  appliquerOublis();
 
   reparerResasEnDouble();
   /* Et les missions qui en découlaient (session 34, D-172). APRÈS les
@@ -1900,7 +1939,12 @@ function oublierSejourIcal(pid, resa) {
 function annulerSejoursDisparus(pid, uidsVus) {
   var bilan = { disparues: 0, missionsAnnulees: 0 };
   resasOf(pid).slice().forEach(function (r) {
-    if (r.source !== 'ical' || !r.uid) return;
+    /* Session 42 (D-188) : un séjour saisi à la main qui a été RATTACHÉ à son
+       événement de calendrier (voir `fusionnerResas`) porte désormais un
+       identifiant, et il doit pouvoir être annulé comme les autres — c'était
+       justement le cas des séjours complétés à la main. Seuls ceux de Beds24,
+       qui ont leur propre façon de dire une annulation, restent à l'écart. */
+    if (!r.uid || r.source === 'beds24') return;
     if (uidsVus[r.uid]) return;
     if (r.start <= TODAY) return;                 // en cours ou passé : on ne touche pas
     var b = retirerResa(pid, r, 'La réservation a été annulée sur ' +
@@ -1913,12 +1957,40 @@ function annulerSejoursDisparus(pid, uidsVus) {
 
 function fusionnerResas(pid, lot, source, plat) {
   var bilan = { ajoutees: 0, majs: 0, annulees: 0, inchangees: 0, rattrapees: 0,
-                missionsAnnulees: 0, disparues: 0, ignorees: 0 };
+                missionsAnnulees: 0, disparues: 0, ignorees: 0, rattachees: 0 };
   var vusDansLeLot = {};
 
   lot.forEach(function (brut) {
     var incoming = normaliserResa(brut, source, pid);
     if (incoming.uid) vusDansLeLot[incoming.uid] = true;
+
+    /* LE SÉJOUR SAISI À LA MAIN RETROUVE SON ÉVÉNEMENT (session 42, D-188).
+
+       Signalé le 2 novembre : une réservation annulée sur la plateforme
+       restait dans MAISON WARME. Une cause sûre, parmi d'autres : le séjour
+       que Marc avait saisi lui-même (dix sur treize, tableau du 5 septembre)
+       ne portait AUCUN identifiant de plateforme. Le calendrier apportait le
+       même séjour sous son identifiant, on en faisait un second exemplaire,
+       la réparation des doublons gardait celui de Marc — mieux renseigné — et
+       oubliait l'autre. Résultat : le seul exemplaire restant n'avait pas
+       d'identifiant, et une annulation ne pouvait plus jamais le désigner.
+
+       On rattache donc l'identifiant au séjour déjà là, mêmes dates, même
+       logement, qui n'en a pas. Il garde son nom, son montant et son origine
+       « saisie manuelle » ; il gagne la possibilité d'être annulé. Jamais sur
+       un créneau que Marc a supprimé, et jamais si un autre séjour porte déjà
+       cet identifiant (le cahier refuserait le lot en entier, D-162). */
+    if (source === 'ical' && incoming.uid && !creneauOublie(pid, incoming) &&
+        !resasOf(pid).some(function (x) { return x.uid === incoming.uid; })) {
+      var sansUid = resasOf(pid).filter(function (x) {
+        return !x.uid && x.statut !== 'annule' && x.start === incoming.start && x.end === incoming.end;
+      })[0];
+      if (sansUid) {
+        sansUid.uid = incoming.uid;
+        bilan.rattachees++;
+        return;                                   // mêmes dates : rien d'autre à reprendre
+      }
+    }
 
     /* Un séjour supprimé à la main ne revient pas (D-146). On ne le compte pas
        non plus comme « inchangé » : il est écarté, et le bilan le dit. */
@@ -1964,7 +2036,11 @@ function fusionnerResas(pid, lot, source, plat) {
     var nomFourni = !nomGeneriqueResa(brut.guest);
     var effectifFourni = parseInt(brut.guests, 10) > 0;
 
-    var change = ['plat', 'start', 'end'].some(function (k) {
+    /* Un séjour saisi à la main et rattaché à son événement (D-188) garde la
+       plateforme que Marc lui a donnée : un calendrier Booking publie aussi
+       les séjours d'Airbnb (D-125), il n'a pas le dernier mot là-dessus. */
+    var aLaMain = connue.source === 'manuel';
+    var change = (aLaMain ? ['start', 'end'] : ['plat', 'start', 'end']).some(function (k) {
       return incoming[k] !== null && connue[k] !== incoming[k];
     }) ||
       (nomFourni && connue.guest !== incoming.guest) ||
@@ -1982,7 +2058,8 @@ function fusionnerResas(pid, lot, source, plat) {
         ' : une nouvelle mission a été créée à cette date.');
       bilan.missionsAnnulees += bd.annulees.length;
     }
-    ['plat', 'start', 'end', 'uid', 'source'].forEach(function (k) { connue[k] = incoming[k]; });
+    (aLaMain ? ['start', 'end', 'uid'] : ['plat', 'start', 'end', 'uid', 'source'])
+      .forEach(function (k) { connue[k] = incoming[k]; });
     if (incoming.montant !== null) connue.montant = incoming.montant;
 
     /* Ce que le voyageur a saisi lui-même ne doit jamais être effacé par une
@@ -2109,10 +2186,22 @@ function releverIcalDe(pid) {
   render();
 
   var total = { ajoutees: 0, majs: 0, annulees: 0, inchangees: 0, rattrapees: 0,
-                nomsRepares: 0, disparues: 0, ignorees: 0, missionsAnnulees: 0 };
+                nomsRepares: 0, disparues: 0, ignorees: 0, missionsAnnulees: 0, rattachees: 0 };
   var soucis = [];
   var uidsVus = {};        // les identifiants vus dans TOUS les calendriers du logement
   var lus = 0;             // combien de calendriers ont rapporté au moins un séjour
+  var enPanneSansMemoire = 0;   // liens en panne dont on ne sait pas ce qu'ils portaient
+  if (!state.icalVus) state.icalVus = {};
+  if (!state.icalVus[pid]) state.icalVus[pid] = {};
+
+  /* ON RELIT LES MÉMOIRES DE SUPPRESSION AVANT DE RIEN RECRÉER (session 42,
+     D-186). La relève tourne aussi au retour au premier plan, en même temps
+     que la relecture du cahier : sans cette lecture préalable, un appareil
+     qui n'avait pas encore appris une suppression faite ailleurs recréait le
+     séjour sous un numéro neuf, et il revenait partout. */
+  var avant = (typeof DB !== 'undefined' && DB.estDispo() && DB.relireOublis)
+    ? DB.relireOublis().catch(function () { return false; })
+    : Promise.resolve(false);
 
   return liens.reduce(function (chaine, lien) {
     return chaine.then(function () {
@@ -2131,24 +2220,42 @@ function releverIcalDe(pid) {
           var plat = plateformeDuLien(lien);
           var lot = analyserIcs(ics, plat);
           if (lot.length) lus++;
+          // Ce que ce lien porte aujourd'hui : servira s'il tombe en panne (D-188).
+          state.icalVus[pid][lien] = lot.map(function (x) { return x.uid; }).filter(Boolean);
           var b = fusionnerResas(pid, lot, 'ical', plat);
           // Les identifiants vus dans CE calendrier rejoignent ceux des autres :
           // le balayage des disparus a besoin de tous (D-145).
           Object.keys(b.uidsVus || {}).forEach(function (u) { uidsVus[u] = true; });
           ['ajoutees', 'majs', 'annulees', 'inchangees', 'rattrapees', 'nomsRepares',
-           'ignorees'].forEach(function (k) { total[k] += (b[k] || 0); });
+           'ignorees', 'rattachees'].forEach(function (k) { total[k] += (b[k] || 0); });
         })
         .catch(function (e) {
           soucis.push(plateformeDuLien(lien) + ' : ' + (e.message || 'raison inconnue'));
+          /* UN LIEN EN PANNE NE BLOQUE PLUS LES ANNULATIONS DES AUTRES (D-188).
+             Ce qu'il portait la dernière fois qu'il a répondu est tenu pour
+             toujours présent : on n'annule rien de ce qui pourrait venir de
+             lui. S'il n'a jamais répondu, on ne sait pas ce qu'il porte, et
+             le balayage reste suspendu, comme avant. */
+          var connu = state.icalVus[pid][lien];
+          if (Array.isArray(connu)) connu.forEach(function (u) { uidsVus[u] = true; });
+          else enPanneSansMemoire++;
         });
     });
-  }, Promise.resolve()).then(function () {
+  }, avant).then(function () {
     /* LE BALAYAGE DES DISPARUS, UNE FOIS TOUS LES CALENDRIERS LUS (D-145).
        Deux conditions, et il faut les deux : **aucun calendrier n'a échoué** —
        sinon on prendrait les séjours d'un lien en panne pour des annulations —
        et **au moins un a rapporté quelque chose**, un calendrier vide étant
-       presque toujours un lien expiré plutôt que quatre annulations d'un coup. */
-    if (!soucis.length && lus) {
+       presque toujours un lien expiré plutôt que quatre annulations d'un coup.
+
+       Assoupli en session 42 (D-188) : signalé le 2 novembre, *« quand une
+       réservation est annulée, elle n'est pas annulée sur l'application »*.
+       Un seul lien mort sur un logement — une ancienne adresse jamais retirée —
+       suffisait à suspendre POUR TOUJOURS toutes les annulations de ce
+       logement, sans que rien ne le dise. Un lien en panne est désormais
+       couvert par ce qu'il portait la dernière fois ; seul un lien qui n'a
+       JAMAIS répondu suspend encore le balayage. */
+    if (!enPanneSansMemoire && lus) {
       var d = annulerSejoursDisparus(pid, uidsVus);
       total.disparues += d.disparues;
       total.missionsAnnulees += d.missionsAnnulees;
@@ -2601,6 +2708,15 @@ function nowHM() {
 /** Identifiant d'un séjour : il n'y a pas d'identifiant sur les réservations. */
 function resaKey(pid, r) { return pid + ':' + r.start + ':' + r.end; }
 
+/* Une saisie du propriétaire sur ce séjour attend son envoi (session 42,
+   D-187) : la relecture ne doit pas la remplacer avant qu'elle soit partie.
+   `data.js` efface l'entrée quand le cahier l'a reçue. */
+function saisieResa(r) {
+  if (!r || !r.id) return;
+  if (!state.resasModifiees) state.resasModifiees = {};
+  state.resasModifiees[r.id] = Date.now();
+}
+
 /* DEUX SÉJOURS AVEC LE MÊME IDENTIFIANT DE PLATEFORME (session 30, D-162)
 
    Le cahier partagé refuse deux réservations du même logement portant le même
@@ -2827,6 +2943,79 @@ function estSupprime(sorte, id) {
   return !!(id && state.supprimes && state.supprimes[sorte] && state.supprimes[sorte][id]);
 }
 
+/* Un séjour de calendrier dont le propriétaire a SUPPRIMÉ LE CRÉNEAU (D-181).
+   Partagé avec `data.js`, qui s'en sert à la relecture (D-186).
+
+   ⚠️ LE CRÉNEAU SEULEMENT, PAS `icalOublies`. Cette seconde mémoire retient
+   aussi les identifiants écartés par la réparation des doublons (D-171) — et
+   deux appareils peuvent écarter chacun un exemplaire DIFFÉRENT du même
+   séjour. Filtrer la relecture sur elle risquerait d'effacer les deux, donc
+   un vrai séjour. Le créneau, lui, n'est posé que par un clic de Marc sur
+   « Supprimer » (`retirerResa(…, parLeProprietaire)`), qu'il y ait un
+   identifiant ou non : il couvre exactement le cas signalé, et lui seul. */
+function sejourOublieDeLaReleve(pid, uid, debut, fin) {
+  return !!(debut && fin && estSupprime('creneaux', cleCreneau(pid, debut, fin)));
+}
+
+/* RETIRER DE CETTE COPIE CE QUE LES MÉMOIRES DÉSIGNENT (session 42, D-186).
+
+   Sortie d'`upgrade()`, où elle vivait depuis les sessions 36 et 38, parce
+   qu'elle doit maintenant servir aussi AVANT CHAQUE ENVOI : un appareil qui
+   apprend une suppression faite ailleurs doit la retirer de sa copie avant de
+   renvoyer cette copie, sinon il la ressuscite. Rend vrai si quelque chose a
+   été retiré, pour que l'appelant redessine.
+
+   Les ménages LIBRES d'un séjour de calendrier ressuscité partent avec lui —
+   l'appareil qui l'a recréé leur a donné des numéros neufs, que rien ne
+   retient. Seulement s'ils sont encore libres (une mission prise est le
+   travail de quelqu'un, D-119), et seulement si aucun autre séjour encore là
+   n'occupe exactement ces dates : un doublon écarté partage les dates de
+   celui qu'on garde, et son ménage est aussi le sien. */
+function appliquerOublis() {
+  var retire = false;
+  var effacees = state.fichesSupprimees || {};
+  var sup = state.supprimes || {};
+  var agentsAvant = (state.agents || []).length;
+  state.agents = (state.agents || []).filter(function (a) { return !a || !effacees[a.id]; });
+  if (state.agents.length !== agentsAvant) retire = true;
+
+  var clesOrphelines = [];
+  Object.keys(state.resas || {}).forEach(function (pid) {
+    var avant = state.resas[pid] || [];
+    var gardes = avant.filter(function (r) {
+      if (!r) return false;
+      if (sup.resas && sup.resas[r.id]) return false;
+      if (r.source === 'ical' && sejourOublieDeLaReleve(pid, r.uid, r.start, r.end)) {
+        clesOrphelines.push({ pid: pid, cle: resaKey(pid, r) });
+        return false;
+      }
+      return true;
+    });
+    if (gardes.length !== avant.length) { state.resas[pid] = gardes; retire = true; }
+  });
+
+  var missionsJetees = [];
+  clesOrphelines.forEach(function (o) {
+    var encoreLa = resasOf(o.pid).some(function (r) { return resaKey(o.pid, r) === o.cle; });
+    if (encoreLa) return;
+    (state.missions || []).forEach(function (m) {
+      if (m && m.fromResa === o.cle && m.status === 'dispo' && !m.taker) missionsJetees.push(m.id);
+    });
+  });
+  missionsJetees.forEach(function (id) {
+    oublier('missions', id);
+    if (typeof DB !== 'undefined' && DB.estDispo() && DB.profil() && DB.supprimerMission) DB.supprimerMission(id);
+  });
+
+  var missionsAvant = (state.missions || []).length;
+  var missionsEffacees = (state.supprimes || {}).missions || {};
+  state.missions = (state.missions || []).filter(function (m) {
+    return m && !missionsEffacees[m.id];
+  });
+  if (state.missions.length !== missionsAvant) retire = true;
+  return retire;
+}
+
 function purgerSupprimes() {
   ['resas', 'missions', 'creneaux'].forEach(function (sorte) {
     if (!state.supprimes[sorte]) state.supprimes[sorte] = {};
@@ -2845,6 +3034,18 @@ function scoreResa(x) {
     (x.tel || x.tel4 ? 2 : 0) + (x.mail ? 2 : 0) +
     (x.montant !== null && x.montant !== undefined ? 1 : 0) +
     (x.arriveePrevue ? 1 : 0) + (x.guests ? 1 : 0);
+}
+
+/* LEQUEL GARDER, À ÉGALITÉ (session 42, D-186). Le premier de la liste
+   l'emportait — or l'ordre de la liste n'est pas le même sur deux appareils.
+   Chacun pouvait garder un exemplaire différent et se souvenir d'avoir écarté
+   l'autre : les deux mémoires réunies désignaient alors les DEUX. À égalité,
+   on garde désormais le plus petit identifiant : tous les appareils font le
+   même choix. */
+function departagerResas(r, deja) {
+  var a = scoreResa(r), b = scoreResa(deja);
+  if (a !== b) return a > b ? r : deja;
+  return String(r.id || '') < String(deja.id || '') ? r : deja;
 }
 
 /** Ce que le jeté avait et que le gardé n'a pas n'est jamais perdu (D-91). */
@@ -2870,7 +3071,7 @@ function reparerResasEnDouble() {
       var deja = parUid[r.uid];
       if (!deja) { parUid[r.uid] = r; gardees.push(r); return; }
 
-      var garde = scoreResa(r) > scoreResa(deja) ? r : deja;
+      var garde = departagerResas(r, deja);
       var jete = garde === r ? deja : r;
       fusionnerChampsResa(garde, jete);
 
@@ -2917,7 +3118,7 @@ function reparerResasEnDouble() {
       var deja = parDates[cle];
       if (!deja) { parDates[cle] = r; return; }
 
-      var garde = scoreResa(r) > scoreResa(deja) ? r : deja;
+      var garde = departagerResas(r, deja);
       var jete = garde === r ? deja : r;
 
       fusionnerChampsResa(garde, jete);
@@ -5539,6 +5740,373 @@ function bonjourProprio() {
   return prenom ? 'Bonjour ' + prenom : 'Bonjour';
 }
 
+/* ==========================================================================
+   AJOUTER UNE MISSION DEPUIS L'ACCUEIL (session 42, D-189)
+
+   Demandé le 2 novembre : un bouton en haut à droite de l'accueil, avec un
+   menu déroulant, pour créer trois sortes de missions sans passer par la page
+   « Missions » :
+     · MÉNAGE — logement, date, heure de début et NOMBRE D'HEURES, tarif,
+       prestataire choisi OU « file des missions à prendre », commentaire ;
+     · STOCK — logement, tarif, et une LISTE DE COURSES calculée pour tenir
+       au moins un mois (voir `listeCourses()`), qui part dans la note de la
+       mission : c'est là que la prestataire la lit ;
+     · TRAVAUX — logement, date, prestataire ou file, tarif, commentaire.
+
+   La création elle-même passe par `creerMissionAjout()`, qui fait ce que fait
+   déjà « Créer une mission » de la page Missions, plus l'attribution directe.
+   Une seule différence de fond : on ne propose comme prestataire que ceux qui
+   ont le droit de VOIR cette mission (logement confié, prestation cochée).
+   Attribuer à quelqu'un qui ne la voit pas, c'est D-109 : une mission « prise »
+   que personne ne fera jamais.
+   ========================================================================== */
+
+var AJOUTS = {
+  menage:  { titre: 'Mission ménage',  icone: '🧹', defaut: 'menage',
+             aide: 'Logement, heures, prestataire ou file d’attente' },
+  stock:   { titre: 'Mission stock',   icone: '🧺', defaut: 'stock',
+             aide: 'Réapprovisionnement, avec la liste de courses' },
+  travaux: { titre: 'Mission travaux', icone: '🛠', defaut: 'maintenance',
+             aide: 'Réparation ou petit chantier' }
+};
+
+/* La prestation qui porte cette sorte de mission. Marc a pu renommer ou
+   retirer des prestations : on cherche d'abord la clé d'origine, puis un
+   libellé qui y ressemble. Rend `null` s'il n'y en a aucune — l'écran le dit
+   au lieu d'inventer (règle 5). */
+function prestationAjout(sorte) {
+  var cle = AJOUTS[sorte].defaut;
+  var s = state.services.filter(function (x) { return x.key === cle; })[0];
+  if (s) return s.key;
+  var motif = sorte === 'menage' ? /ménage|menage/i : sorte === 'stock' ? /stock|réappro|reappro|course/i
+    : /travaux|répar|repar|maintenance|bricol/i;
+  s = state.services.filter(function (x) { return motif.test(x.label || ''); })[0];
+  return s ? s.key : null;
+}
+
+/* « ≈ 2 h », « 1 h 30 », « 45 min » → un nombre d'heures. */
+function heuresDe(txt) {
+  var t = String(txt || '').toLowerCase().replace(',', '.');
+  var h = /(\d+(?:\.\d+)?)\s*h/.exec(t), mn = /(\d+)\s*min/.exec(t);
+  var v = (h ? parseFloat(h[1]) : 0) + (mn ? parseInt(mn[1], 10) / 60 : 0);
+  if (!h && !mn) v = parseFloat(t) || 0;
+  return Math.round(v * 2) / 2;
+}
+
+function heurePlus(hhmm, heures) {
+  var m = /^(\d{1,2}):(\d{2})$/.exec(hhmm || '');
+  if (!m) return '';
+  var total = parseInt(m[1], 10) * 60 + parseInt(m[2], 10) + Math.round((heures || 0) * 60);
+  total = Math.min(total, 23 * 60 + 59);
+  return ('0' + Math.floor(total / 60)).slice(-2) + ':' + ('0' + (total % 60)).slice(-2);
+}
+
+function fmtHeures(h) {
+  if (!h) return '';
+  var entier = Math.floor(h), demi = h - entier >= 0.5;
+  return entier + ' h' + (demi ? ' 30' : '');
+}
+
+/* Un brouillon neuf, pré-rempli comme le ferait Marc lui-même : le premier
+   logement, demain, l'heure de départ des voyageurs, la durée et le tarif
+   inscrits sur la fiche du logement pour cette prestation. */
+function brouillonAjout(sorte, pid) {
+  var p = pid || ((state.props || []).filter(function (x) { return !x.gone; })[0] || {}).id || '';
+  var type = prestationAjout(sorte);
+  var inf = state.info[p] || {};
+  var duree = type ? ((state.durations[p] || {})[type] || service(type).duration || '') : '';
+  return {
+    sorte: sorte, prop: p, type: type, date: jourPlus(TODAY, 1),
+    debut: sorte === 'menage' ? (inf.checkout || '11:00') : '09:00',
+    heures: heuresDe(duree) || (sorte === 'menage' ? 2 : 1),
+    price: type ? ((state.tariffs[p] || {})[type] || 0) : 0,
+    ag: '', note: '', liste: null, qte: {}, erreur: ''
+  };
+}
+
+/* Les prestataires qui peuvent VOIR cette mission, et les autres. */
+function preneursPossibles(aj) {
+  var faux = { prop: aj.prop, type: aj.type };
+  var oui = [], non = [];
+  (state.agents || []).forEach(function (a) {
+    if (!a || a.gone || a.kind === 'cles') return;
+    (aj.type && mayTakeMission(a.id, faux) ? oui : non).push(a);
+  });
+  return { oui: oui, non: non };
+}
+
+/* --------------------------------------------------------------------------
+   LA LISTE DE COURSES — DE QUOI TENIR AU MOINS UN MOIS (D-190)
+
+   Pour chaque article du logement (sauf ceux qu'il n'a pas, `horsStock`) :
+
+     besoin du mois  = ce qu'un séjour consomme × séjours attendus sur 30 jours
+     niveau visé     = le plus grand de : la quantité conseillée de l'article,
+                       ou le besoin du mois + le seuil d'alerte (pour qu'à la
+                       fin du mois il reste encore de quoi voir venir)
+     à acheter       = niveau visé − ce qui est en stock (jamais négatif)
+
+   Les SÉJOURS ATTENDUS : le plus grand de ceux déjà au calendrier sur les 30
+   prochains jours, ou de la moyenne mensuelle des 90 derniers jours. Le
+   calendrier se remplit au fil de l'eau — ne compter que ce qui y est déjà
+   ferait acheter trop peu. C'est le « 1 mois minimum » demandé.
+
+   Le stock est celui du dernier relevé : celui que la prestataire fait en fin
+   de ménage, ou ta correction à la main (page Stocks).
+   -------------------------------------------------------------------------- */
+function sejoursAttendus(pid) {
+  var fin = jourPlus(TODAY, 30), debut = jourPlus(TODAY, -90);
+  var vivants = resasOf(pid).filter(function (r) { return r && r.statut !== 'annule'; });
+  var aVenir = vivants.filter(function (r) { return r.start >= TODAY && r.start < fin; }).length;
+  var passes = vivants.filter(function (r) { return r.start >= debut && r.start < TODAY; }).length;
+  var moyenne = Math.ceil(passes / 3);
+  return { aVenir: aVenir, moyenne: moyenne, retenu: Math.max(aVenir, moyenne), jusquAu: fin };
+}
+
+function listeCourses(pid, corrections) {
+  var s = sejoursAttendus(pid);
+  var lignes = artsDe(pid).map(function (a) {
+    var stock = (state.stock[pid] || {})[a.key] || 0;
+    var seuil = state.seuils[a.key] || 0;
+    var conso = typeof a.conso === 'number' ? a.conso : (CONSO_PAR_SEJOUR[a.key] || 0);
+    var besoin = Math.ceil(conso * s.retenu);
+    var vise = Math.max(a.par || 0, besoin + seuil);
+    var calcule = Math.max(0, vise - stock);
+    var corrige = corrections && corrections[a.key] !== undefined && corrections[a.key] !== '';
+    return {
+      key: a.key, label: a.label, unit: a.unit, group: a.group, stock: stock, seuil: seuil,
+      conso: conso, besoin: besoin, vise: vise, calcule: calcule,
+      acheter: corrige ? Math.max(0, parseInt(corrections[a.key], 10) || 0) : calcule,
+      corrige: !!corrige, connu: CONSO_PAR_SEJOUR[a.key] !== undefined
+    };
+  });
+  return { sejours: s, lignes: lignes };
+}
+
+/* Le texte qui part dans la note de la mission : la prestataire le lit sur son
+   téléphone, et le propriétaire le relit sur la fiche. Écrit pour être lu
+   AILLEURS que sur l'écran qui l'a produit (règle 22 bis) : la date en
+   toutes lettres, les unités, le logement. */
+function texteListeCourses(pid, liste) {
+  var achats = liste.lignes.filter(function (l) { return l.acheter > 0; });
+  if (!achats.length) return 'Liste de courses : rien à acheter, le stock suffit pour le mois à venir.';
+  return 'Liste de courses — ' + prop(pid).name + ', de quoi tenir jusqu’au ' +
+    fmtDateLongue(liste.sejours.jusquAu) + ' (' + liste.sejours.retenu + ' séjour(s) attendu(s)) :\n' +
+    achats.map(function (l) { return '• ' + l.label + ' : ' + l.acheter + ' ' + l.unit; }).join('\n');
+}
+
+function fmtDateLongue(iso) {
+  var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso || '');
+  return m ? parseInt(m[3], 10) + ' ' + MOIS_LONGS[parseInt(m[2], 10) - 1] + ' ' + m[1] : iso;
+}
+
+function boutonAjouter() {
+  return '<div class="ajout-wrap">' +
+    '<button type="button" class="btn btn--sm ajout-btn" aria-haspopup="menu" aria-expanded="' +
+      (state.menuAjout ? 'true' : 'false') + '"' + act('ajout-menu') + '>＋ Ajouter <span aria-hidden="true">▾</span></button>' +
+    (state.menuAjout
+      ? '<div class="ajout-menu" role="menu">' + Object.keys(AJOUTS).map(function (k) {
+          var x = AJOUTS[k];
+          return '<button type="button" class="ajout-item" role="menuitem"' + act('ajout-ouvrir', { k: k }) + '>' +
+            '<span class="ajout-ico" aria-hidden="true">' + x.icone + '</span>' +
+            '<span><span class="ajout-t">' + esc(x.titre) + '</span>' +
+            '<span class="ajout-s">' + esc(x.aide) + '</span></span></button>';
+        }).join('') + '</div>'
+      : '') +
+    '</div>';
+}
+
+function champAjout(k, label, type, val, extra) {
+  var fid = 'aj-' + k;
+  return '<div style="flex:1;min-width:min(100%,150px)"><label class="lab" for="' + fid + '">' + esc(label) + '</label>' +
+    '<input class="inp' + (type === 'number' || type === 'date' || type === 'time' ? ' num' : '') + '" id="' + fid + '" type="' + type + '"' +
+    ' value="' + esc(val === null || val === undefined ? '' : val) + '" data-fid="' + fid + '"' +
+    (type === 'date' || type === 'time' ? ' data-ch="aj-choix"' : ' data-in="aj-champ"') +
+    ' data-k="' + k + '"' + (extra || '') + '></div>';
+}
+
+function formulaireAjout() {
+  var aj = state.ajout;
+  if (!aj) return '';
+  var x = AJOUTS[aj.sorte];
+  var biens = (state.props || []).filter(function (p) { return !p.gone; });
+  if (!biens.length) {
+    return '<div class="card pop" style="margin-top:18px;padding:22px"><p class="sec-note" style="margin:0">' +
+      'Crée d’abord un logement (Biens & connexions) : une mission a besoin d’un logement.</p></div>';
+  }
+  var qui = preneursPossibles(aj);
+
+  var selectBien = '<div style="flex:2;min-width:min(100%,220px)"><label class="lab" for="aj-prop">Logement</label>' +
+    '<select class="inp" id="aj-prop" data-fid="aj-prop" data-ch="aj-choix" data-k="prop">' +
+    biens.map(function (p) {
+      return '<option value="' + esc(p.id) + '"' + (aj.prop === p.id ? ' selected' : '') + '>' + esc(p.name) + '</option>';
+    }).join('') + '</select></div>';
+
+  /* La file d'attente d'abord : c'est le geste habituel, et le plus sûr. */
+  var selectQui = '<div style="flex:2;min-width:min(100%,220px)"><label class="lab" for="aj-ag">Qui la fait ?</label>' +
+    '<select class="inp" id="aj-ag" data-fid="aj-ag" data-ch="aj-choix" data-k="ag">' +
+      '<option value=""' + (!aj.ag ? ' selected' : '') + '>Mettre dans la file des missions à prendre</option>' +
+      (qui.oui.length ? '<optgroup label="Attribuer directement à">' + qui.oui.map(function (a) {
+        return '<option value="' + esc(a.id) + '"' + (aj.ag === a.id ? ' selected' : '') + '>' + esc(a.name) + '</option>';
+      }).join('') + '</optgroup>' : '') +
+    '</select>' +
+    (qui.non.length
+      ? '<p class="sec-note" style="margin:4px 0 0">Pas proposé(s) : ' + esc(qui.non.map(function (a) { return a.name; }).join(', ')) +
+        ' — ce logement ou cette prestation ne leur est pas confié (page Prestataires).</p>'
+      : '') +
+    '</div>';
+
+  var lignes = [];
+  if (aj.sorte === 'menage') {
+    lignes.push('<div class="cols" style="gap:14px">' + selectBien +
+      champAjout('date', 'Date', 'date', aj.date) + '</div>');
+    lignes.push('<div class="cols" style="gap:14px;margin-top:14px">' +
+      champAjout('debut', 'Heure de début', 'time', aj.debut) +
+      champAjout('heures', 'Nombre d’heures', 'number', aj.heures, ' min="0.5" step="0.5" inputmode="decimal"') +
+      champAjout('price', 'Tarif (€)', 'number', aj.price, ' min="0" inputmode="numeric"') + '</div>' +
+      '<p class="sec-note" style="margin:6px 0 0">Créneau : ' + esc(aj.debut || '—') + ' → ' +
+        esc(heurePlus(aj.debut, aj.heures) || '—') + (aj.heures ? ' (' + esc(fmtHeures(aj.heures)) + ')' : '') + '</p>');
+  } else if (aj.sorte === 'stock') {
+    lignes.push('<div class="cols" style="gap:14px">' + selectBien +
+      champAjout('date', 'Date', 'date', aj.date) +
+      champAjout('price', 'Tarif (€)', 'number', aj.price, ' min="0" inputmode="numeric"') + '</div>');
+  } else {
+    lignes.push('<div class="cols" style="gap:14px">' + selectBien +
+      champAjout('date', 'Date', 'date', aj.date) +
+      champAjout('price', 'Tarif (€)', 'number', aj.price, ' min="0" inputmode="numeric"') + '</div>');
+  }
+  lignes.push('<div class="cols" style="gap:14px;margin-top:14px">' + selectQui + '</div>');
+
+  if (aj.sorte === 'stock') lignes.push(blocListeCourses(aj));
+
+  lignes.push('<div style="margin-top:14px"><label class="lab" for="aj-note">' +
+    (aj.sorte === 'travaux' ? 'Ce qu’il y a à faire' : 'Commentaire pour le prestataire (facultatif)') + '</label>' +
+    '<textarea class="inp" id="aj-note" rows="3" data-fid="aj-note" data-in="aj-champ" data-k="note" placeholder="' +
+      (aj.sorte === 'travaux' ? 'Ex. Le robinet de la douche fuit, prévoir un joint.' :
+       aj.sorte === 'stock' ? 'Ex. Ranger les courses dans le placard du cellier.' :
+       'Ex. Prendre les draps propres dans le placard du couloir.') + '">' + esc(aj.note || '') + '</textarea></div>');
+
+  return '<div class="card pop ajout-form" style="margin-top:18px;padding:22px">' +
+    '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:14px">' +
+      '<h2 style="font:700 17px Figtree,sans-serif;margin:0">' + x.icone + ' ' + esc(x.titre) + '</h2>' +
+      '<button type="button" class="btn btn--xs" style="background:var(--cream);color:var(--ink-soft)"' + act('ajout-fermer') + '>Fermer</button>' +
+    '</div>' +
+    (!aj.type
+      ? '<div class="alert alert--amber" style="margin-bottom:14px"><div class="det">Aucune prestation ne correspond à une ' +
+          esc(x.titre.toLowerCase()) + ' dans tes réglages. Elle sera recréée sous le nom « ' +
+          esc((SERVICES.filter(function (s) { return s.key === x.defaut; })[0] || {}).label || x.titre) +
+          ' » à la création.</div></div>'
+      : '') +
+    lignes.join('') +
+    (aj.erreur ? '<div class="alert alert--amber" style="margin-top:14px"><div class="det">' + esc(aj.erreur) + '</div></div>' : '') +
+    '<div style="display:flex;gap:10px;align-items:center;margin-top:18px;flex-wrap:wrap">' +
+      '<button type="button" class="btn btn--primary btn--sm"' + act('ajout-creer') + '>Créer la mission</button>' +
+      '<span class="sec-note">' + (aj.ag
+        ? 'Elle apparaîtra aussitôt sur le téléphone de ' + esc(agent(aj.ag).name) + ', déjà acceptée.'
+        : 'Elle rejoint la file des missions à prendre : tes prestataires la verront et pourront l’accepter.') +
+      '</span>' +
+    '</div>' +
+  '</div>';
+}
+
+function blocListeCourses(aj) {
+  if (!aj.liste) {
+    return '<div class="card" style="margin-top:14px;padding:16px 18px;background:var(--cream)">' +
+      '<div style="font:700 14px Figtree,sans-serif">Liste de courses</div>' +
+      '<p class="sec-note" style="margin:4px 0 10px">Calculée à partir du dernier relevé de stock de ce logement ' +
+        'et des séjours attendus : de quoi tenir <strong>au moins un mois</strong>. Elle part dans la mission, ' +
+        'la prestataire la lit sur son téléphone.</p>' +
+      '<button type="button" class="btn btn--sm" style="background:var(--terra);color:#fff"' + act('ajout-liste') + '>Générer la liste de courses</button>' +
+    '</div>';
+  }
+  var l = listeCourses(aj.prop, aj.qte);
+  var s = l.sejours;
+  var achats = l.lignes.filter(function (x) { return x.acheter > 0 || x.corrige; });
+  var aRegler = l.lignes.filter(function (x) { return !x.connu && !x.conso; });
+  return '<div class="card" style="margin-top:14px;padding:16px 18px;background:var(--cream)">' +
+    '<div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:baseline">' +
+      '<div style="font:700 14px Figtree,sans-serif">Liste de courses — jusqu’au ' + esc(fmtDateLongue(s.jusquAu)) + '</div>' +
+      '<button type="button" class="btn btn--xs" style="background:#fff;color:var(--ink-soft)"' + act('ajout-liste') + '>Recalculer</button>' +
+    '</div>' +
+    '<p class="sec-note" style="margin:4px 0 10px">Calculée pour <strong>' + s.retenu + ' séjour(s)</strong> sur 30 jours : ' +
+      s.aVenir + ' déjà au calendrier, ' + s.moyenne + ' en moyenne par mois ces trois derniers mois — on garde le plus grand. ' +
+      'À acheter = ce qu’il faut pour le mois + le seuil d’alerte − ce qui est en stock. Tu peux corriger chaque quantité.</p>' +
+    (achats.length
+      ? '<div class="liste-courses">' +
+          '<div class="lc-tete"><span>Article</span><span>En stock</span><span>Par séjour</span><span>À acheter</span></div>' +
+          achats.map(function (x) {
+            return '<div class="lc-ligne">' +
+              '<span class="lc-art">' + esc(x.label) + ' <small>' + esc(x.unit) + '</small></span>' +
+              '<span class="num lc-stock" data-lab="En stock">' + x.stock + '</span>' +
+              '<span data-lab="Par séjour"><input class="inp num lc-inp" type="number" min="0" step="0.05" inputmode="decimal" value="' + x.conso + '"' +
+                ' aria-label="' + esc(x.label) + ' consommé par séjour" data-fid="aj-conso-' + esc(x.key) + '" data-ch="aj-conso" data-k="' + esc(x.key) + '"></span>' +
+              '<span data-lab="À acheter"><input class="inp num lc-inp" type="number" min="0" inputmode="numeric" value="' + x.acheter + '"' +
+                ' aria-label="' + esc(x.label) + ' à acheter" data-fid="aj-qte-' + esc(x.key) + '" data-ch="aj-qte" data-k="' + esc(x.key) + '"></span>' +
+            '</div>';
+          }).join('') +
+        '</div>'
+      : '<p class="sec-note" style="margin:0"><strong>Rien à acheter</strong> : le stock de ce logement suffit pour le mois à venir.</p>') +
+    (aRegler.length
+      ? '<p class="sec-note" style="margin:10px 0 0">' + aRegler.length + ' article(s) que tu as ajouté(s) toi-même n’ont pas encore ' +
+          'de consommation par séjour (' + esc(aRegler.slice(0, 4).map(function (x) { return x.label; }).join(', ')) +
+          (aRegler.length > 4 ? '…' : '') + ') : ils ne sont complétés que jusqu’à leur quantité conseillée. ' +
+          'Règle-la dans la colonne « Par séjour » s’ils se consomment.</p>'
+      : '') +
+  '</div>';
+}
+
+/* LA CRÉATION — la même mission que « Créer une mission » de la page
+   Missions, plus deux choses : l'attribution directe, et le créneau calculé
+   à partir du nombre d'heures. */
+function creerMissionAjout() {
+  var aj = state.ajout;
+  if (!aj) return null;
+  if (!aj.prop || !prop(aj.prop) || prop(aj.prop).gone) { aj.erreur = 'Choisis un logement.'; return null; }
+  if (!aj.date) { aj.erreur = 'Choisis une date pour la mission.'; return null; }
+  if (aj.sorte === 'travaux' && !(aj.note || '').trim()) {
+    aj.erreur = 'Écris en une phrase ce qu’il y a à faire : c’est ce que la personne lira.'; return null;
+  }
+
+  /* La prestation manquante est recréée plutôt que la mission refusée : sans
+     type reconnu, aucun prestataire ne verrait la mission (D-53). */
+  var type = aj.type || prestationAjout(aj.sorte);
+  if (!type) {
+    var modele = SERVICES.filter(function (s) { return s.key === AJOUTS[aj.sorte].defaut; })[0];
+    state.services.push(clone(modele));
+    type = modele.key;
+    upgrade();                                    // tarifs et durées par logement (règle 9)
+  }
+
+  if (aj.ag && !mayTakeMission(aj.ag, { prop: aj.prop, type: type })) {
+    aj.erreur = agent(aj.ag).name + ' ne peut pas voir les missions de ce logement : confie-le-lui ' +
+      'd’abord (page Prestataires), ou mets la mission dans la file.';
+    return null;
+  }
+
+  var note = (aj.note || '').trim();
+  var creneau = '';
+  if (aj.sorte === 'menage') {
+    creneau = (aj.debut || '') + ' → ' + heurePlus(aj.debut, aj.heures) + (aj.heures ? ' (' + fmtHeures(aj.heures) + ')' : '');
+  } else if (aj.sorte === 'stock') {
+    var liste = listeCourses(aj.prop, aj.qte);
+    note = texteListeCourses(aj.prop, liste) + (note ? '\n\n' + note : '');
+    creneau = 'Dans la journée';
+  } else {
+    creneau = 'Dans la journée';
+  }
+
+  var m = {
+    id: slugMission(aj.prop, aj.date), prop: aj.prop, type: type, date: aj.date,
+    dateLabel: aj.date === TODAY ? 'Aujourd’hui' : fmtDate(aj.date),
+    windowLabel: creneau, price: Math.max(0, parseInt(aj.price, 10) || 0),
+    status: aj.ag ? 'prise' : 'dispo', taker: aj.ag || null,
+    urgent: 'Mission créée à la main', note: note
+  };
+  state.missions.push(m);
+  state.missions.sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : 0; });
+  return m;
+}
+
 function viewOwnerDash() {
   var openCount = state.missions.filter(function (m) { return m.status === 'dispo'; }).length;
   var lowByProp = state.props.map(function (p) { return { p: p, lows: lowsFor(p.id) }; });
@@ -5594,11 +6162,24 @@ function viewOwnerDash() {
      — il suffisait de le lire. Chaque ligne devient un lien direct vers LA
      mission concernée, celle qui porte le bouton « Marquer comme traité ». */
   var pbOuverts = tousLesProblemes().filter(function (p) { return p.statut !== 'traite'; });
-  alerts.push({ cls: 'alert--blue', dot: C.bleu, kind: 'Signalement',
-    title: pbOuverts.length ? pbOuverts.length + ' problème(s) à traiter' : 'Aucun problème signalé',
+  /* QUI A ÉCRIT, ET QUOI (session 42, D-191). Demandé le 2 novembre : être
+     alerté quand une prestataire laisse un commentaire. L'alerte ne disait
+     que le type (« Il manque du matériel ») : il fallait ouvrir la mission
+     pour lire le commentaire lui-même. Il est maintenant sur la ligne, avec
+     le prénom — les plus récents en premier, puisque c'est la nouveauté qu'on
+     cherche. L'e-mail, lui, part du téléphone de la prestataire. */
+  pbOuverts = pbOuverts.slice().sort(function (a, b) {
+    return (b.date || '') + (b.at || '') > (a.date || '') + (a.at || '') ? 1 : -1;
+  });
+  alerts.push({ cls: 'alert--blue', dot: C.bleu, kind: 'Commentaire de prestataire',
+    title: pbOuverts.length ? pbOuverts.length + ' commentaire(s) à lire' : 'Aucun commentaire en attente',
     det: pbOuverts.length ? '' : 'Rien à traiter pour le moment.',
     items: pbOuverts.slice(0, 5).map(function (p) {
-      return { label: prop(p.prop).short + ' · ' + typeProbleme(p.kind)[0], path: '#/admin/missions/' + p.mission };
+      var txt = (p.texte || '').trim();
+      var auteur = p.agent ? agent(p.agent) : null;          // une clé de fiche, jamais affichée telle quelle (D-143)
+      return { label: prop(p.prop).short + ' · ' + (auteur && !auteur.gone ? auteur.name + ' · ' : '') +
+          typeProbleme(p.kind)[0] + (txt ? ' · « ' + (txt.length > 70 ? txt.slice(0, 70) + '…' : txt) + ' »' : ''),
+        path: '#/admin/missions/' + p.mission };
     }),
     itemsReste: Math.max(0, pbOuverts.length - 5) });
 
@@ -5663,10 +6244,15 @@ function viewOwnerDash() {
     '<div class="page-head">' +
       '<div><h1 class="page-title">' + esc(bonjourProprio()) + '</h1>' +
       '<p class="page-sub">' + openCount + ' mission(s) encore sans prestataire · ' + totalLow + ' articles sous le seuil</p></div>' +
+      // Le menu « + Ajouter », en haut à droite (session 42, D-189).
+      '<div class="dash-droite">' + boutonAjouter() +
       '<div class="kpis">' + kpis.map(function (k) {
         return '<div class="kpi"><div class="v num" style="color:' + k.c + '">' + esc(k.v) + '</div><div class="l">' + k.l + '</div></div>';
       }).join('') + '</div>' +
+      '</div>' +
     '</div>' +
+    (state.ajoutMsg ? '<div class="alert alert--green" style="margin-top:18px"><div class="det">' + esc(state.ajoutMsg) + '</div></div>' : '') +
+    formulaireAjout() +
 
     /* CHAQUE ALERTE MÈNE QUELQUE PART (session 30, D-159). Signalé par Marc : le
        voyant s'allumait, mais rien ne menait à la mission concernée, et la
@@ -8844,6 +9430,16 @@ function carteMailReglages() {
         'logement, le jour et l’heure. Il part à l’adresse ci-dessus. ' +
         '<strong>Il faut avoir collé le script 15</strong> — mode d’emploi §39.') +
 
+      /* LES DEUX ALERTES DU 2 NOVEMBRE (session 42, D-191 et D-192). */
+      bascule('mail-commentaire', !!r.alerteCommentaire, 'Me prévenir quand un prestataire laisse un commentaire',
+        'Dès qu’une prestataire signale quelque chose sur une mission (casse, manque, accès…), tu ' +
+        'reçois son message par e-mail, avec le logement et le jour. Il apparaît aussi en tête du ' +
+        'tableau de bord. <strong>Il faut avoir collé le script 17</strong> — mode d’emploi §42.') +
+      bascule('mail-nonprises', !!r.alerteNonPrises, 'M’avertir des missions pas encore prises à 2 jours',
+        'Chaque fin d’après-midi, si une mission d’aujourd’hui, de demain ou d’après-demain n’a ' +
+        'toujours personne, tu reçois un e-mail qui les liste — même application fermée. Il passe ' +
+        'par le même robot que l’envoi à heure fixe : scripts 13 et secret du robot, §35.') +
+
       /* L'ENVOI À HEURE FIXE, MÊME APPLICATION FERMÉE (session 30, D-161).
          `auto` (ci-dessus) ne joue qu'au relevé des calendriers, donc quand
          MAISON WARME est ouvert. Ici, un petit robot chez Vercel — pas ton
@@ -11280,9 +11876,22 @@ function bienIcal(pid) {
           'ont été retrouvés</strong> : un relevé précédent les avait remplacés par « Voyageur ». ' +
           'Ils ont été repêchés depuis la mission de ménage correspondante.</p>'
         : '') +
+      /* Le rattachement doit se voir lui aussi (D-188) : c'est lui qui rend
+         désormais annulables les séjours saisis à la main. */
+      ((t.rattachees || 0)
+        ? '<p class="sec-note" style="margin:5px 0 0"><strong>' + t.rattachees + ' séjour(s) saisi(s) à ' +
+          'la main ont été reconnus dans le calendrier</strong>. Ils gardent ce que tu y as écrit, et ' +
+          'désormais, s’ils sont annulés sur la plateforme, ils le seront ici aussi.</p>'
+        : '') +
       (bilan.soucis.length
         ? '<ul class="sec-note" style="margin:8px 0 0;padding-left:18px">' +
-          bilan.soucis.map(function (s) { return '<li>' + esc(s) + '</li>'; }).join('') + '</ul>'
+          bilan.soucis.map(function (s) { return '<li>' + esc(s) + '</li>'; }).join('') + '</ul>' +
+          /* Un lien en panne suspendait EN SILENCE toutes les annulations du
+             logement (D-188). Ce n'est plus le cas s'il a déjà répondu une
+             fois ; on dit dans les deux cas ce que ça change. */
+          '<p class="sec-note" style="margin:5px 0 0">Tant qu’un lien ne répond pas, les séjours qu’il ' +
+            'portait la dernière fois sont gardés tels quels : une annulation venue de lui ne sera vue ' +
+            'qu’une fois le lien réparé. Si c’est une ancienne adresse, retire-la ci-dessous.</p>'
         : '') +
       /* L'HEURE DU RELEVÉ (session 24, D-133). Sans elle, un compte rendu
          « rien de nouveau » vieux de trois jours est indistinguable d'un
@@ -12697,6 +13306,25 @@ var actions = {
     verserProblemes(m.id);
     save();
     envoyerAvancement(m);
+
+    /* ET LE PROPRIÉTAIRE EST PRÉVENU PAR E-MAIL (session 42, D-191).
+       Demandé le 2 novembre : *« recevoir des alertes quand le prestataire a
+       marqué un commentaire sur une mission »*. Même porte étroite que
+       l'alerte de début de ménage (D-174) : le téléphone ne choisit ni le
+       destinataire ni le sujet, il dit seulement « sur MA mission, voici mon
+       commentaire ». Et même parti pris : un e-mail qui ne part pas
+       n'arrête pas le travail de la prestataire — la trace va dans la
+       console, et le commentaire, lui, est déjà dans la mission. */
+    var dernier = state.problems[state.problems.length - 1];
+    if (dernier && typeof DB !== 'undefined' && DB.estDispo() && DB.signalerCommentaire) {
+      setTimeout(function () {
+        DB.signalerCommentaire(m.id, dernier.kind, dernier.texte).then(function (b) {
+          if (b && !b.envoye && typeof console !== 'undefined' && console.warn) {
+            console.warn('Alerte « commentaire » non partie :', b.raison || b.erreur);
+          }
+        });
+      }, 600);
+    }
     go('#/app/missions/' + m.id + '/checklist');
   },
 
@@ -12839,6 +13467,48 @@ var actions = {
     go('#/admin/missions');
   },
   'toggle-new': function () { state.showNew = !state.showNew; save(); render(); },
+
+  /* Le menu « + Ajouter » de l'accueil (session 42, D-189). */
+  'ajout-menu': function () { state.menuAjout = !state.menuAjout; render(); },
+  'ajout-ouvrir': function (el) {
+    var k = el.dataset.k;
+    if (!AJOUTS[k]) return;
+    state.menuAjout = false;
+    state.ajoutMsg = '';
+    state.ajout = brouillonAjout(k, state.ajout && state.ajout.prop);
+    save(); render();
+    var champ = document.getElementById('aj-prop');
+    if (champ && champ.scrollIntoView) champ.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  },
+  'ajout-fermer': function () { state.ajout = null; state.menuAjout = false; save(); render(); },
+  /* Générer, ou recalculer en repartant des quantités calculées. */
+  'ajout-liste': function () {
+    if (!state.ajout) return;
+    state.ajout.liste = true;
+    state.ajout.qte = {};
+    save(); render();
+  },
+  'ajout-creer': function () {
+    var aj = state.ajout;
+    if (!aj) return;
+    aj.erreur = '';
+    var m = creerMissionAjout();
+    if (!m) { render(); return; }
+    state.ajoutMsg = '✅ ' + AJOUTS[aj.sorte].titre + ' créée — ' + prop(m.prop).name + ', ' + fmtDate(m.date) +
+      (m.taker ? ', attribuée à ' + agent(m.taker).name + '.' : ', dans la file des missions à prendre.');
+    state.ajout = null;
+    state.menuAjout = false;
+    save();
+    /* LE STATUT PART APRÈS LA LIGNE (D-142, D-154). Il ne voyage plus dans
+       l'envoi groupé : c'est une mise à jour ciblée, qui ne trouverait rien
+       si la mission n'était pas encore arrivée dans le cahier. On envoie donc
+       tout de suite, PUIS on dit « prise ». Le preneur, lui, part dans le même
+       envoi que la ligne (`majPreneurs`). */
+    if (m.taker && typeof DB !== 'undefined' && DB.estDispo() && DB.profil() && DB.viderFile) {
+      DB.viderFile().then(function () { direLeStatut(m); });
+    }
+    render();
+  },
   'create-mission': function () {
     var nm = state.nm;
     if (!state.props.length) { alert('Créez d\'abord un bien.'); return; }
@@ -13206,6 +13876,15 @@ var actions = {
     state.mailReglages.alerteDebut = !state.mailReglages.alerteDebut;
     save(); render();
   },
+  /* Les deux alertes de la session 42 (D-191, D-192). */
+  'mail-commentaire': function () {
+    state.mailReglages.alerteCommentaire = !state.mailReglages.alerteCommentaire;
+    save(); render();
+  },
+  'mail-nonprises': function () {
+    state.mailReglages.alerteNonPrises = !state.mailReglages.alerteNonPrises;
+    save(); render();
+  },
   /* L'envoi à heure fixe, robot compris (session 30, D-161). */
   'mail-robot': function () {
     state.mailReglages.robotActif = !state.mailReglages.robotActif;
@@ -13448,7 +14127,7 @@ var actions = {
   'open-resa': function (el) { go('#/admin/reservations/' + el.dataset.rid); },
   'resa-montant-auto': function (el) {
     var f = resaById(el.dataset.rid);
-    if (f) { f.r.montant = null; save(); render(); }
+    if (f) { f.r.montant = null; saisieResa(f.r); save(); render(); }
   },
   /* LES DEUX BOUTONS QUI RATTRAPENT UN MÉNAGE MANQUANT (session 21, D-117).
      L'un pour un séjour, l'autre pour tout un logement. Ils DISENT ce qu'ils
@@ -14500,6 +15179,17 @@ var inputs = {
   'nm-window': function (el) { state.nm.window = el.value; },
   'nm-price': function (el) { state.nm.price = parseInt(el.value || '0', 10) || 0; },
   'nm-note': function (el) { state.nm.note = el.value; },
+  /* Le brouillon du menu « + Ajouter » (session 42). Sans redessin, sauf pour
+     le nombre d'heures : le créneau affiché juste dessous en dépend. */
+  'aj-champ': function (el) {
+    var aj = state.ajout;
+    if (!aj) return;
+    var k = el.dataset.k;
+    if (k === 'heures') aj.heures = Math.max(0, parseFloat(String(el.value).replace(',', '.')) || 0);
+    else aj[k] = el.value;
+    save();
+    if (k === 'heures') render();
+  },
   'bien-field': function (el) { setBienField(el); },
   'bien-notes': function (el) { state.notes[el.dataset.pid] = el.value; save(); },
   'step-draft': function (el) { state.stepDrafts[el.dataset.key] = el.value; },
@@ -14544,6 +15234,7 @@ var inputs = {
       f.r[k] = v;
     }
     refletSurMissions(f.pid, f.r);
+    saisieResa(f.r);
     save();
   },
 
@@ -14552,6 +15243,7 @@ var inputs = {
     var f = resaById(el.dataset.rid);
     if (!f) return;
     f.r.montant = el.value === '' ? null : Math.max(0, parseInt(el.value, 10) || 0);
+    saisieResa(f.r);
     save();
   },
 
@@ -14655,6 +15347,39 @@ var changes = {
   'bv-fin': function (el) { state.bienvenue.fin = el.value; state.bienvenue.erreur = ''; save(); },
   'gf-heure': function (el) { state.gform.arrivee = el.value; save(); },
 
+  /* Le logement, la date, l'heure ou la personne du menu « + Ajouter ». Le
+     tarif, la durée et l'heure de départ suivent le logement choisi ; une
+     personne qui ne voit pas ce logement est retirée plutôt que gardée en
+     silence (D-109). */
+  'aj-choix': function (el) {
+    var aj = state.ajout;
+    if (!aj) return;
+    var k = el.dataset.k;
+    aj[k] = el.value;
+    if (k === 'prop') {
+      var neuf = brouillonAjout(aj.sorte, el.value);
+      aj.price = neuf.price; aj.heures = neuf.heures; aj.debut = neuf.debut; aj.type = neuf.type;
+      aj.qte = {};
+      if (aj.ag && !mayTakeMission(aj.ag, { prop: aj.prop, type: aj.type })) aj.ag = '';
+    }
+    aj.erreur = '';
+    save(); render();
+  },
+  /* Ce qu'un séjour consomme : retenu sur l'ARTICLE, donc pour toutes les
+     listes suivantes et sur tous les appareils (il voyage avec les articles). */
+  'aj-conso': function (el) {
+    var a = (state.articles || []).filter(function (x) { return x.key === el.dataset.k; })[0];
+    if (!a) return;
+    a.conso = Math.max(0, parseFloat(String(el.value).replace(',', '.')) || 0);
+    if (state.ajout && state.ajout.qte) delete state.ajout.qte[a.key];
+    save(); render();
+  },
+  'aj-qte': function (el) {
+    if (!state.ajout) return;
+    if (!state.ajout.qte) state.ajout.qte = {};
+    state.ajout.qte[el.dataset.k] = el.value;
+    save(); render();
+  },
   'nm-prop': function (el) {
     state.nm.prop = el.value;
     state.nm.price = (state.tariffs[el.value] || {})[state.nm.type] || 0;
@@ -14714,6 +15439,7 @@ var changes = {
     if (!f) return;
     f.r.plat = el.value;
     refletSurMissions(f.pid, f.r);
+    saisieResa(f.r);
     save(); render();
   },
   'nr-start': function (el) { state.nr.start = el.value; save(); },
@@ -14953,12 +15679,24 @@ window.addEventListener('hashchange', render);
    et qu'on revient consulter à midi. `releveAutoIcal()` décide elle-même s'il y
    a lieu de relever (pas plus d'une fois par heure et par logement). */
 document.addEventListener('visibilitychange', function () {
+  /* EN PARTANT, ON ENVOIE TOUT DE SUITE (session 42, D-187). Un téléphone mis
+     en veille gèle ses minuteurs : les 800 ms qui regroupent les frappes
+     pouvaient ne jamais s'écouler, et la saisie restait sur l'appareil — puis
+     la relecture du lendemain la remplaçait par l'ancienne valeur. */
+  if (document.visibilityState === 'hidden') {
+    if (typeof DB !== 'undefined' && DB.estDispo() && DB.viderFile) DB.viderFile();
+    return;
+  }
   if (document.visibilityState !== 'visible') return;
   releveAutoIcal();
 });
 
 // Sauvegarde de sécurité : la frappe en cours n'est pas perdue en quittant la page.
 window.addEventListener('beforeunload', save);
+window.addEventListener('pagehide', function () {
+  save();
+  if (typeof DB !== 'undefined' && DB.estDispo() && DB.viderFile) DB.viderFile();
+});
 
 load();
 

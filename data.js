@@ -559,12 +559,34 @@ var DB = (function () {
     var connus = {};
     lignes.forEach(function (l) { connus[l.id] = true; });
 
+    /* Les séjours que CE navigateur a modifiés et dont la modification n'est
+       pas encore confirmée par le cahier (session 42, D-187). Voir plus bas. */
+    var localParId = {};
+    var modifies = state.resasModifiees || {};
+    Object.keys(state.resas || {}).forEach(function (pid) {
+      (state.resas[pid] || []).forEach(function (r) { if (r && modifies[r.id]) localParId[r.id] = r; });
+    });
+
     lignes.forEach(function (l) {
       /* SUPPRIMÉE, DONC PAS RELUE (session 38, D-180). Et on redemande sa
          suppression : si la ligne est encore là, c'est que le premier essai a
          échoué ou qu'un autre appareil l'a réécrite. Une suppression qui ne
          porte sur rien est sans effet — la répéter ne coûte rien. */
       if (state.supprimes && state.supprimes.resas && state.supprimes.resas[l.id]) {
+        supprimerLigne('reservations', l.id);
+        return;
+      }
+      /* … ET UN SÉJOUR DE CALENDRIER RESSUSCITÉ SOUS UN AUTRE NUMÉRO NON PLUS
+         (session 42, D-186). Le numéro interne d'un séjour est tiré au hasard
+         (D-181) : un appareil qui relève le calendrier sans connaître encore
+         la suppression le recrée sous un numéro NEUF, que la mémoire par
+         numéro ignore — et il revenait sur l'écran même où on l'avait
+         supprimé. On le reconnaît donc ici aussi par ce qui ne change pas :
+         son CRÉNEAU — logement + dates —, posé par le clic de Marc sur
+         « Supprimer ». Seulement les séjours venus d'un calendrier : un séjour
+         saisi à la main n'est jamais refusé (garde-fou de D-181). */
+      if (l.source === 'ical' && typeof sejourOublieDeLaReleve === 'function' &&
+          sejourOublieDeLaReleve(l.property_id, l.uid, l.start_date, l.end_date)) {
         supprimerLigne('reservations', l.id);
         return;
       }
@@ -579,6 +601,32 @@ var DB = (function () {
         // il ne fait que le lire ici. Voir `resaVoyageur()`.
         commentaire: l.commentaire || ''
       };
+      /* CE QUI VIENT D'ÊTRE TAPÉ ICI GAGNE SUR LE CAHIER, TANT QU'IL N'Y EST
+         PAS ARRIVÉ (session 42, D-187).
+
+         Signalé le 2 novembre : *« quand je rajoute des données sur un
+         voyageur (son nom, le tarif du séjour…), ça ne s'enregistre pas. »*
+         Reproduit sans cahier, la saisie tenait parfaitement. Le défaut était
+         donc dans l'aller-retour : la relecture REMPLAÇAIT chaque séjour par
+         la ligne du cahier. Si la saisie n'y était pas encore — envoi en
+         route, application refermée dans la seconde, téléphone mis en veille
+         avant les 800 ms —, la relecture la remplaçait par l'ancienne valeur,
+         et l'envoi suivant confirmait l'ancienne valeur partout.
+
+         On retient donc, séjour par séjour, qu'une saisie attend son envoi
+         (`state.resasModifiees`, effacé quand le cahier l'a reçue), et pour
+         ceux-là la valeur locale prime. Les colonnes du VOYAGEUR ne priment
+         que si on a quelque chose à y mettre : on n'efface jamais ce qu'il a
+         écrit lui-même (règle 16, D-91). */
+      var local = localParId[l.id];
+      if (local) {
+        r.guest = local.guest;
+        r.montant = (local.montant === undefined) ? r.montant : local.montant;
+        if (local.plat) r.plat = local.plat;
+        ['guests', 'tel', 'tel4', 'mail', 'arriveePrevue'].forEach(function (k) {
+          if (local[k] !== undefined && local[k] !== null && local[k] !== '') r[k] = local[k];
+        });
+      }
       if (!parBien[l.property_id]) parBien[l.property_id] = [];
       parBien[l.property_id].push(r);
       if (l.depart_at) state.departs[l.property_id + ':' + l.start_date + ':' + l.end_date] = l.depart_at;
@@ -1171,6 +1219,45 @@ var DB = (function () {
       if (reglageVide(v) && !reglageVide(state[l.cle])) return;
       state[l.cle] = v;
     });
+  }
+
+  /* LES MÉMOIRES DE SUPPRESSION SE RELISENT AVANT D'ÉCRIRE (session 42, D-186)
+
+     Signalé le 2 novembre, pour la sixième fois : *« les prestataires que je
+     supprime reviennent »*, *« la réservation que je supprime réapparaît »*.
+
+     Les sessions 36 à 39 ont posé trois mémoires (`fichesSupprimees`,
+     `supprimes`, `icalOublies`) et elles fonctionnent — mais elles n'étaient
+     relues qu'à la LECTURE. Or un second appareil n'écrit pas forcément après
+     avoir lu : le téléphone resté ouvert depuis ce matin, réveillé à midi,
+     envoie sa copie **avant** que sa relecture ne revienne. Il renvoie donc :
+
+       · la fiche, le séjour ou la mission supprimés entre-temps ailleurs —
+         sa copie les contient encore, et sa mémoire ne les connaît pas ;
+       · sa propre mémoire de suppressions, plus courte, qui **remplace** dans
+         le cahier celle de l'ordinateur (un `upsert` écrase ce qu'il envoie,
+         règle 16) — la fusion ne se faisait qu'à la lecture.
+
+     Le remède tient en une phrase : **on ne pousse plus jamais sans avoir
+     relu les trois mémoires juste avant.** C'est une toute petite lecture
+     (trois lignes de `reglages`), et elle ferme les deux trous à la fois :
+     l'appareil en retard apprend la suppression, la retire de sa copie, et
+     renvoie l'UNION des mémoires au lieu de la sienne.
+
+     Une lecture qui échoue ne bloque pas l'envoi : on pousse comme avant
+     (règle 19 — le facultatif ne casse jamais le reste). */
+  function relireOublis() {
+    if (!dispo || !profil || profil.role !== 'owner') return Promise.resolve(false);
+    return client.from('reglages').select('cle, valeur')
+      .eq('owner_id', profil.id)
+      .in('cle', Object.keys(REGLAGES_CUMULATIFS))
+      .then(function (r) {
+        if (!r || r.error || !Array.isArray(r.data)) return false;
+        reglagesDepuisBase(r.data);
+        // app.js retire de la copie locale ce que les mémoires désignent.
+        if (typeof appliquerOublis === 'function' && appliquerOublis() && typeof render === 'function') render();
+        return true;
+      }, function () { return false; });
   }
 
   /* --- les demandes d'accès du voyageur --- */
@@ -2000,11 +2087,23 @@ var DB = (function () {
      parler à la base à chaque touche. Pendant ces 800 ms, une relecture
      rapportait l'**ancienne** valeur et effaçait la nouvelle avant qu'elle
      n'ait bougé. On solde donc la file d'abord. */
+  /* … ET PAS NON PLUS PAR-DESSUS UNE ÉCRITURE DÉJÀ EN ROUTE (session 42, D-187).
+
+     La file vidée ici ne couvrait que l'écriture **programmée** (les 800 ms).
+     Une écriture déjà PARTIE — le minuteur venait de sonner, l'envoi roulait
+     vers Supabase — n'était attendue par personne. Une relecture lancée à ce
+     moment (le temps réel, un retour au premier plan) pouvait revenir AVANT
+     elle, avec l'ancienne ligne : le nom du voyageur tout juste tapé était
+     remplacé par « Voyageur », le montant par le calcul. C'est le « ça ne
+     s'enregistre pas » du 2 novembre. On attend donc aussi l'envoi en cours. */
   function viderFileEcriture() {
-    if (!enAttente) return Promise.resolve();
-    clearTimeout(enAttente);
-    enAttente = null;
-    return pousserMaintenant().then(function () { return null; }, function () { return null; });
+    if (enAttente) {
+      clearTimeout(enAttente);
+      enAttente = null;
+      return pousserMaintenant().then(function () { return null; }, function () { return null; });
+    }
+    if (envoiEnCours) return envoiEnCours.then(function () { return null; }, function () { return null; });
+    return Promise.resolve();
   }
 
   function charger() {
@@ -2105,8 +2204,12 @@ var DB = (function () {
          ligne par les règles de lecture : du bruit, et de fausses conclusions
          sur les scripts manquants. Un prestataire n'écrit que ses missions et
          ses relevés, par des chemins qui lui sont propres. */
+      /* Et une saisie qui n'avait pas eu le temps de partir avant la fermeture
+         de l'application (D-187) part maintenant, au lieu d'attendre la
+         prochaine frappe — qui pourrait ne jamais venir. */
       if (profil.role === 'owner' &&
-          ((!resas.length && localResas) || (!missions.length && (state.missions || []).length))) {
+          ((!resas.length && localResas) || (!missions.length && (state.missions || []).length) ||
+           Object.keys(state.resasModifiees || {}).length)) {
         setTimeout(pousserMaintenant, 0);
       }
       return true;
@@ -2231,9 +2334,36 @@ var DB = (function () {
     return ordre.map(function (k) { return parCle[k]; });
   }
 
+  /* LES ENVOIS PARTENT L'UN APRÈS L'AUTRE, ET APRÈS LA RELECTURE DES MÉMOIRES
+     (session 42, D-186 et D-187).
+
+     · Les mémoires de suppression d'abord (`relireOublis`) : voir pourquoi
+       au-dessus de cette fonction.
+     · Un envoi à la fois : deux envois simultanés pouvaient arriver dans le
+       désordre, le plus ancien écrasant le plus récent. Le suivant attend
+       le précédent, et construit son lot à SON tour — donc sur l'état le
+       plus récent, jamais sur une photographie déjà dépassée.
+     · `envoiEnCours` est ce qu'attend `viderFileEcriture()`. */
+  var envoiEnCours = null;
+
   function pousserMaintenant() {
     if (!dispo || !profil) return Promise.resolve();
+    var precedent = envoiEnCours || Promise.resolve();
+    var ceLui = precedent.then(function () { return null; }, function () { return null; })
+      .then(relireOublis)
+      .then(function () { return pousserApresOublis(); });
+    envoiEnCours = ceLui;
+    ceLui.then(function () { if (envoiEnCours === ceLui) envoiEnCours = null; },
+               function () { if (envoiEnCours === ceLui) envoiEnCours = null; });
+    return ceLui;
+  }
+
+  function pousserApresOublis() {
+    if (!dispo || !profil) return Promise.resolve();
     var moi = profil.id;
+    /* L'heure à laquelle ce lot a été construit : les séjours modifiés AVANT
+       elle sont, si l'envoi réussit, désormais dans le cahier (D-187). */
+    var debutEnvoi = Date.now();
     var biens = (state.props || []).map(function (p) { return bienVersBase(p, moi); });
     var secrets = (state.props || []).map(secretsVersBase);
     /* RIEN DE CE QUI A ÉTÉ SUPPRIMÉ NE REPART (session 38, D-180). Sans ce
@@ -2352,6 +2482,14 @@ var DB = (function () {
       return { ok: false, erreur: e.message || messageClair(e), soucis: soucis };
     }).then(function (bilan) {
       derniereErreur = bilan.ok ? null : bilan.erreur;
+      /* Ce qui a été tapé avant ce lot est arrivé : la relecture peut de
+         nouveau faire foi pour ces séjours-là (D-187). Ce qui a été tapé
+         PENDANT l'envoi reste protégé jusqu'au lot suivant. */
+      if (bilan.ok && state.resasModifiees) {
+        Object.keys(state.resasModifiees).forEach(function (id) {
+          if (state.resasModifiees[id] <= debutEnvoi) delete state.resasModifiees[id];
+        });
+      }
       /* CE QUI S'EST RÉELLEMENT PASSÉ À LA DERNIÈRE ÉCRITURE (session 19).
          Jusqu'ici, personne ne le lisait : `pousser()` part sans qu'on
          l'attende, et l'échec ne s'affichait NULLE PART. Un refus du cahier
@@ -2534,6 +2672,36 @@ var DB = (function () {
     });
   }
 
+  /* UN COMMENTAIRE SUR UNE MISSION → UN E-MAIL AU PROPRIÉTAIRE (session 42,
+     D-191). Même porte que le début de ménage (`api/mission-commencee.js`),
+     avec `evenement: 'commentaire'` : le serveur vérifie, par le script 17,
+     que la mission est bien celle de la personne connectée. Le texte est
+     coupé côté serveur ; le destinataire n'est jamais choisi ici. */
+  function signalerCommentaire(missionId, sorte, texte) {
+    if (!dispo || !profil || !missionId) return Promise.resolve({ envoye: false, raison: 'hors-ligne' });
+    return jetonDeSession().then(function (jeton) {
+      if (!jeton) return { envoye: false, raison: 'sans-jeton' };
+      return fetch('/api/mission-commencee', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jeton: jeton, mission: missionId, evenement: 'commentaire',
+                               sorte: sorte || '', texte: texte || '' })
+      }).then(function (r) {
+        return r.text().then(function (corps) {
+          var j = null;
+          try { j = JSON.parse(corps); } catch (e) { j = null; }
+          if (!r.ok) {
+            return { envoye: false, raison: (j && (j.code || j.erreur)) ||
+              (r.status === 404 ? 'pas-publie' : 'refus-' + r.status) };
+          }
+          return j || { envoye: false, raison: 'reponse-vide' };
+        });
+      });
+    }).catch(function (e) {
+      return { envoye: false, raison: (e && e.message) || 'echec' };
+    });
+  }
+
   function envoyerMail(expediteur, envois) {
     if (!dispo) return Promise.reject(new Error(derniereErreur || 'Connexion indisponible.'));
     if (!profil) return Promise.reject(new Error('Il faut être connecté pour envoyer des e-mails.'));
@@ -2650,6 +2818,13 @@ var DB = (function () {
     signalerDepart: signalerDepart,
     pousser: pousser,
     pousserMaintenant: pousserMaintenant,
+    /* Envoyer TOUT DE SUITE ce qui attend (session 42, D-187) : quand
+       l'application passe en arrière-plan, les 800 ms d'attente peuvent ne
+       jamais s'écouler — un téléphone en veille gèle les minuteurs. */
+    viderFile: viderFileEcriture,
+    /* Les mémoires de suppression, relues seules (session 42, D-186) : la
+       relève des calendriers s'en sert avant de rien recréer. */
+    relireOublis: relireOublis,
     /* Relire le cahier de bout en bout, droits compris. C'est ce que fait le
        bouton « Actualiser » du prestataire, et ce que l'application fait
        toute seule quand elle revient au premier plan (session 19). */
@@ -2673,7 +2848,8 @@ var DB = (function () {
     taire: taire,
     demenager: demenager,
     envoyerMail: envoyerMail,
-    signalerDebutMenage: signalerDebutMenage
+    signalerDebutMenage: signalerDebutMenage,
+    signalerCommentaire: signalerCommentaire
   };
 
 })();
