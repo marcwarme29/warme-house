@@ -1833,8 +1833,15 @@ function annulerMission(m, motif) {
   return m;
 }
 
-/** Retire une réservation : sa mission est supprimée, ou annulée avec un mot. */
-function retirerResa(pid, resa, motif, parLeProprietaire) {
+/** Retire une réservation : sa mission est supprimée, ou annulée avec un mot.
+
+    `deplacement` (session 46, D-202) : le séjour n'est PAS supprimé, il change
+    de dates et l'appelant le remet aussitôt dans la liste. Seules ses missions
+    sont traitées. Sans ce drapeau, son numéro entrait dans la mémoire des
+    suppressions (D-180) et le cahier l'effaçait — alors que le même séjour,
+    sous le même numéro, venait d'être remis à l'écran. Il disparaissait à la
+    relecture suivante, et pour toujours. */
+function retirerResa(pid, resa, motif, parLeProprietaire, deplacement) {
   state.resas[pid] = resasOf(pid).filter(function (x) { return x !== resa; });
   var cle = resaKey(pid, resa);
 
@@ -1874,7 +1881,7 @@ function retirerResa(pid, resa, motif, parLeProprietaire) {
      le cahier refuse, ou si un autre appareil renvoie la ligne, elle ne
      reviendra pas. C'est ce qui manquait pour les séjours saisis à la main —
      `oublierSejourIcal()` ne couvre que ceux venus d'un calendrier. */
-  oublier('resas', resa.id);
+  if (!deplacement) oublier('resas', resa.id);
   missionsRetirees.forEach(function (id) { oublier('missions', id); });
 
   /* LE CRÉNEAU N'EST BLOQUÉ QUE SUR UN GESTE DU PROPRIÉTAIRE (session 39, D-181).
@@ -1892,7 +1899,7 @@ function retirerResa(pid, resa, motif, parLeProprietaire) {
   var promesse = Promise.resolve(true);
   if (typeof DB !== 'undefined' && DB.estDispo() && DB.profil()) {
     var travaux = missionsRetirees.map(function (id) { return DB.supprimerMission(id); });
-    travaux.push(DB.supprimerResa(resa.id));
+    if (!deplacement) travaux.push(DB.supprimerResa(resa.id));
     promesse = Promise.all(travaux).then(function (rs) {
       return rs.every(function (ok) { return ok !== false; });
     }, function () { return false; });
@@ -2076,6 +2083,20 @@ function fusionnerResas(pid, lot, source, plat) {
     var nomFourni = !nomGeneriqueResa(brut.guest);
     var effectifFourni = parseInt(brut.guests, 10) > 0;
 
+    /* UN SÉJOUR TERMINÉ NE CHANGE PLUS DE DATES (session 46, D-202).
+       Signalé le 3 novembre : des séjours d'octobre disparus. Un calendrier
+       remodèle ses événements passés — Booking, qui publie aussi les séjours
+       d'Airbnb depuis que les deux calendriers sont reliés (§45), regroupe
+       des nuits voisines en une seule période fermée. Le même identifiant
+       revenait avec d'autres dates, et le séjour était « déplacé » sur des
+       nuits qui ne sont pas les siennes. Une fois parti, le voyageur ne peut
+       plus bouger : on garde les dates connues (même raisonnement que le
+       « en cours ou passé : on ne touche pas » de D-145). */
+    if (connue.end <= TODAY && (incoming.start !== connue.start || incoming.end !== connue.end)) {
+      incoming.start = connue.start;
+      incoming.end = connue.end;
+    }
+
     /* Un séjour saisi à la main et rattaché à son événement (D-188) garde la
        plateforme que Marc lui a donnée : un calendrier Booking publie aussi
        les séjours d'Airbnb (D-125), il n'a pas le dernier mot là-dessus. */
@@ -2095,7 +2116,7 @@ function fusionnerResas(pid, lot, source, plat) {
     var datesBougent = connue.end !== incoming.end;
     if (datesBougent) {
       var bd = retirerResa(pid, connue, 'Le séjour a été déplacé au ' + fmtDate(incoming.end) +
-        ' : une nouvelle mission a été créée à cette date.');
+        ' : une nouvelle mission a été créée à cette date.', false, true);
       bilan.missionsAnnulees += bd.annulees.length;
     }
     (aLaMain ? ['start', 'end', 'uid'] : ['plat', 'start', 'end', 'uid', 'source'])
