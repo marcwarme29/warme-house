@@ -1199,7 +1199,10 @@ var DB = (function () {
     /* Session 44 (D-199) : les messages programmés déjà ouverts dans
        WhatsApp, pour ne pas les proposer deux fois — sur l'ordinateur comme
        sur l'iPad ou chez l'administrateur (règle 14). */
-    'waOuverts'];
+    'waOuverts',
+    /* Session 45 (D-201) : quelle annonce Airbnb / Booking est quel logement,
+       choisi une fois à l'import d'un fichier. */
+    'importAnnonces'];
 
   /* Deux clés ne doivent JAMAIS être remplacées par une liste vide : sans
      prestation ni article, l'application n'a plus rien à afficher et

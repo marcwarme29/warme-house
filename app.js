@@ -585,6 +585,11 @@ function initialState() {
     waOuverts: {},                    // { 'regle_sejour': 'AAAA-MM-JJ HH:MM' } — message programmé ouvert dans WhatsApp
     waTexte: {},                      // { sejour: texte en cours } — état d'écran, remis à zéro (règle 7)
     reponseEd: null,                  // la réponse en cours d'écriture — état d'écran
+    /* Session 45 (D-201) : quelle annonce Airbnb / Booking est quel logement,
+       retenu une fois pour toutes (voyage dans `reglages`). */
+    importAnnonces: {},               // { 'Airbnb|Appartement cosy, terrasse vue mer': 'bappartement…' }
+    importFichier: null,              // le fichier lu, en attente d'« Appliquer » — état d'écran
+    importMsg: '',
 
     missions: clone(MISSIONS),
     photos: {},                       // { missionId: { stepId: photo enregistrée sur l'appareil } }
@@ -893,6 +898,8 @@ function load() {
   state.lvEdit = null;                // D-196 : une saisie en cours n'est pas une donnée
   state.waTexte = {};                 // D-199 : un message pas encore ouvert dans WhatsApp non plus
   state.reponseEd = null;             // D-200 : ni une réponse en cours d'écriture
+  state.importFichier = null;         // D-201 : un fichier lu n'est pas une donnée
+  state.importMsg = '';
   state.photoPlein = null;            // une photo ouverte en grand n'est pas une donnée
   state.apercuSejour = null;          // un aperçu n'est pas une donnée non plus
   state.sejourNet = null;             // une demande en cours ne survit pas à la page
@@ -1124,6 +1131,7 @@ function upgrade() {
   if (!state.reponses || typeof state.reponses !== 'object' || Array.isArray(state.reponses)) state.reponses = {};
   if (!state.waOuverts || typeof state.waOuverts !== 'object' || Array.isArray(state.waOuverts)) state.waOuverts = {};
   if (!state.waTexte || typeof state.waTexte !== 'object') state.waTexte = {};
+  if (!state.importAnnonces || typeof state.importAnnonces !== 'object' || Array.isArray(state.importAnnonces)) state.importAnnonces = {};
   if (!state.planStart) state.planStart = premierJourDuMois(TODAY);
   if (state.planProps === undefined) state.planProps = null;
   if (!state.statMonth) state.statMonth = CURRENT_MONTH;
@@ -4343,6 +4351,406 @@ function annoncerAutomatiquement() {
   var aFaire = missionsAAnnoncer();
   if (!aFaire.length) return Promise.resolve(null);
   return prevenirDeCesMissions(aFaire, true);
+}
+
+/* ==========================================================================
+   IMPORTER UN FICHIER DE RÉSERVATIONS AIRBNB OU BOOKING (session 45, D-201)
+
+   Demandé le 3 novembre : *« en te transmettant un document d'Airbnb et de
+   Booking, est-ce que tu peux remplir sur mon logiciel les informations
+   voyageur d'un séjour, tel que le nombre de voyageurs, le tarif »*.
+
+   L'agent ne peut pas écrire dans le cahier (il n'a pas le compte de Marc, et
+   ne doit pas l'avoir). C'est donc l'APPLICATION qui lit le fichier, dans le
+   navigateur de Marc : rien ne quitte son ordinateur sauf ce qui est écrit
+   sur les séjours, par le chemin habituel.
+
+   Les deux fichiers, tels que Marc les a fournis le 3 novembre :
+   · AIRBNB, « reservations.csv » (Réservations → Exporter) : code, statut,
+     nom, contact, adultes / enfants / bébés, début et fin (JJ/MM/AAAA),
+     annonce, revenus (« 161,98 € » — ce que touche l'hôte) ;
+   · BOOKING, « Réservations_….xls » (extranet → Réservations → Télécharger) :
+     établissement, nom du client, arrivée et départ (« 15 octobre 2026 »),
+     statut (OK / Annulée), paiement total, commission, n° de réservation.
+     **Ni nombre de personnes, ni téléphone** : on ne les invente pas (règle 5).
+
+   LE PRINCIPE : on retrouve chaque ligne dans MAISON WARME par le LOGEMENT
+   et les DATES EXACTES — la seule règle sûre, la même que D-171. On MONTRE
+   ce qui va changer, on n'écrit qu'après « Appliquer ». Une ligne annulée
+   chez la plateforme n'annule rien ici : c'est la relève du calendrier qui
+   le fait (D-145) ; on le dit seulement.
+
+   LE MONTANT RETENU est ce que Marc TOUCHE : les revenus d'Airbnb tels quels,
+   le paiement Booking MOINS la commission — pour que les deux plateformes se
+   comparent dans les statistiques. Les deux chiffres sont affichés.
+   ========================================================================== */
+
+/* --- Lire le fichier ----------------------------------------------------- */
+
+/** Un CSV, guillemets et retours à la ligne compris ; virgule ou point-virgule. */
+function lireCsv(texte) {
+  texte = String(texte || '').replace(/^﻿/, '');
+  var premiere = texte.split('\n')[0] || '';
+  var sep = (premiere.split(';').length > premiere.split(',').length) ? ';' : ',';
+  var lignes = [], ligne = [], champ = '', guil = false;
+  for (var i = 0; i < texte.length; i++) {
+    var c = texte.charAt(i);
+    if (guil) {
+      if (c === '"' && texte.charAt(i + 1) === '"') { champ += '"'; i++; }
+      else if (c === '"') guil = false;
+      else champ += c;
+    } else if (c === '"') guil = true;
+    else if (c === sep) { ligne.push(champ); champ = ''; }
+    else if (c === '\n' || c === '\r') {
+      if (c === '\r' && texte.charAt(i + 1) === '\n') i++;
+      ligne.push(champ); champ = '';
+      if (ligne.some(function (x) { return x !== ''; })) lignes.push(ligne);
+      ligne = [];
+    } else champ += c;
+  }
+  ligne.push(champ);
+  if (ligne.some(function (x) { return x !== ''; })) lignes.push(ligne);
+  return lignes;
+}
+
+var MOIS_IMPORT = { janvier: 1, fevrier: 2, mars: 3, avril: 4, mai: 5, juin: 6, juillet: 7, aout: 8,
+  septembre: 9, octobre: 10, novembre: 11, decembre: 12, january: 1, february: 2, march: 3, april: 4,
+  may: 5, june: 6, july: 7, august: 8, september: 9, october: 10, november: 11, december: 12 };
+
+/** « 30/10/2026 », « 2026-10-30 », « 15 octobre 2026 » ou un nombre Excel → '2026-10-30'. */
+function lireDateImport(v) {
+  if (typeof v === 'number' && v > 20000 && v < 80000) {
+    return new Date(Date.UTC(1899, 11, 30) + Math.round(v) * 86400000).toISOString().slice(0, 10);
+  }
+  var s = String(v || '').trim(), m;
+  if ((m = s.match(/^(\d{4})-(\d{2})-(\d{2})/))) return m[1] + '-' + m[2] + '-' + m[3];
+  if ((m = s.match(/^(\d{1,2})[\/.](\d{1,2})[\/.](\d{4})/))) {
+    return m[3] + '-' + String(m[2]).padStart(2, '0') + '-' + String(m[1]).padStart(2, '0');
+  }
+  if ((m = nomSimple(s).match(/^(\d{1,2}) ([a-z]+) (\d{4})/)) && MOIS_IMPORT[m[2]]) {
+    return m[3] + '-' + String(MOIS_IMPORT[m[2]]).padStart(2, '0') + '-' + String(m[1]).padStart(2, '0');
+  }
+  return '';
+}
+
+/** « 161,98 € », « 1 234,50 », 157.2 → 161.98 / 1234.5 / 157.2 ; null si illisible. */
+function lireMontantImport(v) {
+  if (typeof v === 'number') return isFinite(v) ? v : null;
+  var s = String(v || '').replace(/[^0-9,.\-]/g, '');
+  if (!s) return null;
+  if (s.indexOf(',') >= 0) s = s.replace(/\./g, '').replace(',', '.');
+  var n = parseFloat(s);
+  return isFinite(n) ? n : null;
+}
+
+/** Les lignes du fichier, traduites dans un format commun aux deux plateformes. */
+function lignesImport(table) {
+  if (!table || table.length < 2) throw new Error('Ce fichier ne contient aucune réservation.');
+  var tete = table[0].map(function (x) { return nomSimple(x); });
+  var col = function (nom) { return tete.indexOf(nomSimple(nom)); };
+  var val = function (l, i) { return i >= 0 && l[i] !== undefined ? l[i] : ''; };
+  var nb = function (x) { var n = parseInt(x, 10); return isFinite(n) ? n : 0; };
+
+  if (col('Code de confirmation') >= 0) {
+    var A = { code: col('Code de confirmation'), statut: col('Statut'), nom: col('Nom du voyageur'),
+      contact: col('Contact'), ad: col('# des adultes'), en: col('# des enfants'), be: col('# des bébés'),
+      debut: col('Date de début'), fin: col('Date de fin'), annonce: col('Annonce'), rev: col('Revenus') };
+    return { plat: 'Airbnb', lignes: table.slice(1).map(function (l) {
+      var adultes = nb(val(l, A.ad)), enfants = nb(val(l, A.en)), bebes = nb(val(l, A.be));
+      var rev = lireMontantImport(val(l, A.rev));
+      return {
+        plat: 'Airbnb', code: String(val(l, A.code)), annonce: String(val(l, A.annonce)).trim(),
+        nom: String(val(l, A.nom)).trim(), tel: String(val(l, A.contact)).trim(),
+        start: lireDateImport(val(l, A.debut)), end: lireDateImport(val(l, A.fin)),
+        voyageurs: adultes + enfants || null, detail: adultes + ' adulte(s)' + (enfants ? ', ' + enfants + ' enfant(s)' : '') +
+          (bebes ? ', ' + bebes + ' bébé(s)' : ''),
+        montant: rev, montantDetail: rev === null ? '' : 'revenus ' + fmtEuros(rev),
+        annule: /annul/i.test(String(val(l, A.statut)))
+      };
+    }) };
+  }
+
+  if (col('Numéro de réservation') >= 0 || col('Nom du client') >= 0) {
+    var B = { etab: col("Nom de l'établissement"), nom: col('Nom du client'), arr: col('Arrivée'),
+      dep: col('Départ'), statut: col('Statut'), total: col('Paiement total'), com: col('Commission'),
+      num: col('Numéro de réservation') };
+    return { plat: 'Booking.com', lignes: table.slice(1).map(function (l) {
+      var total = lireMontantImport(val(l, B.total)), com = lireMontantImport(val(l, B.com));
+      var net = total === null ? null : total - (com || 0);
+      return {
+        plat: 'Booking.com', code: String(val(l, B.num)), annonce: String(val(l, B.etab)).trim(),
+        nom: String(val(l, B.nom)).trim(), tel: '',
+        start: lireDateImport(val(l, B.arr)), end: lireDateImport(val(l, B.dep)),
+        voyageurs: null, detail: '',
+        montant: net, montantDetail: total === null ? '' :
+          'payé ' + fmtEuros(total) + (com ? ' − commission ' + fmtEuros(com) : ''),
+        annule: /annul|cancel/i.test(String(val(l, B.statut)))
+      };
+    }) };
+  }
+
+  throw new Error('Je ne reconnais pas ce fichier : ni l’export des réservations Airbnb, ni celui de Booking.');
+}
+
+function fmtEuros(n) {
+  return (Math.round(n * 100) / 100).toLocaleString('fr-FR', { minimumFractionDigits: 0, maximumFractionDigits: 2 }) + ' €';
+}
+
+/* --- Rapprocher des séjours --------------------------------------------- */
+
+/** Le logement qu'une annonce désigne : le choix déjà fait par Marc, sinon le
+    logement dont le nom partage le plus de mots avec l'annonce. Une égalité,
+    ou aucun mot commun, ne choisit rien (règle 15 : ne pas deviner). */
+function logementDeLAnnonce(plat, annonce) {
+  var cle = plat + '|' + annonce;
+  var choisi = (state.importAnnonces || {})[cle];
+  if (choisi && state.props.some(function (p) { return p.id === choisi && !p.gone; })) return choisi;
+  var mots = nomSimple(annonce).split(' ').filter(function (m) { return m.length > 2; });
+  var meilleur = null, score = 0, egalite = false;
+  state.props.filter(function (p) { return !p.gone; }).forEach(function (p) {
+    var n = nomSimple(p.name).split(' ').filter(function (m) { return m.length > 2 && mots.indexOf(m) >= 0; }).length;
+    if (n > score) { meilleur = p.id; score = n; egalite = false; }
+    else if (n === score && n > 0) egalite = true;
+  });
+  return score && !egalite ? meilleur : '';
+}
+
+/** Ce que chaque ligne changerait. Rien n'est écrit ici. */
+function planImport(imp) {
+  return imp.lignes.map(function (l, i) {
+    var pid = logementDeLAnnonce(l.plat, l.annonce);
+    var res = { i: i, l: l, pid: pid, r: null, changements: [], etat: '' };
+    if (!l.start || !l.end) { res.etat = 'dates'; return res; }
+    if (!pid) { res.etat = 'logement'; return res; }
+    var r = resasOf(pid).filter(function (x) { return x.start === l.start && x.end === l.end; })[0];
+    if (!r) { res.etat = l.annule ? 'annule-absent' : 'absent'; return res; }
+    res.r = r;
+    if (l.annule) { res.etat = 'annule'; return res; }
+    var nomActuel = String(r.guest || '').trim();
+    if (l.nom && (!nomActuel || nomActuel === 'Voyageur')) res.changements.push(['guest', 'Nom', nomActuel || '—', l.nom]);
+    if (l.voyageurs && l.voyageurs !== r.guests) res.changements.push(['guests', 'Voyageurs', r.guests || '—', l.voyageurs]);
+    if (l.montant !== null) {
+      var m = Math.round(l.montant);
+      if (r.montant !== m) res.changements.push(['montant', 'Prix du séjour',
+        r.montant === null || r.montant === undefined ? 'estimé' : r.montant + ' €', m + ' €']);
+    }
+    if (l.tel && !r.tel) res.changements.push(['tel', 'Téléphone', '—', l.tel]);
+    res.etat = res.changements.length ? 'a-remplir' : 'a-jour';
+    return res;
+  });
+}
+
+/* --- L'écran ------------------------------------------------------------ */
+
+function carteImport() {
+  var imp = state.importFichier;
+  var tete = '<div class="card" style="margin-top:22px;padding:22px">' +
+    '<h2 style="font:700 16px Figtree,sans-serif;margin:0 0 4px">Importer un fichier Airbnb ou Booking</h2>' +
+    '<p class="sec-note" style="margin:0 0 12px">Le nom du voyageur, le nombre de voyageurs et le <strong>vrai prix</strong> ' +
+      'de chaque séjour, d’un coup. <strong>Airbnb</strong> : Réservations → Toutes → Exporter (fichier .csv). ' +
+      '<strong>Booking</strong> : extranet → Réservations → Télécharger (fichier .xls). Le fichier est lu ici, ' +
+      'sur cet appareil : il n’est envoyé nulle part.</p>' +
+    '<label class="btn btn--dark btn--sm" for="import-fichier" style="cursor:pointer">Choisir le fichier</label>' +
+    '<input id="import-fichier" type="file" accept=".csv,.xls,text/csv,application/vnd.ms-excel"' +
+      ' style="position:absolute;width:1px;height:1px;opacity:0" data-ch="import-fichier">' +
+    (state.importMsg ? '<p class="sec-note" style="margin:10px 0 0;color:' +
+      (/^✅/.test(state.importMsg) ? 'var(--green-t)' : 'var(--terra-d)') + '">' + esc(state.importMsg) + '</p>' : '');
+
+  if (!imp) return tete + '</div>';
+
+  var plan = planImport(imp);
+  var annonces = {};
+  imp.lignes.forEach(function (l) { annonces[l.annonce] = true; });
+  var biens = state.props.filter(function (p) { return !p.gone; });
+
+  var choixLogements = Object.keys(annonces).map(function (a) {
+    var pid = logementDeLAnnonce(imp.plat, a);
+    return '<div style="margin-top:10px"><label class="lab">« ' + esc(a || 'annonce sans nom') + ' » — c’est quel logement ?</label>' +
+      '<select class="inp" data-ch="import-annonce" data-plat="' + esc(imp.plat) + '" data-annonce="' + esc(a) + '">' +
+        '<option value=""' + (pid ? '' : ' selected') + '>— à choisir —</option>' +
+        biens.map(function (p) {
+          return '<option value="' + esc(p.id) + '"' + (pid === p.id ? ' selected' : '') + '>' + esc(p.name) + '</option>';
+        }).join('') + '</select></div>';
+  }).join('');
+
+  var ETATS = {
+    'a-remplir': ['À remplir', 'var(--green-t)'], 'a-jour': ['Déjà à jour', 'var(--muted)'],
+    absent: ['Pas trouvé ici', 'var(--amber-t)'], annule: ['Annulé chez ' + imp.plat, 'var(--terra-d)'],
+    'annule-absent': ['Annulé, absent ici', 'var(--muted)'], logement: ['Logement à choisir', 'var(--amber-t)'],
+    dates: ['Dates illisibles', 'var(--terra-d)']
+  };
+  var aRemplir = plan.filter(function (x) { return x.etat === 'a-remplir'; });
+
+  var lignes = plan.map(function (x) {
+    var e = ETATS[x.etat];
+    return '<div style="padding:12px 0;border-top:1px solid rgba(36,30,26,.07)">' +
+      '<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:baseline">' +
+        '<span class="grow" style="font:600 14px Figtree,sans-serif;min-width:min(100%,200px)">' + esc(x.l.nom || '—') +
+          ' <span class="num" style="font-weight:500;color:var(--muted)">· ' +
+          esc(x.l.start ? fmtDate(x.l.start) + ' → ' + fmtDate(x.l.end) : '?') + '</span></span>' +
+        '<span style="font:700 12px Figtree,sans-serif;color:' + e[1] + '">' + esc(e[0]) + '</span>' +
+      '</div>' +
+      (x.l.detail || x.l.montantDetail ? '<div class="sec-note" style="margin:2px 0 0">' +
+        esc([x.l.detail, x.l.montantDetail].filter(Boolean).join(' · ')) + '</div>' : '') +
+      (x.changements.length ? '<div class="sec-note" style="margin:4px 0 0;color:var(--ink-soft)">' +
+        x.changements.map(function (c) { return esc(c[1]) + ' : ' + esc(String(c[2])) + ' → <strong>' + esc(String(c[3])) + '</strong>'; }).join(' · ') +
+        '</div>' : '') +
+      (x.etat === 'annule' ? '<div class="sec-note" style="margin:4px 0 0">Il disparaîtra ici au prochain relevé du calendrier, ' +
+        'ou supprime-le depuis la réservation.</div>' : '') +
+      '</div>';
+  }).join('');
+
+  return tete +
+    '<div style="margin-top:16px;padding-top:14px;border-top:1px solid rgba(36,30,26,.1)">' +
+      '<div style="font:700 15px Figtree,sans-serif">' + esc(imp.plat) + ' · ' + imp.lignes.length + ' réservation(s) lues</div>' +
+      choixLogements +
+      '<div style="margin-top:12px">' + lignes + '</div>' +
+      '<div style="display:flex;gap:10px;margin-top:14px;flex-wrap:wrap;align-items:center">' +
+        '<button type="button" class="btn btn--primary btn--sm"' + (aRemplir.length ? '' : ' disabled') +
+          act('import-appliquer') + '>Remplir ' + aRemplir.length + ' séjour(s)</button>' +
+        '<button type="button" class="btn btn--sm" style="background:var(--cream);color:var(--ink-soft)"' +
+          act('import-fermer') + '>Fermer</button>' +
+        '<span class="sec-note">« Pas trouvé ici » : aucun séjour de ce logement aux mêmes dates. Rien n’est créé — ' +
+          'les séjours arrivent par le calendrier.</span>' +
+      '</div>' +
+    '</div></div>';
+}
+
+/* LIRE UN FICHIER EXCEL « .xls » (format 97-2003), SANS BIBLIOTHÈQUE (session 45, D-201)
+
+   C'est le format que donne l'extranet Booking. Le site n'a aucune
+   dépendance (ni node ni npm, et l'on ne charge pas de code d'un tiers pour
+   lire des données de voyageurs) : ce lecteur ne fait QUE ce qu'il faut pour
+   une liste de réservations — la première feuille, ses textes et ses nombres.
+   Pas de formules, pas de mise en forme, pas de dates Excel converties (on
+   rend le nombre brut ; `lireDateImport` sait le traduire).
+
+   Deux étages :
+     1. le CONTENEUR (« Compound File ») : un petit système de fichiers dans
+        le fichier, découpé en secteurs. On y cherche le flux « Workbook » ;
+     2. le CLASSEUR (« BIFF8 ») : une suite d'enregistrements
+        [type sur 2 octets][longueur sur 2 octets][contenu]. Les textes sont
+        rangés une fois pour toutes dans la table SST ; les cellules y
+        renvoient par numéro. */
+function lireXls(buffer) {
+  var v = new DataView(buffer), u8 = new Uint8Array(buffer);
+  if (v.getUint32(0, true) !== 0xE011CFD0) throw new Error('Ce fichier n’est pas un Excel 97-2003 (.xls).');
+
+  // --- 1. Le conteneur -----------------------------------------------------
+  var tSect = 1 << v.getUint16(30, true), tMini = 1 << v.getUint16(32, true);
+  var nFatSect = v.getUint32(44, true), dirStart = v.getUint32(48, true);
+  var miniCut = v.getUint32(56, true), miniFatStart = v.getUint32(60, true);
+  var difStart = v.getUint32(68, true);
+  var off = function (s) { return 512 + s * tSect; };
+
+  var fatSects = [];
+  for (var i = 0; i < 109 && fatSects.length < nFatSect; i++) fatSects.push(v.getUint32(76 + i * 4, true));
+  for (var d = difStart; fatSects.length < nFatSect && d < 0xFFFFFFFA;) {
+    for (var j = 0; j < tSect / 4 - 1 && fatSects.length < nFatSect; j++) fatSects.push(v.getUint32(off(d) + j * 4, true));
+    d = v.getUint32(off(d) + tSect - 4, true);
+  }
+  var fat = [];
+  fatSects.forEach(function (s) { for (var k = 0; k < tSect / 4; k++) fat.push(v.getUint32(off(s) + k * 4, true)); });
+
+  var chaine = function (s, table) {
+    var out = [], vus = 0;
+    while (s < 0xFFFFFFFA && vus++ < 1e6) { out.push(s); s = table[s]; }
+    return out;
+  };
+  var lireChaine = function (s) {
+    var secs = chaine(s, fat), b = new Uint8Array(secs.length * tSect);
+    secs.forEach(function (x, n) { b.set(u8.subarray(off(x), off(x) + tSect), n * tSect); });
+    return b;
+  };
+
+  var dir = lireChaine(dirStart), dv = new DataView(dir.buffer);
+  var entrees = [];
+  for (var e = 0; e + 128 <= dir.length; e += 128) {
+    var nl = dv.getUint16(e + 64, true), nom = '';
+    for (var c = 0; c < Math.max(0, nl / 2 - 1); c++) nom += String.fromCharCode(dv.getUint16(e + c * 2, true));
+    entrees.push({ nom: nom, type: dir[e + 66], debut: dv.getUint32(e + 116, true), taille: dv.getUint32(e + 120, true) });
+  }
+  var wbE = entrees.filter(function (x) { return x.type === 2 && /^(Workbook|Book)$/.test(x.nom); })[0];
+  if (!wbE) throw new Error('Ce fichier Excel ne contient pas de classeur lisible.');
+
+  var flux;
+  if (wbE.taille < miniCut) {
+    // Petit flux : rangé dans le « mini-flux » de l'entrée racine.
+    var racine = lireChaine(entrees[0].debut);
+    var mfat = [], mf = lireChaine(miniFatStart), mfv = new DataView(mf.buffer);
+    for (var m = 0; m < mf.length / 4; m++) mfat.push(mfv.getUint32(m * 4, true));
+    var ms = chaine(wbE.debut, mfat);
+    flux = new Uint8Array(ms.length * tMini);
+    ms.forEach(function (x, n) { flux.set(racine.subarray(x * tMini, (x + 1) * tMini), n * tMini); });
+  } else {
+    flux = lireChaine(wbE.debut);
+  }
+  flux = flux.subarray(0, wbE.taille);
+  var f = new DataView(flux.buffer, flux.byteOffset, flux.byteLength);
+
+  // --- 2. Le classeur ------------------------------------------------------
+  var recs = [];
+  for (var p = 0; p + 4 <= flux.length;) {
+    var t = f.getUint16(p, true), l = f.getUint16(p + 2, true);
+    recs.push({ t: t, p: p + 4, l: l });
+    p += 4 + l;
+  }
+
+  /* La table des textes (SST) déborde souvent sur des enregistrements
+     CONTINUE (0x003C) ; à chaque reprise, le premier octet redit si la suite
+     du texte est en 1 ou 2 octets par caractère. */
+  var sst = [];
+  recs.forEach(function (r, ri) {
+    if (r.t !== 0x00FC) return;
+    var morceaux = [r];
+    for (var q = ri + 1; q < recs.length && recs[q].t === 0x003C; q++) morceaux.push(recs[q]);
+    var mi = 0, pos = r.p + 8, fin = r.p + r.l, total = f.getUint32(r.p + 4, true);
+    var suivant = function () { mi++; pos = morceaux[mi].p; fin = pos + morceaux[mi].l; };
+    var octet = function () { if (pos >= fin) suivant(); return flux[pos++]; };
+    var mot = function () { return octet() | (octet() << 8); };
+    for (var s = 0; s < total && mi < morceaux.length; s++) {
+      var n = mot(), opt = octet(), large = opt & 1, runs = 0, ext = 0, txt = '';
+      if (opt & 8) runs = mot();
+      if (opt & 4) ext = mot() | (mot() << 16);
+      for (var k = 0; k < n; k++) {
+        if (pos >= fin) { suivant(); large = flux[pos++] & 1; }
+        txt += String.fromCharCode(large ? (flux[pos++] | (flux[pos++] << 8)) : flux[pos++]);
+      }
+      for (var z = 0; z < runs * 4 + ext; z++) octet();
+      sst.push(txt);
+    }
+  });
+
+  var rk = function (x) {
+    var n = (x & 2) ? (x >> 2) : (function () {
+      var b = new DataView(new ArrayBuffer(8)); b.setUint32(4, x & 0xFFFFFFFC, true); return b.getFloat64(0, true);
+    })();
+    return (x & 1) ? n / 100 : n;
+  };
+
+  // La première feuille seulement : du premier BOF de feuille à son EOF.
+  var lignes = [], dansFeuille = false, bofs = 0;
+  var poser = function (ligne, col, val) { (lignes[ligne] || (lignes[ligne] = []))[col] = val; };
+  for (var a = 0; a < recs.length; a++) {
+    var r2 = recs[a], P = r2.p;
+    if (r2.t === 0x0809) { bofs++; dansFeuille = bofs === 2; continue; }
+    if (r2.t === 0x000A && dansFeuille) break;
+    if (!dansFeuille) continue;
+    if (r2.t === 0x00FD) poser(f.getUint16(P, true), f.getUint16(P + 2, true), sst[f.getUint32(P + 6, true)]);
+    else if (r2.t === 0x0203) poser(f.getUint16(P, true), f.getUint16(P + 2, true), f.getFloat64(P + 6, true));
+    else if (r2.t === 0x027E) poser(f.getUint16(P, true), f.getUint16(P + 2, true), rk(f.getInt32(P + 6, true)));
+    else if (r2.t === 0x00BD) {
+      var ln = f.getUint16(P, true), c0 = f.getUint16(P + 2, true), nb = (r2.l - 6) / 6;
+      for (var b = 0; b < nb; b++) poser(ln, c0 + b, rk(f.getInt32(P + 4 + b * 6 + 2, true)));
+    } else if (r2.t === 0x0204) {
+      var n2 = f.getUint16(P + 6, true), lg = flux[P + 8] & 1, s2 = '';
+      for (var w = 0; w < n2; w++) s2 += String.fromCharCode(lg ? f.getUint16(P + 9 + w * 2, true) : flux[P + 9 + w]);
+      poser(f.getUint16(P, true), f.getUint16(P + 2, true), s2);
+    }
+  }
+  return lignes.filter(Boolean).map(function (l) {
+    var out = []; for (var x = 0; x < l.length; x++) out.push(l[x] === undefined ? '' : l[x]); return out;
+  });
 }
 
 /* ==========================================================================
@@ -10767,6 +11175,7 @@ function viewOwnerBiens() {
        programmés le remplace toujours. Seule sa mise en avant disparaît, avec
        la confusion qu'elle entretenait : `carteLienUnique()` reste écrite plus
        bas, simplement plus appelée. */
+    carteImport() +
     carteConnexions());
 }
 
@@ -15113,6 +15522,30 @@ var actions = {
   },
   'livret-edit-annuler': function () { state.lvEdit = null; render(); },
 
+  /* Appliquer l'import (D-201) : uniquement les séjours « À remplir », par le
+     même chemin qu'une saisie à la main sur la fiche du séjour (D-118, D-187). */
+  'import-appliquer': function () {
+    var imp = state.importFichier;
+    if (!imp) return;
+    var n = 0;
+    planImport(imp).forEach(function (x) {
+      if (x.etat !== 'a-remplir' || !x.r) return;
+      x.changements.forEach(function (c) {
+        if (c[0] === 'guest') x.r.guest = x.l.nom;
+        else if (c[0] === 'guests') x.r.guests = x.l.voyageurs;
+        else if (c[0] === 'montant') x.r.montant = Math.round(x.l.montant);
+        else if (c[0] === 'tel') { x.r.tel = x.l.tel; var q = quatreChiffres(x.l.tel); if (q) x.r.tel4 = q; }
+      });
+      refletSurMissions(x.pid, x.r);
+      saisieResa(x.r);
+      n++;
+    });
+    state.importMsg = '✅ ' + n + ' séjour(s) rempli(s) depuis le fichier ' + imp.plat + '.';
+    state.importFichier = null;
+    save(); render();
+  },
+  'import-fermer': function () { state.importFichier = null; state.importMsg = ''; render(); },
+
   /* Réponses toutes faites d'un logement (session 44, D-200). La liste du
      logement est REMPLACÉE par une copie à chaque geste, pour que l'envoi au
      cahier voie le changement. */
@@ -16197,6 +16630,39 @@ var changes = {
 
      On vérifie que l'enregistrement a réellement tenu avant de dire « c'est
      fait » (règle 4) : `save()` rend `false` quand la mémoire est pleine. */
+  /* Import d'un fichier de réservations (session 45, D-201). Lu sur l'appareil,
+     jamais envoyé : seul ce qui est écrit sur les séjours part au cahier. */
+  'import-fichier': function (el) {
+    var fichier = el.files && el.files[0];
+    el.value = '';
+    if (!fichier) return;
+    state.importMsg = 'Lecture du fichier…'; state.importFichier = null; render();
+    var lecteur = new FileReader();
+    lecteur.onload = function () {
+      try {
+        var buf = lecteur.result, debut = new Uint8Array(buf.slice(0, 4));
+        var table;
+        if (debut[0] === 0xD0 && debut[1] === 0xCF) table = lireXls(buf);
+        else if (debut[0] === 0x50 && debut[1] === 0x4B) {
+          throw new Error('Ce fichier est au format .xlsx. Ouvre-le et enregistre-le en .csv, ou télécharge la version .xls.');
+        } else table = lireCsv(new TextDecoder('utf-8').decode(buf));
+        state.importFichier = lignesImport(table);
+        state.importMsg = '';
+      } catch (e) {
+        state.importFichier = null;
+        state.importMsg = '⚠️ ' + (e && e.message ? e.message : 'Ce fichier n’a pas pu être lu.');
+      }
+      render();
+    };
+    lecteur.onerror = function () { state.importMsg = '⚠️ Ce fichier n’a pas pu être lu.'; render(); };
+    lecteur.readAsArrayBuffer(fichier);
+  },
+  'import-annonce': function (el) {
+    state.importAnnonces = Object.assign({}, state.importAnnonces);
+    state.importAnnonces[el.dataset.plat + '|' + el.dataset.annonce] = el.value;
+    save(); render();
+  },
+
   'photo-bien': function (el) {
     var pid = el.dataset.pid;
     var f = el.files && el.files[0];
