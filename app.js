@@ -37,6 +37,15 @@ function isoDate(d) {
   return d.getFullYear() + '-' + ('0' + (d.getMonth() + 1)).slice(-2) + '-' + ('0' + d.getDate()).slice(-2);
 }
 
+/* UNE ADRESSE SANS « # » OUVRE LE BON ÉCRAN (session 46, D-203).
+   `/bienvenue/<logement>` devient `/#/bienvenue/<logement>` avant que quoi
+   que ce soit ne lise l'adresse. Voir `lienVoyageur()`. */
+(function cheminVersEcran() {
+  var m = /^\/((bienvenue|sejour|livret)(\/[^?#]*)?)\/?$/.exec(location.pathname);
+  if (!m || (location.hash && location.hash.length > 2)) return;
+  history.replaceState(null, '', '/#/' + m[1].replace(/\/+$/, ''));
+})();
+
 var TODAY = isoDate(new Date());
 var TODAY_LABEL = new Date().toLocaleDateString('fr-FR',
   { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
@@ -3739,6 +3748,23 @@ function appUrl() {
   return location.origin + location.pathname;
 }
 
+/* LES LIENS QUI PARTENT CHEZ LE VOYAGEUR N'ONT PLUS DE « # » (session 46, D-203)
+
+   Signalé le 3 novembre : le lien du livret, transmis à un voyageur, l'a
+   renvoyé sur la page de connexion. Sur un navigateur neuf, `#/bienvenue`
+   s'ouvre pourtant bien. Mais tout ce qui suit le « # » peut se perdre en
+   route — une messagerie qui ne rend cliquable que le début de l'adresse, un
+   copier-coller incomplet — et l'adresse nue ouvre la connexion.
+
+   On donne donc au voyageur une adresse SANS « # » :
+   `warme-house.vercel.app/bienvenue/<logement>`. Vercel sert la même page
+   pour ces chemins (`vercel.json`), et `cheminVersEcran()`, tout en haut de
+   ce fichier, la retraduit en `#/bienvenue/<logement>` avant tout le reste.
+   Les anciens liens en « # » déjà envoyés continuent de marcher. */
+function lienVoyageur(chemin) {
+  return location.origin + '/' + chemin;
+}
+
 /* LE LIEN PERSONNEL D'UN SÉJOUR (session 16 — D-80)
 
    Jusqu'ici il n'existait qu'une seule adresse pour tous les voyageurs,
@@ -3755,7 +3781,7 @@ function appUrl() {
    transféré à un tiers, ou retrouvé un an plus tard, ne donne donc pas la
    clé du logement. */
 function lienSejour(rid) {
-  return appUrl() + '#/sejour/' + rid;
+  return lienVoyageur('sejour/' + rid);
 }
 
 /* WHATSAPP, EN UN CLIC (session 44, D-199)
@@ -6979,7 +7005,7 @@ function mailtoVoyageur(f) {
   var corps = 'Bonjour ' + f.nom + ',\n\n' +
     'Nous espérons que votre séjour au ' + prop(d.pid).name + ' s\'est bien passé.\n\n' +
     'Voici le lien de votre livret d\'accueil, si vous en avez besoin :\n' +
-    appUrl() + '#/bienvenue\n\n' +
+    lienVoyageur('bienvenue') + '\n\n' +
     'À bientôt,\nMAISON WARME';
   return 'mailto:' + encodeURIComponent(f.mail) +
     '?subject=' + encodeURIComponent(sujet) + '&body=' + encodeURIComponent(corps);
@@ -8860,13 +8886,13 @@ function remplirVars(txt, pid, r) {
     '{heure_arrivee}': inf.checkin || '16:00', '{heure_depart}': inf.checkout || '11:00',
     '{nuits}': nights(r.start, r.end), '{voyageurs}': r.guests,
     '{code}': inf.code || '—', '{wifi}': inf.wifi || '—',
-    '{livret}': appUrl() + '#/livret/' + pid,
+    '{livret}': lienBien(pid),
     // Le lien PERSONNEL de ce voyageur-là : il est reconnu sans rien taper
     // (session 16, D-80). C'est celui à préférer dans un message programmé.
     '{lien}': lienSejour(r.id),
     // Le lien unique, identique pour tous les logements (D-46) : c'est celui
     // qu'on colle dans les messages types des plateformes.
-    '{bienvenue}': appUrl() + '#/bienvenue'
+    '{bienvenue}': lienVoyageur('bienvenue')
   };
   return Object.keys(vals).reduce(function (t, k) { return t.split(k).join(vals[k]); }, String(txt || ''));
 }
@@ -11219,7 +11245,7 @@ function viewOwnerBiens() {
 function texteBienvenue() {
   return 'Bonjour,\n\n' +
     'Voici votre livret d’accueil :\n' +
-    appUrl() + '#/bienvenue\n\n' +
+    lienVoyageur('bienvenue') + '\n\n' +
     'Indiquez les dates de votre séjour : vous retrouverez l’adresse, ' +
     'les horaires, le code d’accès et le Wi-Fi pendant votre séjour, ainsi que ' +
     'nos conseils sur place.\n\n' +
@@ -11287,7 +11313,7 @@ function carteLiensParLogement() {
 }
 
 function carteLienUnique() {
-  var lien = appUrl() + '#/bienvenue';
+  var lien = lienVoyageur('bienvenue');
   return '<div class="card" style="margin-top:22px;padding:22px;border-left:4px solid var(--terra)">' +
     '<h2 style="font:700 16px Figtree,sans-serif;margin:0 0 4px">Le lien à donner à tous les voyageurs</h2>' +
     '<p class="sec-note" style="margin:0 0 12px">Un seul lien, valable pour <strong>tous</strong> les ' +
@@ -11334,7 +11360,7 @@ function carteLienUnique() {
    Il garde la limite du lien unique — nom + date, D-90 — et on le redit ici
    plutôt que de laisser croire qu'un lien par bien la fait disparaître. */
 function lienBien(pid) {
-  return appUrl() + '#/bienvenue/' + pid;
+  return lienVoyageur('bienvenue/' + pid);
 }
 
 function texteBienvenueBien(pid) {
@@ -12576,7 +12602,7 @@ function lvVide() {
 /* Accueil du livret : les grandes rubriques, à toucher pour ouvrir le détail. */
 function viewLivret() {
   var b = prop(route.id);
-  if (b.gone) { location.replace(state.auth === 'owner' ? '#/admin/biens' : '#/login'); return ''; }
+  if (b.gone) { location.replace(state.auth === 'owner' ? '#/admin/biens' : '#/bienvenue/' + encodeURIComponent(route.id || '')); return ''; }
   var pid = b.id;
   var lv = state.livret[pid] || lvVide();
   var inf = state.info[pid] || {};
@@ -12628,7 +12654,7 @@ function viewLivret() {
 /* Détail d'une rubrique du livret. */
 function viewLivretSection() {
   var b = prop(route.id);
-  if (b.gone) { location.replace(state.auth === 'owner' ? '#/admin/biens' : '#/login'); return ''; }
+  if (b.gone) { location.replace(state.auth === 'owner' ? '#/admin/biens' : '#/bienvenue/' + encodeURIComponent(route.id || '')); return ''; }
   var pid = b.id;
   var lv = state.livret[pid] || lvVide();
   var s = LIVRET_SECTIONS.find(function (x) { return x.k === route.sec; });
@@ -13042,6 +13068,20 @@ function viewLogin() {
   return '<div class="login"><div class="login-card">' +
     '<div class="login-logo">MAISON WARME</div>' +
     '<p class="login-sub">Gestion du ménage et des stocks de vos locations courte durée.</p>' +
+    /* LE VOYAGEUR ARRIVÉ ICI PAR ERREUR (session 46, D-203). Signalé le
+       3 novembre par un voyageur : *« votre lien nous redirige sur une page de
+       connexion dédiée au propriétaire, il nous faudrait un lien
+       d'invitation »* — il avait lu la phrase sur l'invitation, écrite pour
+       les prestataires. Il n'a pas de compte et n'en aura jamais : on lui
+       montre sa porte, en premier, en vouvoyant. */
+    '<div style="margin:14px 0 4px;padding:14px 16px;border-radius:14px;background:var(--cream);' +
+      'border-left:4px solid var(--terra)">' +
+      '<div style="font:700 14px Figtree,sans-serif">Vous êtes voyageur ?</div>' +
+      '<p class="sec-note" style="margin:4px 0 10px">Vous n’avez besoin d’aucun compte ni mot de passe : ' +
+        'indiquez simplement vos dates de séjour.</p>' +
+      '<button type="button" class="btn btn--primary btn--sm"' + act('nav', { path: '#/bienvenue' }) + '>' +
+        'Retrouver mon séjour et mon livret d’accueil</button>' +
+    '</div>' +
     (dispo ? '' :
       '<p class="login-err" role="alert">Impossible de joindre le cahier partagé. ' +
         'Vérifie ta connexion internet, puis recharge la page.</p>') +
@@ -13061,7 +13101,7 @@ function viewLogin() {
        qui ne sert pas à ça. */
     '<button type="button" class="login-lien"' + act('nav', { path: '#/mot-de-passe' }) + '>' +
       'Mot de passe oublié ?</button>' +
-    '<p class="login-hint">Pas encore de compte ? Il n\'y a pas d\'inscription libre : ' +
+    '<p class="login-hint">Prestataire sans compte ? Il n\'y a pas d\'inscription libre : ' +
       'le propriétaire envoie un lien d\'invitation à ton adresse e-mail, et c\'est ce lien ' +
       'qui te fait choisir ton mot de passe.</p>' +
     '</div></div>';

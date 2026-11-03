@@ -1,5 +1,12 @@
 {
   "crons": [
     { "path": "/api/cron-annonce", "schedule": "0 16 * * *" }
+  ],
+  "rewrites": [
+    { "source": "/bienvenue", "destination": "/index.html" },
+    { "source": "/bienvenue/:logement", "destination": "/index.html" },
+    { "source": "/sejour/:sejour", "destination": "/index.html" },
+    { "source": "/livret/:logement", "destination": "/index.html" },
+    { "source": "/livret/:logement/:rubrique", "destination": "/index.html" }
   ]
 }
