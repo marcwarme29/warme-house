@@ -3824,6 +3824,55 @@ function lienWhatsApp(tel, texte) {
   return n ? 'https://wa.me/' + n + '?text=' + encodeURIComponent(texte || '') : '';
 }
 
+/* LE VOYAGEUR DANS TES CONTACTS, AVEC SON LOGEMENT ET SES DATES (session 46, D-204)
+
+   Demandé : *« quand j'écris un message depuis mon logiciel pour WhatsApp,
+   que ça me crée automatiquement le contact avec le logement et les dates du
+   séjour »*. Un site ne peut pas écrire dans le carnet d'adresses d'un
+   téléphone — aucun navigateur ne le permet. Il peut en revanche donner une
+   **fiche de contact** (`.vcf`, le format de tous les carnets) : l'iPhone
+   propose aussitôt « Créer un contact », le Mac l'ouvre dans Contacts, et
+   iCloud la porte sur le téléphone. Un toucher de plus, rien à taper.
+
+   Le nom affiché porte le logement et les dates — c'est ce que WhatsApp
+   montre dans la liste des discussions — et le détail va dans la note. */
+function jjmm(iso) {
+  var p = String(iso || '').split('-');
+  return p.length === 3 ? p[2] + '/' + p[1] : '';
+}
+
+function vcardEchapper(t) {
+  return String(t || '').replace(/\\/g, '\\\\').replace(/\n/g, '\\n').replace(/([,;])/g, '\\$1');
+}
+
+function nomContactSejour(pid, r) {
+  var p = prop(pid);
+  var nom = nomGeneriqueResa(r.guest) ? 'Voyageur' : String(r.guest).trim();
+  return nom + ' · ' + (p.name || 'Logement') + ' ' + jjmm(r.start) + '→' + jjmm(r.end);
+}
+
+function vcardSejour(pid, r) {
+  var p = prop(pid);
+  var num = numeroWhatsApp(r.tel);
+  var note = 'Séjour ' + (p.name || '') + ' du ' + fmtDate(r.start) + ' au ' + fmtDate(r.end) +
+    (r.guests ? ' · ' + r.guests + ' voyageur(s)' : '') + (r.plat ? ' · ' + r.plat : '');
+  return [
+    'BEGIN:VCARD', 'VERSION:3.0',
+    'N:' + vcardEchapper(nomContactSejour(pid, r)) + ';;;;',
+    'FN:' + vcardEchapper(nomContactSejour(pid, r)),
+    'ORG:MAISON WARME',
+    num ? 'TEL;TYPE=CELL:+' + num : (r.tel ? 'TEL;TYPE=CELL:' + vcardEchapper(r.tel) : ''),
+    r.mail ? 'EMAIL:' + vcardEchapper(r.mail) : '',
+    'NOTE:' + vcardEchapper(note),
+    'END:VCARD'
+  ].filter(Boolean).join('\r\n') + '\r\n';
+}
+
+function boutonContact(rid) {
+  return '<button type="button" class="btn btn--xs" style="background:var(--cream);color:var(--ink-soft)"' +
+    act('contact-vcf', { rid: rid }) + '>📇 Enregistrer le contact</button>';
+}
+
 /** Le message tout prêt à envoyer au voyageur avec son lien personnel. */
 function texteSejour(pid, r) {
   var p = prop(pid), inf = state.info[pid] || {};
@@ -8644,6 +8693,7 @@ function viewOwnerResa() {
               ? '<button type="button" class="btn btn--xs" style="background:#25D366;color:#fff"' +
                   act('wa-sejour', { rid: r.id }) + '>Envoyer le lien par WhatsApp</button>'
               : '') +
+            (r.tel ? boutonContact(r.id) : '') +
           '</div>' +
           /* Le bouton qui manquait (session 18) : il n'existait aucun moyen de
              VOIR la page de ce voyageur depuis l'application. Il fallait
@@ -8823,8 +8873,13 @@ function carteWhatsApp(pid, r) {
     '<div style="margin-top:12px"><label class="lab" for="wa-' + esc(r.id) + '">Message</label>' +
       '<textarea class="inp" id="wa-' + esc(r.id) + '" style="min-height:120px" placeholder="Écris ton message, ou touche une réponse ci-dessus."' +
         ' data-fid="wa-' + esc(r.id) + '" data-in="wa-texte" data-rid="' + esc(r.id) + '">' + esc(texte) + '</textarea></div>' +
-    '<button type="button" class="btn btn--sm" style="margin-top:12px;background:#25D366;color:#fff"' +
-      act('wa-ouvrir', { rid: r.id }) + '>Ouvrir dans WhatsApp</button>' +
+    '<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:12px">' +
+      '<button type="button" class="btn btn--sm" style="background:#25D366;color:#fff"' +
+        act('wa-ouvrir', { rid: r.id }) + '>Ouvrir dans WhatsApp</button>' +
+      boutonContact(r.id) +
+    '</div>' +
+    '<p class="sec-note" style="margin:6px 0 0">Le contact s’appellera « ' + esc(nomContactSejour(pid, r)) +
+      ' » : tu reconnaîtras le séjour dans WhatsApp.</p>' +
     '</div>';
 }
 
@@ -14183,6 +14238,20 @@ var actions = {
     var f = resaById(el.dataset.rid);
     var url = f ? lienWhatsApp(f.r.tel, texteSejour(f.pid, f.r)) : '';
     if (url) window.open(url, '_blank');
+  },
+  /* La fiche de contact du voyageur (D-204). */
+  'contact-vcf': function (el) {
+    var f = resaById(el.dataset.rid);
+    if (!f) return;
+    var blob = new Blob([vcardSejour(f.pid, f.r)], { type: 'text/vcard;charset=utf-8' });
+    var url = URL.createObjectURL(blob);
+    var lien = document.createElement('a');
+    lien.href = url;
+    lien.download = nomContactSejour(f.pid, f.r).replace(/[\\/:*?"<>|→]/g, '-') + '.vcf';
+    document.body.appendChild(lien);
+    lien.click();
+    document.body.removeChild(lien);
+    setTimeout(function () { URL.revokeObjectURL(url); }, 4000);
   },
   'copier-message-sejour': function (el) {
     var f = resaById(el.dataset.rid);
