@@ -1193,7 +1193,13 @@ var DB = (function () {
     /* Session 30 (D-160) : les charges d'un logement (eau, électricité,
        assurance, crédit…), saisies une à une mais toujours relues et
        réécrites en bloc — même parti pris que les autres listes ci-dessus. */
-    'charges'];
+    'charges',
+    /* Session 44 (D-200) : les réponses toutes faites, par logement. */
+    'reponses',
+    /* Session 44 (D-199) : les messages programmés déjà ouverts dans
+       WhatsApp, pour ne pas les proposer deux fois — sur l'ordinateur comme
+       sur l'iPad ou chez l'administrateur (règle 14). */
+    'waOuverts'];
 
   /* Deux clés ne doivent JAMAIS être remplacées par une liste vide : sans
      prestation ni article, l'application n'a plus rien à afficher et

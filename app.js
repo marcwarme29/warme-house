@@ -578,6 +578,13 @@ function initialState() {
     beds24: { actif: false, compte: '', dernierSync: null },
     messages: [],                     // [{ id, resa, pid, plat, sens, texte, at, lu }]
     autoMsgs: [],                     // messages programmés (modèles + déclencheur)
+    /* Session 44 (D-199, D-200). Les deux voyagent dans le cahier partagé
+       (`reglages`), sinon l'administrateur ou le second appareil ne les
+       verraient pas (règle 14). */
+    reponses: {},                     // { logement: [{ id, titre, texte }] } — réponses toutes faites
+    waOuverts: {},                    // { 'regle_sejour': 'AAAA-MM-JJ HH:MM' } — message programmé ouvert dans WhatsApp
+    waTexte: {},                      // { sejour: texte en cours } — état d'écran, remis à zéro (règle 7)
+    reponseEd: null,                  // la réponse en cours d'écriture — état d'écran
 
     missions: clone(MISSIONS),
     photos: {},                       // { missionId: { stepId: photo enregistrée sur l'appareil } }
@@ -884,6 +891,8 @@ function load() {
   state.calBienMois = 12;             // D-195 : une position d'affichage (règle 7)
   state.calBienAvant = 0;
   state.lvEdit = null;                // D-196 : une saisie en cours n'est pas une donnée
+  state.waTexte = {};                 // D-199 : un message pas encore ouvert dans WhatsApp non plus
+  state.reponseEd = null;             // D-200 : ni une réponse en cours d'écriture
   state.photoPlein = null;            // une photo ouverte en grand n'est pas une donnée
   state.apercuSejour = null;          // un aperçu n'est pas une donnée non plus
   state.sejourNet = null;             // une demande en cours ne survit pas à la page
@@ -1111,6 +1120,10 @@ function upgrade() {
   if (!state.beds24) state.beds24 = { actif: false, compte: '', dernierSync: null };
   if (!Array.isArray(state.messages)) state.messages = [];
   if (!Array.isArray(state.autoMsgs)) state.autoMsgs = [];
+  // Session 44 (D-199, D-200) — règle 9 : déclaré ET complété.
+  if (!state.reponses || typeof state.reponses !== 'object' || Array.isArray(state.reponses)) state.reponses = {};
+  if (!state.waOuverts || typeof state.waOuverts !== 'object' || Array.isArray(state.waOuverts)) state.waOuverts = {};
+  if (!state.waTexte || typeof state.waTexte !== 'object') state.waTexte = {};
   if (!state.planStart) state.planStart = premierJourDuMois(TODAY);
   if (state.planProps === undefined) state.planProps = null;
   if (!state.statMonth) state.statMonth = CURRENT_MONTH;
@@ -3714,6 +3727,46 @@ function appUrl() {
    clé du logement. */
 function lienSejour(rid) {
   return appUrl() + '#/sejour/' + rid;
+}
+
+/* WHATSAPP, EN UN CLIC (session 44, D-199)
+
+   Demandé le 3 novembre : *« pouvoir utiliser la rubrique Messages pour
+   envoyer des WhatsApp quand nous avons le numéro de téléphone — idem à
+   partir des messages programmés »*.
+
+   L'adresse `https://wa.me/<numéro>?text=<message>` est le moyen officiel,
+   gratuit et sans compte, d'ouvrir une conversation WhatsApp avec un message
+   DÉJÀ ÉCRIT. Elle ouvre l'application sur l'iPad ou le téléphone, WhatsApp
+   sur l'ordinateur. **Le propriétaire appuie lui-même sur « Envoyer »** :
+   rien ne part sans lui, et on ne prétend jamais le contraire (règle 4 —
+   on écrit « ouvert dans WhatsApp », jamais « envoyé »).
+
+   ÉCARTÉ : l'envoi tout seul. Il passe par la plateforme WhatsApp Business de
+   Meta — un numéro dédié, des modèles de message validés à l'avance, un coût
+   par conversation et un serveur qui garde une clé secrète. Possible plus
+   tard, si le besoin se confirme ; démesuré pour commencer. */
+
+/** Le numéro au format que WhatsApp attend : chiffres seuls, indicatif pays
+    compris, sans « + ». Un numéro français à 10 chiffres (06…) devient 336….
+    Rend '' quand on ne peut pas en faire un numéro sûr (règle 5 : ne pas
+    inventer — un numéro deviné écrirait à un inconnu). */
+function numeroWhatsApp(tel) {
+  var s = String(tel || '').trim();
+  if (!s) return '';
+  var plus = s.charAt(0) === '+';
+  var c = s.replace(/[^0-9]/g, '');
+  if (!c) return '';
+  if (!plus && c.indexOf('00') === 0) c = c.slice(2);                       // 0033 6…
+  else if (!plus && c.length === 10 && c.charAt(0) === '0') c = '33' + c.slice(1);   // 06… (France)
+  else if (!plus) return '';                                                // trop ambigu pour deviner le pays
+  if (c.indexOf('330') === 0 && c.length === 12) c = '33' + c.slice(3);     // +33 (0)6…
+  return c.length >= 8 && c.length <= 15 ? c : '';
+}
+
+function lienWhatsApp(tel, texte) {
+  var n = numeroWhatsApp(tel);
+  return n ? 'https://wa.me/' + n + '?text=' + encodeURIComponent(texte || '') : '';
 }
 
 /** Le message tout prêt à envoyer au voyageur avec son lien personnel. */
@@ -8130,6 +8183,12 @@ function viewOwnerResa() {
               act('copier-lien', { url: lienSejour(r.id) }) + '>Copier le lien</button>' +
             '<button type="button" class="btn btn--xs" style="background:var(--cream);color:var(--ink-soft)"' +
               act('copier-message-sejour', { rid: r.id }) + '>Copier le message tout prêt</button>' +
+            /* Le même message, directement dans WhatsApp quand on a le numéro
+               (session 44, D-199) : le lien personnel, sans copier-coller. */
+            (numeroWhatsApp(r.tel)
+              ? '<button type="button" class="btn btn--xs" style="background:#25D366;color:#fff"' +
+                  act('wa-sejour', { rid: r.id }) + '>Envoyer le lien par WhatsApp</button>'
+              : '') +
           '</div>' +
           /* Le bouton qui manquait (session 18) : il n'existait aucun moyen de
              VOIR la page de ce voyageur depuis l'application. Il fallait
@@ -8186,12 +8245,16 @@ function viewOwnerMsgs() {
       }).join('') + '</div>' +
     '</div>' +
 
+    /* Depuis la session 44 (D-199), la page sert déjà : on écrit au voyageur
+       sur WhatsApp dès qu'on a son numéro. Seule la LECTURE des messages des
+       plateformes attend Beds24. */
     '<div class="alert alert--blue" style="margin-top:20px">' +
-      '<div style="display:flex;align-items:center;gap:8px"><span class="dot" style="background:' + C.bleu + '"></span>' +
-        '<span class="kind">En attente de Beds24</span></div>' +
-      '<div class="title" style="color:var(--ink)">Les messages arriveront ici une fois Beds24 connecté</div>' +
-      '<div class="det">Airbnb et Booking.com n’envoient rien dans un lien iCal : seules leurs interfaces, ou un service ' +
-        'comme Beds24, donnent accès aux conversations. Le classement par voyageur est prêt, il ne manque que la source.</div>' +
+      '<div style="display:flex;align-items:center;gap:8px"><span class="dot" style="background:#25D366"></span>' +
+        '<span class="kind">WhatsApp</span></div>' +
+      '<div class="title" style="color:var(--ink)">Écris à tes voyageurs sur WhatsApp, dès que tu as leur numéro</div>' +
+      '<div class="det">Ouvre une conversation : tes réponses toutes faites et tes messages programmés s’y ' +
+        'recopient en un toucher, et WhatsApp s’ouvre avec le message prêt. Les messages Airbnb et Booking.com, ' +
+        'eux, n’arriveront ici qu’avec Beds24 — un lien iCal ne les transporte pas.</div>' +
     '</div>' +
 
     '<div class="card" style="margin-top:18px;padding:0;overflow:hidden">' + (list.length
@@ -8208,7 +8271,10 @@ function viewOwnerMsgs() {
               '<span class="badge" style="background:' + pl.bg + ';color:' + pl.fg + '">' + esc(r.plat) + '</span></span>' +
             '<span class="conv-s num">' + esc(p.short) + ' · ' + esc(quand) + '</span>' +
           '</span>' +
-          '<span class="conv-r">' + (n ? '<span class="badge badge--green num">' + n + '</span>' : '<span class="conv-vide">aucun message</span>') + '</span>' +
+          '<span class="conv-r">' +
+            (numeroWhatsApp(r.tel) ? '<span class="badge" style="background:#E3F6EA;color:#1C7A43">WhatsApp</span> ' : '') +
+            (n ? '<span class="badge badge--green num">' + n + '</span>' : (numeroWhatsApp(r.tel) ? '' : '<span class="conv-vide">pas de numéro</span>')) +
+          '</span>' +
           '</button>';
       }).join('')
       : '<p class="empty">Aucun séjour dans ce filtre.</p>') + '</div>');
@@ -8245,8 +8311,66 @@ function viewOwnerMsg() {
         'Les échanges Airbnb et Booking.com apparaîtront ici dès que Beds24 sera connecté.</p>') +
     '</div>' +
 
-    '<p class="sec-note" style="margin-top:14px">En attendant, répondez depuis l’application de la plateforme. ' +
-      'Rien n’est perdu : la conversation sera reprise ici lors de la première synchronisation.</p>');
+    carteWhatsApp(pid, r) +
+
+    '<p class="sec-note" style="margin-top:14px">Les messages Airbnb et Booking.com se lisent et se répondent ' +
+      'depuis leur application tant que Beds24 n’est pas branché. Rien n’est perdu : la conversation sera ' +
+      'reprise ici lors de la première synchronisation.</p>');
+}
+
+/* Écrire au voyageur sur WhatsApp, depuis sa conversation (D-199, D-200).
+   Le numéro vient de son livret (il l'a donné) ou de la fiche du séjour (le
+   propriétaire l'a écrit). Sans numéro, on DIT où le trouver, plutôt qu'un
+   bouton qui ne mènerait nulle part (règle 13). */
+function carteWhatsApp(pid, r) {
+  var num = numeroWhatsApp(r.tel);
+  var tete = '<h2 style="font:700 16px Figtree,sans-serif;margin:0">Écrire sur WhatsApp</h2>';
+
+  if (!num) {
+    return '<div class="card" style="margin-top:16px;padding:20px 22px">' + tete +
+      '<p class="sec-note" style="margin-top:6px">' +
+        (r.tel
+          ? 'Le numéro noté (« ' + esc(r.tel) + ' ») n’a pas d’indicatif pays : écris-le avec « + » ' +
+            '(ex. +44 7…) sur la fiche du séjour. Un numéro français en 06 ou 07 est reconnu tout seul.'
+          : 'Pas encore de numéro. Il arrive quand le voyageur remplit le formulaire de son livret, ' +
+            'ou tu peux l’écrire toi-même sur la fiche du séjour.') + '</p>' +
+      '<button type="button" class="btn btn--xs" style="margin-top:10px;background:var(--cream);color:var(--ink-soft)"' +
+        act('nav', { path: '#/admin/reservations/' + r.id }) + '>Ouvrir la fiche du séjour</button>' +
+      '</div>';
+  }
+
+  var reps = reponsesDe(pid);
+  var autos = state.autoMsgs.filter(function (x) {
+    return !x.props || !x.props.length || x.props.indexOf(pid) >= 0;
+  });
+  var puce = function (src, x, titre) {
+    return '<button type="button" class="perm-chip"' + act('wa-reponse', { rid: r.id, src: src, id: x.id }) + '>' +
+      esc(titre) + '</button>';
+  };
+  var texte = state.waTexte[r.id] || '';
+
+  return '<div class="card" style="margin-top:16px;padding:20px 22px;border-left:4px solid #25D366">' + tete +
+    '<p class="sec-note" style="margin-top:4px">Au <strong class="num">+' + esc(num) + '</strong>. ' +
+      'WhatsApp s’ouvre avec le message déjà écrit : <strong>c’est toi qui appuies sur « Envoyer »</strong>.</p>' +
+
+    '<div style="margin-top:12px"><span class="lab">Réponses toutes faites de ce logement</span>' +
+      (reps.length
+        ? '<div class="chiprow" style="margin-top:6px">' + reps.map(function (x) { return puce('rep', x, x.titre); }).join('') + '</div>'
+        : '<p class="sec-note" style="margin:4px 0 0">Aucune pour l’instant. ' +
+          '<button type="button" class="lienbtn"' + act('nav', { path: '#/admin/biens/' + pid }) + '>Les écrire dans la fiche du logement</button> ' +
+          '(onglet « Réponses toutes faites »).</p>') +
+    '</div>' +
+    (autos.length
+      ? '<div style="margin-top:10px"><span class="lab">Ou un message programmé</span>' +
+          '<div class="chiprow" style="margin-top:6px">' + autos.map(function (x) { return puce('auto', x, x.nom); }).join('') + '</div></div>'
+      : '') +
+
+    '<div style="margin-top:12px"><label class="lab" for="wa-' + esc(r.id) + '">Message</label>' +
+      '<textarea class="inp" id="wa-' + esc(r.id) + '" style="min-height:120px" placeholder="Écris ton message, ou touche une réponse ci-dessus."' +
+        ' data-fid="wa-' + esc(r.id) + '" data-in="wa-texte" data-rid="' + esc(r.id) + '">' + esc(texte) + '</textarea></div>' +
+    '<button type="button" class="btn btn--sm" style="margin-top:12px;background:#25D366;color:#fff"' +
+      act('wa-ouvrir', { rid: r.id }) + '>Ouvrir dans WhatsApp</button>' +
+    '</div>';
 }
 
 /* --------------------------------------------------------------------------
@@ -8346,6 +8470,58 @@ function prochainsEnvois() {
   });
 }
 
+/* LES MESSAGES PROGRAMMÉS À ENVOYER MAINTENANT, PAR WHATSAPP (session 44, D-199)
+
+   Rien ne part tout seul (voir `numeroWhatsApp`) : à la date prévue, le
+   message apparaît ici, rempli pour ce voyageur, avec un bouton qui ouvre
+   WhatsApp. Une fois ouvert — ou marqué « déjà fait » —, il ne revient plus,
+   sur aucun appareil (`waOuverts` voyage dans le cahier).
+
+   On garde ce qui était dû depuis TROIS JOURS : un week-end sans ouvrir
+   l'application ne doit pas faire disparaître un message en silence.
+   Les messages « dès la réservation » n'ont pas de date (la plateforme ne
+   dit pas quand on a réservé) : ils sont proposés pour tout séjour à venir. */
+function envoisAFaire() {
+  var out = [];
+  state.autoMsgs.forEach(function (rg) {
+    if (!rg.actif) return;
+    allResas().forEach(function (x) {
+      if (x.r.statut === 'annule') return;
+      if (rg.props && rg.props.length && rg.props.indexOf(x.pid) < 0) return;
+      if (state.waOuverts[rg.id + '_' + x.r.id]) return;
+      var d = dateEnvoi(rg, x.r);
+      if (d === null) { if (x.r.start < TODAY) return; d = TODAY; }
+      else if (d > TODAY || d < jourPlus(TODAY, -3)) return;
+      out.push({ date: d, regle: rg, pid: x.pid, r: x.r });
+    });
+  });
+  return out.sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : 0; });
+}
+
+function blocEnvoisAFaire() {
+  var l = envoisAFaire();
+  return '<h2 class="sec-title" style="margin-top:24px">À envoyer maintenant' +
+      (l.length ? ' <span class="badge badge--amber num">' + l.length + '</span>' : '') + '</h2>' +
+    '<div class="card" style="padding:' + (l.length ? '6px 20px' : '18px 20px') + '">' + (l.length ? l.map(function (e) {
+      var p = prop(e.pid), num = numeroWhatsApp(e.r.tel);
+      return '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:12px 0;border-top:1px solid rgba(36,30,26,.07)">' +
+        '<span class="dot" style="background:' + p.color + '"></span>' +
+        '<span class="grow" style="min-width:min(100%,200px)">' +
+          '<span style="font:600 14px Figtree,sans-serif">' + esc(e.r.guest) + ' · ' + esc(p.short) + '</span><br>' +
+          '<span class="sec-note" style="margin:0">' + esc(e.regle.nom) + ' · ' +
+            (e.date < TODAY ? 'prévu ' + esc(jourLabel(e.date)) : 'aujourd’hui') + '</span>' +
+        '</span>' +
+        (num
+          ? '<button type="button" class="btn btn--xs" style="background:#25D366;color:#fff"' +
+              act('wa-ouvrir', { rid: e.r.id, regle: e.regle.id }) + '>WhatsApp</button>'
+          : '<button type="button" class="btn btn--xs" style="background:var(--cream);color:var(--ink-soft)"' +
+              act('nav', { path: '#/admin/reservations/' + e.r.id }) + '>Pas de numéro — fiche</button>') +
+        '<button type="button" class="btn btn--xs" style="background:transparent;color:var(--muted)"' +
+          act('wa-fait', { rid: e.r.id, regle: e.regle.id }) + '>Déjà fait</button>' +
+        '</div>';
+    }).join('') : '<p class="empty" style="padding:0">Rien à envoyer aujourd’hui.</p>') + '</div>';
+}
+
 function formAuto() {
   var a = state.am, dc = declencheur(a.quand);
   return '<div class="card pop" style="margin-top:18px;padding:22px">' +
@@ -8439,12 +8615,14 @@ function viewOwnerAuto() {
     (state.am ? formAuto() : '') +
 
     '<div class="alert alert--blue" style="margin-top:20px">' +
-      '<div style="display:flex;align-items:center;gap:8px"><span class="dot" style="background:' + C.bleu + '"></span>' +
-        '<span class="kind">Envoi automatique</span></div>' +
-      '<div class="title" style="color:var(--ink)">Les messages partiront depuis Beds24</div>' +
-      '<div class="det">Ce que vous écrivez ici est prêt à être repris tel quel. Un site sans serveur ne peut envoyer ' +
-        'ni message ni e-mail : c’est la connexion Beds24 qui déclenchera les envois, aux dates listées ci-dessous.</div>' +
+      '<div style="display:flex;align-items:center;gap:8px"><span class="dot" style="background:#25D366"></span>' +
+        '<span class="kind">Envoi par WhatsApp</span></div>' +
+      '<div class="title" style="color:var(--ink)">Le jour venu, le message t’attend ici, prêt à partir</div>' +
+      '<div class="det">« À envoyer maintenant » ouvre WhatsApp avec le message rempli pour ce voyageur : tu ' +
+        'appuies sur « Envoyer ». Il faut son numéro (son livret, ou la fiche du séjour). L’envoi tout seul, ' +
+        'sans toi, viendra avec Beds24 (D-199).</div>' +
     '</div>' +
+    blocEnvoisAFaire() +
 
     '<h2 class="sec-title" style="margin-top:24px">Mes messages types</h2>' +
     '<div class="stack" style="gap:14px">' + (regles ||
@@ -10835,13 +11013,15 @@ function viewOwnerBien() {
   if (b.gone) { location.replace('#/admin/biens'); return ''; }
   var pid = b.id;
   var tabs = [['infos', 'Infos & tarifs'], ['checklist', 'Checklist ménage'],
-    ['calendrier', 'Réservations'], ['livret', 'Livret d’accueil'], ['ical', 'Synchronisation']];
+    ['calendrier', 'Réservations'], ['livret', 'Livret d’accueil'],
+    ['reponses', 'Réponses toutes faites'], ['ical', 'Synchronisation']];
   var panel = '';
 
   if (state.bienTab === 'infos') panel = bienInfos(pid, b);
   else if (state.bienTab === 'checklist') panel = bienChecklist(pid, b);
   else if (state.bienTab === 'calendrier') panel = bienCalendar(pid);
   else if (state.bienTab === 'livret') panel = bienLivret(pid, b);
+  else if (state.bienTab === 'reponses') panel = bienReponses(pid, b);
   else panel = bienIcal(pid);
 
   return ownerShell('biens',
@@ -11364,6 +11544,102 @@ function livretBlocEdition(ed, b) {
     '</div>';
 }
 
+/* LES RÉPONSES TOUTES FAITES D'UN LOGEMENT (session 44, D-200)
+
+   Demandé le 3 novembre : *« par logement, définir des messages tout faits
+   quand un voyageur nous pose une question classique, pour y répondre
+   rapidement. La personnalisation doit se faire dans la rubrique logement. »*
+
+   Elles s'écrivent ici, logement par logement, et se choisissent d'un toucher
+   dans la conversation d'un voyageur (Messages), qui les copie dans le message
+   à envoyer par WhatsApp. Les variables des messages programmés y marchent
+   aussi ({voyageur}, {wifi}, {code}…) : on écrit une fois, chaque voyageur
+   reçoit ses vraies informations.
+
+   Cinq exemples sont proposés d'un clic, jamais imposés : ils remplissent la
+   liste, que l'on corrige ensuite. */
+var REPONSES_EXEMPLES = [
+  { titre: 'Wi-Fi', texte: 'Bonjour {voyageur}, voici le Wi-Fi du logement : {wifi}. Bon séjour !' },
+  { titre: 'Heure d’arrivée', texte: 'Bonjour {voyageur}, l’arrivée au {logement} se fait à partir de {heure_arrivee}. Tout est expliqué dans votre livret : {lien}' },
+  { titre: 'Arrivée plus tôt', texte: 'Bonjour {voyageur}, je regarde avec l’équipe de ménage si le logement peut être prêt plus tôt et je vous redis dans la journée. Le livret vous préviendra aussi dès qu’il est prêt : {lien}' },
+  { titre: 'Heure de départ', texte: 'Bonjour {voyageur}, le départ se fait avant {heure_depart}. Les consignes (clés, poubelles) sont dans votre livret : {lien}' },
+  { titre: 'Parking', texte: 'Bonjour {voyageur}, pour vous garer près du {logement} : ' }
+];
+
+function reponsesDe(pid) {
+  var l = (state.reponses || {})[pid];
+  return Array.isArray(l) ? l : [];
+}
+
+function bienReponses(pid, b) {
+  var liste = reponsesDe(pid);
+  var ed = state.reponseEd && state.reponseEd.pid === pid ? state.reponseEd : null;
+
+  function formulaire(e) {
+    return '<div class="card" style="padding:16px 18px;border-left:4px solid ' + b.color + '">' +
+      '<div style="font:700 14px Figtree,sans-serif;color:var(--muted3)">' +
+        (e.id ? 'Modifier la réponse' : 'Nouvelle réponse') + '</div>' +
+      '<div style="margin-top:12px"><label class="lab" for="rp-t">La question (pour toi)</label>' +
+        '<input class="inp" id="rp-t" type="text" placeholder="Ex. Où se garer ?" value="' + esc(e.titre || '') + '"' +
+        ' data-fid="rp-t" data-in="reponse-ed" data-f="titre"></div>' +
+      '<div style="margin-top:12px"><label class="lab" for="rp-x">La réponse</label>' +
+        '<textarea class="inp" id="rp-x" style="min-height:120px" data-fid="rp-x" data-in="reponse-ed" data-f="texte">' +
+        esc(e.texte || '') + '</textarea></div>' +
+      (e.erreur ? '<p class="sec-note" style="margin:10px 0 0;color:var(--terra-d)">' + esc(e.erreur) + '</p>' : '') +
+      '<div style="display:flex;gap:10px;margin-top:14px;flex-wrap:wrap">' +
+        '<button type="button" class="btn btn--primary btn--sm"' + act('reponse-ok') + '>Enregistrer</button>' +
+        '<button type="button" class="btn btn--sm" style="background:var(--cream);color:var(--ink-soft)"' +
+          act('reponse-annuler') + '>Annuler</button>' +
+      '</div></div>';
+  }
+
+  return '<div style="margin-top:22px">' +
+    '<div class="card" style="padding:20px 22px">' +
+      '<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">' +
+        '<div class="grow"><h2 style="font:700 16px Figtree,sans-serif;margin:0">Réponses toutes faites</h2>' +
+        '<p class="sec-note" style="margin-top:4px">Pour les questions que les voyageurs de ce logement posent ' +
+          'souvent. Dans <strong>Messages</strong>, ouvre la conversation d’un voyageur et touche la réponse : ' +
+          'elle se recopie dans le message WhatsApp, avec ses vraies informations.</p></div>' +
+        (ed ? '' : '<button type="button" class="btn btn--dark btn--sm" style="flex:none"' +
+          act('reponse-nouvelle', { pid: pid }) + '>+ Ajouter une réponse</button>') +
+      '</div>' +
+      '<div class="chiprow" style="margin-top:12px">' +
+        '<span class="sec-note">Remplacé pour chaque voyageur :</span>' +
+        VARIABLES.map(function (v) {
+          return '<span class="varchip" title="' + esc(v[1]) + '">' + esc(v[0]) + '</span>';
+        }).join('') + '</div>' +
+    '</div>' +
+
+    (ed && !ed.id ? '<div style="margin-top:14px">' + formulaire(ed) + '</div>' : '') +
+
+    '<div class="stack" style="margin-top:14px">' + (liste.length ? liste.map(function (x) {
+      if (ed && ed.id === x.id) return formulaire(ed);
+      return '<div class="card" style="padding:16px 18px">' +
+        '<div style="display:flex;align-items:flex-start;gap:12px">' +
+          '<div class="grow" style="min-width:0">' +
+            '<div style="font:700 15px Figtree,sans-serif">' + esc(x.titre) + '</div>' +
+            '<div style="font:500 13.5px/1.55 Figtree,sans-serif;color:var(--muted3);margin-top:5px;white-space:pre-wrap">' +
+              esc(x.texte) + '</div>' +
+          '</div>' +
+          '<div style="display:flex;gap:4px;flex:none">' +
+            '<button type="button" class="x-btn" aria-label="Modifier « ' + esc(x.titre) + ' »"' +
+              act('reponse-modifier', { pid: pid, id: x.id }) + '>✎</button>' +
+            '<button type="button" class="x-btn" aria-label="Supprimer « ' + esc(x.titre) + ' »"' +
+              act('reponse-supprimer', { pid: pid, id: x.id }) + '>×</button>' +
+          '</div>' +
+        '</div></div>';
+    }).join('')
+      : '<div class="card" style="padding:18px 20px"><p class="empty" style="padding:0">Aucune réponse pour ce logement.</p>' +
+        '<button type="button" class="btn btn--sm" style="margin-top:12px;background:var(--cream);color:var(--ink-soft)"' +
+          act('reponses-exemples', { pid: pid }) + '>Partir de 5 exemples (Wi-Fi, arrivée, départ…)</button></div>') +
+    '</div>' +
+
+    (liste.length && state.props.filter(function (p) { return !p.gone; }).length > 1
+      ? '<p class="sec-note" style="margin-top:12px">Les autres logements ont leurs propres réponses : ouvre leur fiche pour les écrire.</p>'
+      : '') +
+    '</div>';
+}
+
 /** Indices des blocs cochés pour la copie. `null` = tous, ce qui évite de
     cocher quatre cases quand on veut simplement tout recopier. */
 function blocsChoisis(blocs) {
@@ -11645,9 +11921,15 @@ function heuresArrivee(checkin, actuelle) {
   return out;
 }
 
-/** Étape 3 : les coordonnées du voyageur, et son mot pour l'hôte. */
-function bvFormulaire() {
-  var f = sejourDuPass();
+/* Le séjour dont le propriétaire regarde le formulaire en aperçu (D-198).
+   Une variable de travail, hors de `state` : ce n'est pas une donnée. */
+var apercuFormulaire = null;
+
+/** Étape 3 : les coordonnées du voyageur, et son mot pour l'hôte.
+    `fApercu` : le propriétaire regarde ce formulaire en aperçu (D-198) —
+    rien ne sera enregistré, le bouton mène au livret de ce voyageur. */
+function bvFormulaire(fApercu) {
+  var f = fApercu || sejourDuPass();
   if (!f) return bvRecherche();
   var p = prop(f.pid), r = f.r, g = state.gform;
   var inf = state.info[f.pid] || {};
@@ -11722,8 +12004,14 @@ function bvFormulaire() {
            d'enregistrement mène de toute façon au livret, et il n'oblige à
            rien — un formulaire laissé vide s'enregistre sans rien écraser.
            Deux boutons qui mènent au même endroit faisaient hésiter. */
-        '<button type="button" class="btn btn--primary bv-go"' + act('gf-envoyer') + '>' +
-          esc(t('bvEnregistrer')) + '</button>' +
+        (fApercu
+          ? '<p class="bv-note"><strong>Aperçu propriétaire</strong> — c’est exactement ce que ce voyageur ' +
+              'verra en ouvrant le lien la première fois. Rien de ce que tu tapes ici n’est enregistré. ' +
+              'S’il passe sans remplir, son livret lui proposera « Aidez votre hôte à préparer votre arrivée ».</p>' +
+            '<button type="button" class="btn btn--primary bv-go"' +
+              act('nav', { path: '#/livret/' + f.pid }) + '>Voir son livret</button>'
+          : '<button type="button" class="btn btn--primary bv-go"' + act('gf-envoyer') + '>' +
+              esc(t('bvEnregistrer')) + '</button>') +
       '</div>' +
     '</section>', t('bvSousTrouve'));
 }
@@ -11787,11 +12075,20 @@ function viewSejour() {
 
   /* Le propriétaire clique le lien qu'il vient de copier : il doit voir
      **exactement** ce que ce voyageur-là verra, dates comprises — et non la
-     somme de tout ce que le logement contient (session 17, D-85). */
+     somme de tout ce que le logement contient (session 17, D-85).
+
+     LE FORMULAIRE D'ABORD, EN APERÇU (session 44, D-198). Signalé le 3
+     novembre : *« il trouve bien la bonne réservation mais je n'accède pas au
+     formulaire »*. Le voyageur, lui, l'avait bien (vérifié sur le site en
+     ligne, depuis un navigateur vierge) ; c'est le PROPRIÉTAIRE qui sautait
+     directement au livret, et concluait — à juste titre, vu son écran — que
+     le formulaire manquait. Règle 5 par son bord « étiquette » : un aperçu
+     qui ne montre pas ce que voit le voyageur fait conclure à une panne. Le
+     propriétaire voit donc le formulaire tel quel, sans rien enregistrer. */
   if (state.auth === 'owner') {
     state.apercuSejour = f.r.id;
-    location.replace('#/livret/' + f.pid);
-    return '';
+    if (apercuFormulaire !== f.r.id) { apercuFormulaire = f.r.id; prefillGform(f, ''); }
+    return bvFormulaire(f);
   }
   state.apercuSejour = null;
 
@@ -11813,7 +12110,9 @@ function viewBienvenue() {
   if (b.etape === 'form') return bvFormulaire();
 
   // Déjà identifié lors d'une visite précédente : on ne redemande rien.
-  var f = sejourDuPass();
+  // Sauf le propriétaire, qui vient VÉRIFIER le parcours (D-198) : un ancien
+  // essai resté dans son navigateur ne doit pas lui cacher la recherche.
+  var f = state.auth === 'owner' ? null : sejourDuPass();
   if (f) { location.replace('#/livret/' + f.pid); return ''; }
 
   return bvRecherche();
@@ -13410,6 +13709,11 @@ var actions = {
   },
   /* Le message tout prêt à envoyer au voyageur avec son lien personnel
      (session 16). Même repli que « Copier le lien ». */
+  'wa-sejour': function (el) {
+    var f = resaById(el.dataset.rid);
+    var url = f ? lienWhatsApp(f.r.tel, texteSejour(f.pid, f.r)) : '';
+    if (url) window.open(url, '_blank');
+  },
   'copier-message-sejour': function (el) {
     var f = resaById(el.dataset.rid);
     if (!f) return;
@@ -14808,6 +15112,91 @@ var actions = {
     render();
   },
   'livret-edit-annuler': function () { state.lvEdit = null; render(); },
+
+  /* Réponses toutes faites d'un logement (session 44, D-200). La liste du
+     logement est REMPLACÉE par une copie à chaque geste, pour que l'envoi au
+     cahier voie le changement. */
+  'reponse-nouvelle': function (el) {
+    state.reponseEd = { pid: el.dataset.pid, id: null, titre: '', texte: '', erreur: '' };
+    render();
+  },
+  'reponse-modifier': function (el) {
+    var x = reponsesDe(el.dataset.pid).filter(function (y) { return y.id === el.dataset.id; })[0];
+    if (!x) return;
+    state.reponseEd = { pid: el.dataset.pid, id: x.id, titre: x.titre, texte: x.texte, erreur: '' };
+    render();
+  },
+  'reponse-annuler': function () { state.reponseEd = null; render(); },
+  'reponse-ok': function () {
+    var e = state.reponseEd;
+    if (!e) return;
+    var titre = (e.titre || '').trim(), texte = (e.texte || '').trim();
+    if (!titre || !texte) { e.erreur = 'Il faut la question et la réponse.'; render(); return; }
+    var liste = reponsesDe(e.pid).slice();
+    if (e.id) {
+      liste = liste.map(function (y) { return y.id === e.id ? { id: y.id, titre: titre, texte: texte } : y; });
+    } else {
+      liste.push({ id: 'rp_' + jeton(8), titre: titre, texte: texte });
+    }
+    state.reponses = Object.assign({}, state.reponses);
+    state.reponses[e.pid] = liste;
+    state.reponseEd = null;
+    save(); render();
+  },
+  'reponse-supprimer': function (el) {
+    var pid = el.dataset.pid;
+    var x = reponsesDe(pid).filter(function (y) { return y.id === el.dataset.id; })[0];
+    if (!x || !confirm('Supprimer la réponse « ' + x.titre + ' » ?')) return;
+    state.reponses = Object.assign({}, state.reponses);
+    state.reponses[pid] = reponsesDe(pid).filter(function (y) { return y.id !== x.id; });
+    if (state.reponseEd && state.reponseEd.id === x.id) state.reponseEd = null;
+    save(); render();
+  },
+  'reponses-exemples': function (el) {
+    var pid = el.dataset.pid;
+    state.reponses = Object.assign({}, state.reponses);
+    state.reponses[pid] = reponsesDe(pid).concat(REPONSES_EXEMPLES.map(function (x) {
+      return { id: 'rp_' + jeton(8), titre: x.titre, texte: x.texte };
+    }));
+    save(); render();
+  },
+
+  /* WhatsApp (session 44, D-199). On n'envoie rien : on ouvre WhatsApp avec
+     le message écrit, et le propriétaire appuie sur « Envoyer ». */
+  'wa-reponse': function (el) {
+    var f = resaById(el.dataset.rid);
+    if (!f) return;
+    var src = el.dataset.src === 'auto'
+      ? (state.autoMsgs.filter(function (x) { return x.id === el.dataset.id; })[0] || {}).texte
+      : (reponsesDe(f.pid).filter(function (x) { return x.id === el.dataset.id; })[0] || {}).texte;
+    if (!src) return;
+    state.waTexte = Object.assign({}, state.waTexte);
+    state.waTexte[f.r.id] = remplirVars(src, f.pid, f.r);
+    render();
+  },
+  'wa-ouvrir': function (el) {
+    var f = resaById(el.dataset.rid);
+    if (!f) return;
+    var texte = el.dataset.regle
+      ? remplirVars((state.autoMsgs.filter(function (x) { return x.id === el.dataset.regle; })[0] || {}).texte, f.pid, f.r)
+      : (state.waTexte[f.r.id] || '');
+    var url = lienWhatsApp(f.r.tel, texte);
+    if (!url) return;
+    /* Un message programmé ouvert est retenu, pour ne pas le reproposer —
+       « ouvert », pas « envoyé » : seul le propriétaire sait s'il a appuyé. */
+    if (el.dataset.regle) {
+      state.waOuverts = Object.assign({}, state.waOuverts);
+      state.waOuverts[el.dataset.regle + '_' + f.r.id] = TODAY + ' ' + nowHM();
+      save(); render();
+    }
+    window.open(url, '_blank');
+  },
+  // Envoyé autrement (sur Airbnb, par SMS…) : on ne le repropose plus.
+  'wa-fait': function (el) {
+    state.waOuverts = Object.assign({}, state.waOuverts);
+    state.waOuverts[el.dataset.regle + '_' + el.dataset.rid] = TODAY + ' ' + nowHM() + ' (fait)';
+    save(); render();
+  },
   'livret-edit-ok': function () {
     var ed = state.lvEdit;
     if (!ed) return;
@@ -15670,6 +16059,8 @@ var inputs = {
   'new-service': function (el) { state.newService = el.value; },
   'admin-email': function (el) { state.adminEmail = el.value; },
   'lv-edit': function (el) { if (state.lvEdit) state.lvEdit[el.dataset.f] = el.value; },
+  'reponse-ed': function (el) { if (state.reponseEd) state.reponseEd[el.dataset.f] = el.value; },
+  'wa-texte': function (el) { state.waTexte[el.dataset.rid] = el.value; },
 
   /* Formulaires de création. */
   'nb-name': function (el) { state.nb.name = el.value; },
