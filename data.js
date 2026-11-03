@@ -70,7 +70,7 @@ var DB = (function () {
       if (!u) { profil = null; return null; }
       return client.from('profiles').select('*').eq('id', u.id).maybeSingle()
         .then(function (p) {
-          profil = p.data || { id: u.id, email: u.email, role: 'provider', kind: 'menage', props: [] };
+          profil = normaliserProfil(p.data || { id: u.id, email: u.email, role: 'provider', kind: 'menage', props: [] });
           return profil;
         });
     }).catch(function (e) {
@@ -79,6 +79,34 @@ var DB = (function () {
       return null;
     });
   }
+
+  /* L'ADMINISTRATEUR TRAVAILLE COMME LE PROPRIÉTAIRE (session 43, D-194).
+
+     Le cahier connaît trois rôles : 'owner', 'provider' et, depuis le
+     script 18, 'admin' — quelqu'un que le propriétaire a nommé pour l'aider,
+     et qui voit tout comme lui. Plutôt que de retoucher la quarantaine
+     d'endroits qui demandent « est-ce le propriétaire ? », on présente
+     l'administrateur à l'application COMME un propriétaire (`role: 'owner'`)
+     et on garde son vrai rôle à part (`roleReel`). Deux choses seulement le
+     distinguent ensuite :
+
+       - `proprio` : l'identifiant du compte pour lequel on écrit. Tout ce
+         qui part dans le cahier porte `owner_id = proprio` — les logements
+         créés par l'administrateur restent ceux du propriétaire ;
+       - `estAdmin()` : pour retirer ce qui ne regarde que le vrai
+         propriétaire (repartir de zéro, nommer un autre administrateur).
+
+     Le cahier, lui, ne se fie pas à ce déguisement : c'est
+     `mon_proprietaire()`, côté serveur, qui ouvre ou ferme les portes. */
+  function normaliserProfil(p) {
+    if (!p) return p;
+    p.roleReel = p.role;
+    if (p.role === 'admin') p.role = 'owner';
+    p.proprio = (p.roleReel === 'admin' ? p.owner_ref : p.id) || p.id;
+    return p;
+  }
+
+  function estAdmin() { return !!(profil && profil.roleReel === 'admin'); }
 
   /* Y a-t-il une session ouverte sur CET appareil ? La réponse est lue dans
      le navigateur, sans réseau : c'est ce qui permet de distinguer « personne
@@ -264,7 +292,7 @@ var DB = (function () {
     if (!dispo) return Promise.reject(new Error(derniereErreur || 'Connexion indisponible.'));
     return client.rpc('accepter_invitation', { jeton: jeton }).then(function (r) {
       if (r.error) throw new Error(messageClair(r.error));
-      profil = r.data || profil;
+      profil = normaliserProfil(r.data) || profil;
       return profil;
     });
   }
@@ -273,13 +301,46 @@ var DB = (function () {
      s'y rattache. La base efface en cascade codes d'accès, réservations et
      missions. Sans retour possible — d'où la double confirmation à l'écran. */
   function viderDonnees() {
-    if (!dispo || !profil || profil.role !== 'owner') {
+    if (!dispo || !profil || profil.role !== 'owner' || estAdmin()) {
       return Promise.reject(new Error('Réservé au propriétaire.'));
     }
     return client.rpc('vider_mes_donnees').then(function (r) {
       if (r.error) throw new Error(messageClair(r.error));
       premiereLectureFaite = true;
       return r.data;
+    });
+  }
+
+  /* NOMMER ET RETIRER UN ADMINISTRATEUR (session 43, D-194). Le vrai
+     propriétaire seul : le cahier le vérifie de son côté (script 18), et
+     l'écran ne propose pas ces boutons à un administrateur. Le compte doit
+     déjà exister — ces fonctions ouvrent des droits, elles ne créent rien. */
+  function erreurAdmin(e) {
+    var m = messageClair(e);
+    return /nommer_administrateur|retirer_administrateur|PGRST202|schema cache/i.test(m)
+      ? 'Le script 18 n’est pas encore collé dans Supabase (§44 du mode d’emploi).'
+      : m;
+  }
+
+  function nommerAdministrateur(email) {
+    if (!dispo || !profil || estAdmin() || profil.role !== 'owner') {
+      return Promise.reject(new Error('Réservé au propriétaire.'));
+    }
+    return client.rpc('nommer_administrateur', { p_email: email }).then(function (r) {
+      if (r.error) throw new Error(erreurAdmin(r.error));
+      return r.data;
+    });
+  }
+
+  function retirerAdministrateur(uid) {
+    if (!dispo || !profil || estAdmin() || profil.role !== 'owner') {
+      return Promise.reject(new Error('Réservé au propriétaire.'));
+    }
+    return client.rpc('retirer_administrateur', { p_compte: uid }).then(function (r) {
+      if (r.error) throw new Error(erreurAdmin(r.error));
+      // Zéro ligne touchée n'est pas une réussite (règle 22).
+      if (r.data !== true) throw new Error('Ce compte n’était pas (ou plus) administrateur.');
+      return true;
     });
   }
 
@@ -1249,7 +1310,7 @@ var DB = (function () {
   function relireOublis() {
     if (!dispo || !profil || profil.role !== 'owner') return Promise.resolve(false);
     return client.from('reglages').select('cle, valeur')
-      .eq('owner_id', profil.id)
+      .eq('owner_id', profil.proprio || profil.id)
       .in('cle', Object.keys(REGLAGES_CUMULATIFS))
       .then(function (r) {
         if (!r || r.error || !Array.isArray(r.data)) return false;
@@ -2360,7 +2421,9 @@ var DB = (function () {
 
   function pousserApresOublis() {
     if (!dispo || !profil) return Promise.resolve();
-    var moi = profil.id;
+    // Le compte pour lequel on écrit : le propriétaire, même quand c'est son
+    // administrateur qui tient le clavier (D-194).
+    var moi = profil.proprio || profil.id;
     /* L'heure à laquelle ce lot a été construit : les séjours modifiés AVANT
        elle sont, si l'envoi réussit, désormais dans le cahier (D-187). */
     var debutEnvoi = Date.now();
@@ -2598,7 +2661,7 @@ var DB = (function () {
   function demenager() {
     if (!dispo) return Promise.reject(new Error(derniereErreur || 'Connexion indisponible.'));
     if (!profil) return Promise.reject(new Error('Il faut être connecté.'));
-    if (profil.role !== 'owner') return Promise.reject(new Error('Seul le propriétaire peut faire le déménagement.'));
+    if (profil.role !== 'owner' || estAdmin()) return Promise.reject(new Error('Seul le propriétaire peut faire le déménagement.'));
     return pousserMaintenant().then(function (bilan) {
       if (!bilan.ok) throw new Error(derniereErreur || 'Le déménagement a échoué.');
       premiereLectureFaite = true;   // geste volontaire : l'écriture est acquise
@@ -2755,6 +2818,9 @@ var DB = (function () {
     changerMotDePasse: changerMotDePasse,
     estDispo: function () { return dispo; },
     profil: function () { return profil; },
+    estAdmin: estAdmin,
+    nommerAdministrateur: nommerAdministrateur,
+    retirerAdministrateur: retirerAdministrateur,
     erreur: function () { return derniereErreur; },
     /* Le bilan de la dernière écriture : l'écran du propriétaire s'en sert
        pour dire « ce que tu vois n'est pas encore parti » (session 19). */

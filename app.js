@@ -286,8 +286,12 @@ var T = {
   yAller:       ['Y aller →', 'Take me there →'],
   // Accès verrouillé
   lockTitre:    ['🔒 Code d’accès et Wi-Fi', '🔒 Access code and Wi-Fi'],
-  lockInconnu:  ['Pour des raisons de sécurité, ils ne s’affichent qu’aux voyageurs dont le séjour est en cours. C’est immédiat : il suffit de la date de votre arrivée et des 4 derniers chiffres de votre téléphone.',
-                 'For security reasons, they are only shown to guests whose stay is under way. It takes a second: just your arrival date and the last 4 digits of your phone number.'],
+  /* Session 43 (D-197) : la phrase promettait encore « les 4 derniers chiffres
+     de votre téléphone », demandés jusqu'en D-90. Le voyageur donne désormais
+     les DEUX DATES de son séjour (D-163) — règle 8 : un mode d'emploi périmé
+     n'est pas inoffensif. */
+  lockInconnu:  ['Pour des raisons de sécurité, ils ne s’affichent qu’aux voyageurs dont le séjour est en cours. C’est immédiat : il suffit des dates de votre arrivée et de votre départ.',
+                 'For security reasons, they are only shown to guests whose stay is under way. It takes a second: just your arrival and departure dates.'],
   lockBouton:   ['Retrouver mon séjour', 'Find my booking'],
   lockAttente:  ['🔒 En attente de confirmation', '🔒 Waiting for confirmation'],
   lockAttenteP: ['Votre hôte a été prévenu. Le code d’accès et le Wi-Fi apparaîtront ici dès qu’il aura confirmé votre réservation — c’est en général très rapide. Tout le reste du livret vous est déjà accessible.',
@@ -529,6 +533,17 @@ function initialState() {
     loginEnCours: false,
     migMsg: '',
     migEnCours: false,
+    // Nommer un administrateur (session 43, D-194) : états d'écran, remis à
+    // zéro à chaque ouverture (règle 7).
+    adminEmail: '',
+    adminMsg: null,
+    adminEnCours: false,
+    // Calendrier d'un logement, mois par mois (session 43, D-195) : combien
+    // de mois sont dépliés sous le mois courant. Position d'affichage.
+    calBienMois: 12,
+    calBienAvant: 0,       // et combien de mois passés au-dessus
+    // Le bloc du livret en cours de modification (session 43, D-196).
+    lvEdit: null,
     majEnCours: false,     // relecture demandée par le bouton « ⟳ » du prestataire
     mMsg: '',              // message affiché sur l'écran prestataire
     priseEnCours: null,    // mission dont la prise est en cours d'arbitrage
@@ -865,6 +880,10 @@ function load() {
   state.mailBilan = null;             // le compte rendu du dernier envoi
   state.mMsg = '';
   state.migMsg = '';
+  state.adminEmail = ''; state.adminMsg = null; state.adminEnCours = false;   // D-194
+  state.calBienMois = 12;             // D-195 : une position d'affichage (règle 7)
+  state.calBienAvant = 0;
+  state.lvEdit = null;                // D-196 : une saisie en cours n'est pas une donnée
   state.photoPlein = null;            // une photo ouverte en grand n'est pas une donnée
   state.apercuSejour = null;          // un aperçu n'est pas une donnée non plus
   state.sejourNet = null;             // une demande en cours ne survit pas à la page
@@ -4356,7 +4375,8 @@ function parseRoute() {
 
   if (seg[0] === 'admin') {
     if (seg[1] === 'missions') return { name: seg[2] ? 'o-mission' : 'o-missions', id: seg[2] || null };
-    if (seg[1] === 'calendrier') return { name: 'o-cal', id: null };
+    // `#/admin/calendrier/<logement>` : un logement, mois par mois (D-195).
+    if (seg[1] === 'calendrier') return { name: seg[2] ? 'o-cal-bien' : 'o-cal', id: seg[2] || null };
     if (seg[1] === 'reservations') return { name: 'o-resa', id: seg[2] || null };
     if (seg[1] === 'messages') return { name: seg[2] ? 'o-msg' : 'o-msgs', id: seg[2] || null };
     if (seg[1] === 'messages-programmes') return { name: 'o-auto', id: null };
@@ -4423,6 +4443,11 @@ function guard() {
 
   // La fiche mission du propriétaire suppose que la mission existe.
   if (r.name === 'o-mission' && !mission(r.id)) { location.replace('#/admin/missions'); return null; }
+
+  // Le calendrier d'un logement suppose que le logement existe (D-195).
+  if (r.name === 'o-cal-bien' && !state.props.some(function (x) { return x.id === r.id && !x.gone; })) {
+    location.replace('#/admin/calendrier'); return null;
+  }
 
   // Réservation et conversation : seulement sur un séjour qui existe encore.
   if (r.name === 'o-resa' && !resaById(r.id)) { location.replace('#/admin/calendrier'); return null; }
@@ -5415,7 +5440,7 @@ function blocDiagnostic() {
   var ouverts = allowedProps(state.me);
   var lignes = [
     ['Compte', p.email || '—'],
-    ['Rôle', p.role === 'owner' ? 'propriétaire' : 'prestataire'],
+    ['Rôle', p.roleReel === 'admin' ? 'administrateur' : p.role === 'owner' ? 'propriétaire' : 'prestataire'],
     ['Fiche reconnue', fiche ? '✅ ' + fiche.name : '⚠️ aucune fiche pour « ' + state.me + ' »'],
     ['Métier', isCles(state.me) ? 'remise des clés' : 'ménage / entretien'],
     ['Logements ouverts par le cahier', (p.props || []).length + ' logement(s)'],
@@ -5491,7 +5516,8 @@ function viewPrestaProfil() {
 /** L'adresse e-mail avec laquelle on est connecté, pour ne jamais douter. */
 function compteConnecte() {
   var p = typeof DB !== 'undefined' && DB.estDispo() ? DB.profil() : null;
-  return p && p.email ? 'Connecté : ' + p.email : 'Connecté';
+  if (!p || !p.email) return 'Connecté';
+  return 'Connecté : ' + p.email + (DB.estAdmin && DB.estAdmin() ? ' (administrateur)' : '');
 }
 
 /* L'ALARME QUI MANQUAIT (session 19, règle 4 du §6)
@@ -6749,6 +6775,9 @@ function blocOutils() {
   if (typeof DB === 'undefined' || !DB.estDispo()) return '';
   var p = DB.profil();
   if (!p || p.role !== 'owner') return '';
+  // Déménager et tout effacer ne regardent que le propriétaire lui-même, pas
+  // l'aide qu'il a nommée (session 43, D-194).
+  if (DB.estAdmin && DB.estAdmin()) return '';
 
   /* Une exception, et une seule : tant que les logements de démonstration sont
      là, l'encadré s'ouvre de lui-même. C'est le seul cas où le message a
@@ -7642,7 +7671,10 @@ function viewOwnerCal() {
 
     return '<div class="plan-row">' +
       '<div class="plan-name">' +
-        '<button type="button" class="plan-prop"' + act('nav', { path: '#/admin/biens/' + pid }) + '>' +
+        /* Le nom du logement ouvre SON calendrier, mois par mois (session 43,
+           D-195) ; il ouvrait sa fiche, qui reste à un clic de là. */
+        '<button type="button" class="plan-prop" title="Voir ce logement mois par mois"' +
+          act('nav', { path: '#/admin/calendrier/' + pid }) + '>' +
           /* La photo du logement plutôt que la pastille quand elle existe
              (session 24, D-137) : on reconnaît la maison d'un coup d'œil, et
              `vignetteBien()` garde la pastille en repli. */
@@ -7663,7 +7695,7 @@ function viewOwnerCal() {
     '<div class="page-head">' +
       '<div><h1 class="page-title">Calendrier · ' + esc(titreMois) + '</h1>' +
       '<p class="page-sub">' + totalResas + ' séjour(s) ce mois-ci' +
-        ' · cliquez sur une barre pour ouvrir la réservation</p></div>' +
+        ' · cliquez sur une barre pour ouvrir la réservation, ou sur un logement pour le voir mois par mois</p></div>' +
       '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">' +
         '<button type="button" class="btn btn--xs" style="background:var(--cream);color:var(--ink-soft)"' +
           act('plan-mois', { d: avant }) + '>← ' + esc(nomMois(avant)) + '</button>' +
@@ -7718,6 +7750,161 @@ function viewOwnerCal() {
 
     '<p class="sec-note" style="margin-top:14px">Les séjours viennent des liens iCal et des saisies manuelles. ' +
       'Avec Beds24, ils arriveront tout seuls, montant compris — voir « Biens & connexions ».</p>');
+}
+
+/* ==========================================================================
+   LE CALENDRIER D'UN LOGEMENT, MOIS PAR MOIS (session 43, D-195)
+
+   Demandé le 3 novembre : *« on clique sur le logement et on tombe sur une vue
+   mensuelle qu'on peut faire défiler de mois en mois de haut en bas. Le but
+   est d'avoir une vue d'ensemble des réservations. »*
+
+   Le planning (`viewOwnerCal`) montre tous les logements sur UN mois ; cette
+   page montre UN logement sur douze mois, empilés. Chaque séjour est une
+   barre continue, de l'après-midi de l'arrivée au matin du départ — comme le
+   planning — coupée seulement au bout de la semaine. Deux séjours qui se
+   suivent le même jour (l'un part, l'autre arrive) partagent la case.
+
+   Le nombre de mois dépliés est une position d'affichage (règle 7) : il
+   repart à douze à chaque ouverture.
+   ========================================================================== */
+function viewOwnerCalBien() {
+  var p = prop(route.id);
+  var pid = p.id;
+  var resas = resasOf(pid);
+  var debut = moisDe(TODAY);
+  var nb = Math.max(1, state.calBienMois || 12);
+  var avant = Math.max(0, state.calBienAvant || 0);
+
+  var mois = [];
+  for (var k = -avant; k < nb; k++) mois.push(moisPlus(debut, k));
+
+  /* Les séjours à venir, pour le petit résumé du haut : on compte ce qui
+     n'est pas encore parti. */
+  var aVenir = resas.filter(function (r) { return r.end > TODAY; }).length;
+
+  var autres = state.props.filter(function (x) { return !x.gone; });
+
+  return ownerShell('calendrier',
+    '<button type="button" class="btn-back" style="min-height:38px;font-size:13px;color:var(--muted)"' +
+      act('nav', { path: '#/admin/calendrier' }) + '>← Tous les logements</button>' +
+    '<div class="page-head" style="margin-top:6px">' +
+      '<div style="display:flex;align-items:center;gap:12px;min-width:0">' +
+        (state.photosBien[pid] ? vignetteBien(pid, p.color, 'l') : '') +
+        '<div style="min-width:0"><h1 class="page-title">' + esc(p.name) + '</h1>' +
+        '<p class="page-sub">' + aVenir + ' séjour' + (aVenir > 1 ? 's' : '') + ' à venir' +
+          ' · touchez une barre pour ouvrir la réservation</p></div>' +
+      '</div>' +
+      '<button type="button" class="btn btn--xs" style="background:var(--cream);color:var(--ink-soft)"' +
+        act('nav', { path: '#/admin/biens/' + pid }) + '>Fiche du logement</button>' +
+    '</div>' +
+
+    (autres.length > 1
+      ? '<div class="chiprow" style="margin-top:14px">' + autres.map(function (x) {
+          var on = x.id === pid;
+          return '<button type="button" class="perm-chip" aria-pressed="' + on + '" style="--accent:' + x.color + '"' +
+            act('nav', { path: '#/admin/calendrier/' + x.id }) + '>' +
+            '<span class="dot" style="background:' + x.color + '"></span>' + esc(x.short) + '</button>';
+        }).join('') + '</div>'
+      : '') +
+
+    '<div style="margin-top:14px">' +
+      '<button type="button" class="btn btn--xs" style="background:transparent;color:var(--muted);padding-left:0"' +
+        act('cal-bien-avant') + '>↑ Voir ' + (avant ? 'encore ' : '') + '3 mois passés</button>' +
+    '</div>' +
+
+    '<div class="mcal-liste">' + mois.map(function (m) { return moisBien(pid, m, resas); }).join('') + '</div>' +
+
+    '<div style="text-align:center;margin-top:18px">' +
+      '<button type="button" class="btn btn--sm" style="background:var(--cream);color:var(--ink-soft)"' +
+        act('cal-bien-plus') + '>↓ Afficher 6 mois de plus</button>' +
+    '</div>' +
+
+    '<div class="chiprow" style="margin-top:18px;gap:16px">' + Object.keys(PLATS).map(function (k2) {
+      return '<span style="display:flex;align-items:center;gap:7px;font:600 12px Figtree,sans-serif;color:var(--muted3)">' +
+        '<span style="width:16px;height:8px;border-radius:9px;background:' + PLATS[k2].color + '"></span>' + k2 + '</span>';
+    }).join('') + '</div>');
+}
+
+/** Un mois du calendrier d'un logement : semaines du lundi au dimanche. */
+function moisBien(pid, mois, resas) {
+  var premier = mois + '-01';
+  var nj = nbJoursMois(mois);
+  var lead = (new Date(Date.parse(premier + 'T00:00:00Z')).getUTCDay() + 6) % 7;
+  var lundi = jourPlus(premier, -lead);
+  var dernier = mois + '-' + String(nj).padStart(2, '0');
+  var nom = MOIS_LONGS[parseInt(mois.slice(5, 7), 10) - 1];
+  var occ = nuitsOccupeesFenetre(resas, premier, nj);
+  var dansLeMois = resas.filter(function (r) { return r.end > premier && r.start <= dernier; }).length;
+
+  var semaines = '';
+  for (var lu = lundi; lu <= dernier; lu = jourPlus(lu, 7)) {
+    semaines += semaineBien(lu, mois, resas);
+  }
+
+  return '<section class="card mcal" id="mcal-' + esc(mois) + '">' +
+    '<div class="mcal-head">' +
+      '<h2 class="mcal-titre">' + esc(nom.charAt(0).toUpperCase() + nom.slice(1)) + ' ' + mois.slice(0, 4) + '</h2>' +
+      '<span class="mcal-resume num">' + dansLeMois + ' séjour' + (dansLeMois > 1 ? 's' : '') +
+        ' · ' + Math.round(occ / nj * 100) + ' % occupé</span>' +
+    '</div>' +
+    '<div class="mcal-dows">' + ['Lun', 'Mar', 'Mer', 'Jeu', 'Ven', 'Sam', 'Dim'].map(function (x) {
+      return '<span>' + x + '</span>';
+    }).join('') + '</div>' +
+    semaines +
+    '</section>';
+}
+
+/** Une semaine : la ligne des jours, puis les séjours rangés en couloirs. */
+function semaineBien(lundi, mois, resas) {
+  var dim = jourPlus(lundi, 6);
+  var cases = '';
+  for (var i = 0; i < 7; i++) {
+    var iso = jourPlus(lundi, i);
+    var hors = moisDe(iso) !== mois;
+    cases += '<span class="mcal-jour' + (hors ? ' mcal-jour--hors' : '') + (i >= 5 ? ' mcal-jour--we' : '') +
+      (iso === TODAY ? ' mcal-jour--auj' : '') + '" style="grid-column:' + (i + 1) + '">' +
+      '<span class="num">' + parseInt(iso.slice(8), 10) + '</span></span>';
+  }
+
+  /* Les morceaux de séjour qui touchent cette semaine. Colonnes 1 à 7 ;
+     `g` / `d` disent si la barre continue avant ou après la semaine. */
+  var morceaux = resas.filter(function (r) { return r.start <= dim && r.end >= lundi && r.end > r.start; })
+    .map(function (r) {
+      var c0 = r.start < lundi ? 0 : nights(lundi, r.start);
+      var c1 = r.end > dim ? 6 : nights(lundi, r.end);
+      return { r: r, c0: c0, c1: c1, g: r.start < lundi, d: r.end > dim };
+    })
+    // Le plus court d'abord à départ égal : un séjour qui PART ce jour-là doit
+    // être rangé avant celui qui ARRIVE, pour qu'ils partagent la case.
+    .sort(function (x, y) { return x.c0 - y.c0 || x.c1 - y.c1; });
+
+  /* Couloirs : un séjour prend le premier couloir libre. Un départ et une
+     arrivée le même jour ne se gênent pas (demi-cases), ils partagent donc
+     le couloir. */
+  var fins = [];
+  morceaux.forEach(function (m) {
+    var l = 0;
+    while (l < fins.length && !(fins[l].c1 < m.c0 || (fins[l].c1 === m.c0 && !fins[l].d && !m.g))) l++;
+    fins[l] = m; m.l = l;
+  });
+
+  var barres = morceaux.map(function (m) {
+    var pl = PLATS[m.r.plat] || PLATS['Direct'];
+    var span = m.c1 - m.c0 + 1;
+    /* Demi-case au début (arrivée l'après-midi) et à la fin (départ le
+       matin), en fraction de la largeur couverte par la barre. */
+    var mg = m.g ? '0px' : 'calc(100% / ' + span + ' / 2)';
+    var md = m.d ? '0px' : 'calc(100% / ' + span + ' / 2)';
+    return '<button type="button" class="mcal-barre' + (m.g ? ' mcal-barre--g' : '') + (m.d ? ' mcal-barre--d' : '') + '"' +
+      ' style="grid-column:' + (m.c0 + 1) + ' / ' + (m.c1 + 2) + ';grid-row:' + (m.l + 2) +
+      ';margin-left:' + mg + ';margin-right:' + md + ';background:' + pl.color + '"' +
+      ' title="' + esc(m.r.guest + ' · ' + fmtDate(m.r.start) + ' → ' + fmtDate(m.r.end) + ' · ' + m.r.plat) + '"' +
+      act('open-resa', { rid: m.r.id }) + '>' +
+      '<span>' + esc(m.r.guest) + '</span></button>';
+  }).join('');
+
+  return '<div class="mcal-sem" style="--couloirs:' + Math.max(1, fins.length) + '">' + cases + barres + '</div>';
 }
 
 /* --- Fiche d'une réservation --------------------------------------------- */
@@ -9840,7 +10027,75 @@ function viewOwnerAgents() {
     '</div>' +
 
     '<div class="stack" style="gap:14px;margin-top:22px">' +
-      (cards || '<p class="empty">Aucun prestataire. Ajoutez le premier ci-dessus.</p>') + '</div>');
+      (cards || '<p class="empty">Aucun prestataire. Ajoutez le premier ci-dessus.</p>') + '</div>' +
+    blocAdministrateurs());
+}
+
+/* UN ADMINISTRATEUR QUI T'AIDE (session 43, D-194)
+
+   Demandé le 3 novembre : *« pouvoir ajouter un administrateur qui aura accès
+   à toute ma partie pour pouvoir m'aider à gérer les appartements, stock,
+   calendrier, messages des voyageurs »* — et, à la question posée, « tout,
+   comme moi ».
+
+   L'administrateur se connecte avec SON compte et voit exactement l'écran du
+   propriétaire. Ce que le propriétaire seul garde : nommer ou retirer un
+   administrateur (cet encadré), déménager et tout effacer (`blocOutils()`).
+
+   LE COMPTE SE CRÉE DANS SUPABASE, PAS ICI. L'invitation des prestataires
+   (§19.8) fabrique une fiche de prestataire et ses droits ; la détourner pour
+   un administrateur aurait mélangé deux choses qu'il faut garder séparées.
+   Créer un compte dans Supabase est un geste que Marc connaît (§19.1 bis), et
+   il ne se fait qu'une fois. Le cahier refuse ensuite de nommer une adresse
+   qui n'existe pas, et l'écran le DIT (règle 4). */
+function blocAdministrateurs() {
+  if (typeof DB === 'undefined' || !DB.estDispo() || !DB.profil()) return '';
+  var admin = DB.estAdmin && DB.estAdmin();
+  var liste = (state.comptes || []).filter(function (c) { return c.role === 'admin'; });
+  var msg = state.adminMsg;
+
+  if (admin) {
+    return '<div class="card" style="margin-top:22px;padding:20px 22px">' +
+      '<h2 style="font:700 16px Figtree,sans-serif;margin:0">Administrateurs</h2>' +
+      '<p class="sec-note" style="margin-top:4px">Tu es connecté en <strong>administrateur</strong> : ' +
+        'tu vois et gères tout, comme le propriétaire. Seul lui peut nommer ou retirer un administrateur.</p>' +
+      '</div>';
+  }
+
+  return '<div class="card" style="margin-top:22px;padding:20px 22px">' +
+    '<h2 style="font:700 16px Figtree,sans-serif;margin:0">Administrateurs</h2>' +
+    '<p class="sec-note" style="margin-top:4px">Une personne qui t’aide à gérer : elle voit et modifie ' +
+      '<strong>tout</strong>, comme toi — logements, calendrier, missions, stocks, messages, ' +
+      'prestataires, statistiques et paie. Elle se connecte avec son propre compte.</p>' +
+
+    (liste.length
+      ? '<div style="margin-top:12px">' + liste.map(function (c) {
+          return '<div style="display:flex;align-items:center;gap:10px;padding:10px 0;border-top:1px solid rgba(36,30,26,.07);flex-wrap:wrap">' +
+            '<span class="grow" style="font:600 14px Figtree,sans-serif;min-width:0;overflow-wrap:anywhere">' +
+              esc(c.nom || c.email) + (c.nom ? ' <span style="color:var(--muted);font-weight:500">· ' + esc(c.email) + '</span>' : '') +
+            '</span>' +
+            '<button type="button" class="btn btn--xs" style="background:var(--terra-bg);color:var(--terra-dd)"' +
+              (state.adminEnCours ? ' disabled' : '') + act('admin-retirer', { uid: c.uid }) + '>Retirer l’accès</button>' +
+            '</div>';
+        }).join('') + '</div>'
+      : '<p class="empty" style="padding:12px 0 0">Aucun administrateur pour le moment.</p>') +
+
+    '<ol class="sec-note" style="margin:14px 0 0;padding-left:20px;line-height:1.6">' +
+      '<li>Crée son compte dans Supabase : <strong>Authentication → Users → Add user → Create new user</strong>, ' +
+        'avec son adresse e-mail et un mot de passe, en cochant <strong>Auto Confirm User</strong>.</li>' +
+      '<li>Écris la même adresse ci-dessous, puis « Donner l’accès ».</li>' +
+      '<li>Donne-lui l’adresse du site, son e-mail et son mot de passe.</li>' +
+    '</ol>' +
+    '<div style="display:flex;gap:10px;margin-top:12px;flex-wrap:wrap">' +
+      '<input class="inp" style="flex:1;min-width:min(100%,220px)" type="email" placeholder="adresse@exemple.fr"' +
+        ' aria-label="Adresse e-mail de l’administrateur" value="' + esc(state.adminEmail || '') + '"' +
+        ' data-fid="admin-email" data-in="admin-email">' +
+      '<button type="button" class="btn btn--dark btn--sm"' + (state.adminEnCours ? ' disabled' : '') +
+        act('admin-nommer') + '>' + (state.adminEnCours ? 'Un instant…' : 'Donner l’accès') + '</button>' +
+    '</div>' +
+    (msg ? '<p class="sec-note" style="margin:10px 0 0;color:' + (msg.ok ? 'var(--green-t)' : 'var(--terra-d)') + '">' +
+      esc(msg.texte) + '</p>' : '') +
+    '</div>';
 }
 
 /* --- Commentaires des voyageurs ------------------------------------------ */
@@ -10825,6 +11080,8 @@ function bienCalendar(pid) {
     '<div class="card" style="flex:1.4;min-width:min(100%,380px);padding:20px 22px">' +
       '<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">' +
         '<h2 style="font:700 18px Figtree,sans-serif;flex:1;margin:0">' + moisTitre(cmo) + ' ' + cy + '</h2>' +
+        '<button type="button" class="btn btn--xs" style="background:var(--cream);color:var(--ink-soft)"' +
+          act('nav', { path: '#/admin/calendrier/' + pid }) + '>Voir mois par mois</button>' +
         '<div class="seg">' + moisCalendrier().map(function (m) {
           return '<button type="button" aria-pressed="' + (cm === m[0]) + '"' + act('cal-month', { m: m[0] }) + '>' + m[1] + '</button>';
         }).join('') + '</div>' +
@@ -10962,6 +11219,10 @@ function bienLivret(pid, b) {
       '<button type="button" class="btn btn--dark btn--sm" style="flex:none"' +
         act('nav', { path: '#/livret/' + pid }) + '>Ouvrir l\'aperçu</button>' +
     '</div>' +
+    /* Ces quatre valeurs se corrigent dans « Infos & tarifs » : un bouton y
+       mène directement, plutôt que de laisser chercher où (D-196). */
+    '<button type="button" class="btn btn--xs" style="margin-top:12px;background:var(--cream);color:var(--ink-soft)"' +
+      act('bien-tab', { t: 'infos' }) + '>✎ Modifier les horaires, le code ou le Wi-Fi</button>' +
     '<div class="livret-recap">' +
       [['Arrivée', inf.checkin || '—'], ['Départ', inf.checkout || '—'],
        ['Code d\'accès', inf.code || '—'], ['Wi-Fi', inf.wifi || '—']].map(function (r) {
@@ -11003,8 +11264,10 @@ function bienLivret(pid, b) {
      qui sera recopié vers d'autres logements. */
   var choisis = blocsChoisis(blocs);
 
+  var ed = state.lvEdit;
   var liste = '<div class="stack" style="margin-top:14px">' + (blocs.length ? blocs.map(function (x, xi) {
     var on = choisis.indexOf(xi) >= 0;
+    if (!en && ed && ed.pid === pid && ed.s === sec.k && ed.i === xi) return livretBlocEdition(ed, b);
     return '<div class="card livret-bloc' + (on ? ' livret-bloc--on' : '') + '" style="padding:16px 18px">' +
       '<div style="display:flex;align-items:flex-start;gap:12px">' +
         '<button type="button" class="livret-pick" aria-pressed="' + on + '"' +
@@ -11030,6 +11293,8 @@ function bienLivret(pid, b) {
           (x.media ? '<div class="livret-media-url num">' + esc(x.media) + '</div>' : '') +
         '</div>' +
         '<div style="display:flex;gap:4px;flex:none">' +
+          (en ? '' : '<button type="button" aria-label="Modifier « ' + esc(x.titre) + ' »" class="x-btn"' +
+            act('livret-edit', { pid: pid, s: sec.k, i: xi }) + '>✎</button>') +
           '<button type="button" aria-label="Monter" class="x-btn"' + act('livret-move', { pid: pid, s: sec.k, i: xi, d: -1 }) + '>↑</button>' +
           '<button type="button" aria-label="Descendre" class="x-btn"' + act('livret-move', { pid: pid, s: sec.k, i: xi, d: 1 }) + '>↓</button>' +
           '<button type="button" aria-label="Supprimer" class="x-btn"' + act('livret-remove', { pid: pid, s: sec.k, i: xi }) + '>×</button>' +
@@ -11057,6 +11322,46 @@ function bienLivret(pid, b) {
   // ce qui existe, on ne réorganise pas le livret.
   return '<div style="margin-top:22px">' + entete + onglets + liste +
     (en ? '' : livretCopie(pid, sec, blocs) + ajout) + '</div>';
+}
+
+/* MODIFIER UN BLOC DU LIVRET SANS LE REFAIRE (session 43, D-196)
+
+   Demandé le 3 novembre : *« ajoute la possibilité de pouvoir modifier des
+   éléments sur le carnet de voyage dans la rubrique logement »*. On pouvait
+   ajouter un bloc, le monter, le descendre, le supprimer et le traduire —
+   mais pas le corriger : une faute de frappe ou un horaire qui change
+   obligeait à le supprimer puis le réécrire, et la traduction anglaise
+   partait avec.
+
+   Le bloc s'ouvre ici en place, avec ses quatre champs. Rien n'est écrit dans
+   le livret tant qu'on n'a pas appuyé sur « Enregistrer » : la saisie vit dans
+   `state.lvEdit`, un état d'écran (règle 7). La traduction anglaise est
+   CONSERVÉE — un texte français retouché garde sa version anglaise, que l'on
+   corrige ensuite dans l'onglet « English » si besoin. */
+function livretBlocEdition(ed, b) {
+  function champ(f, label, type, ph) {
+    var id = 'lve-' + f;
+    var val = esc(ed[f] || '');
+    return '<div style="margin-top:12px"><label class="lab" for="' + id + '">' + label + '</label>' +
+      (type === 'textarea'
+        ? '<textarea class="inp" id="' + id + '" data-fid="' + id + '" data-in="lv-edit" data-f="' + f + '">' + val + '</textarea>'
+        : '<input class="inp" id="' + id + '" type="' + type + '" placeholder="' + esc(ph || '') + '" value="' + val + '"' +
+            ' data-fid="' + id + '" data-in="lv-edit" data-f="' + f + '">') +
+      '</div>';
+  }
+  return '<div class="card livret-bloc" style="padding:16px 18px;border-left:4px solid ' + b.color + '">' +
+    '<div style="font:700 14px Figtree,sans-serif;color:var(--muted3)">Modifier ce bloc</div>' +
+    champ('titre', 'Titre', 'text', '') +
+    champ('texte', 'Explication', 'textarea', '') +
+    champ('adresse', 'Adresse (facultatif)', 'text', 'Ex. 12 quai du Port, 13002 Marseille') +
+    champ('media', 'Photo ou vidéo (adresse internet, facultatif)', 'url', 'https://…') +
+    (ed.erreur ? '<p class="sec-note" style="margin:10px 0 0;color:var(--terra-d)">' + esc(ed.erreur) + '</p>' : '') +
+    '<div style="display:flex;gap:10px;margin-top:14px;flex-wrap:wrap">' +
+      '<button type="button" class="btn btn--primary btn--sm"' + act('livret-edit-ok') + '>Enregistrer</button>' +
+      '<button type="button" class="btn btn--sm" style="background:var(--cream);color:var(--ink-soft)"' +
+        act('livret-edit-annuler') + '>Annuler</button>' +
+    '</div>' +
+    '</div>';
 }
 
 /** Indices des blocs cochés pour la copie. `null` = tous, ce qui évite de
@@ -11473,8 +11778,8 @@ function viewSejour() {
       '<section class="lv-section"><div class="bv-card">' +
         '<h2 class="bv-h">Ce lien n’est plus valable</h2>' +
         '<p class="bv-p">Le séjour auquel il renvoie n’existe plus, ou le lien a été coupé ' +
-          'en chemin. Vous pouvez retrouver votre livret avec votre nom et la date de votre ' +
-          'arrivée.</p>' +
+          'en chemin. Vous pouvez retrouver votre livret avec les dates de votre arrivée ' +
+          'et de votre départ.</p>' +
         '<button type="button" class="btn btn--primary bv-go"' +
           act('nav', { path: '#/bienvenue' }) + '>Retrouver mon livret</button>' +
       '</div></section>', 'Lien introuvable');
@@ -12220,7 +12525,7 @@ function viewPrestaAttente() {
      c'est exactement ce qui s'est produit en session 14. */
   var lignes = [
     ['Compte connecté', (p && p.email) || '—'],
-    ['Reconnu comme', p ? (p.role === 'owner' ? 'propriétaire' : 'prestataire') : '—'],
+    ['Reconnu comme', p ? (p.roleReel === 'admin' ? 'administrateur' : p.role === 'owner' ? 'propriétaire' : 'prestataire') : '—'],
     ['Relié à la fiche', (p && p.legacy_id) ? p.legacy_id : '⚠️ aucune fiche'],
     ['Logements ouverts', p ? ((p.props || []).length + ' logement(s)') : '—']
   ];
@@ -13004,6 +13309,56 @@ var actions = {
       })
       .catch(function (e) {
         state.migMsg = '⚠️ ' + DB.messageClair(e);
+        render();
+      });
+  },
+
+  /* Nommer et retirer un administrateur (session 43, D-194). La réussite
+     n'est annoncée qu'après relecture des comptes : c'est elle qui fait
+     apparaître la personne dans la liste (règle 4). */
+  'admin-nommer': function () {
+    var email = (state.adminEmail || '').trim();
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
+      state.adminMsg = { ok: false, texte: 'Écris une adresse e-mail complète.' };
+      render(); return;
+    }
+    state.adminEnCours = true; state.adminMsg = null; render();
+    DB.nommerAdministrateur(email)
+      .then(function () { return DB.charger(); })
+      .then(function () {
+        var la = (state.comptes || []).some(function (c) {
+          return c.role === 'admin' && (c.email || '').toLowerCase() === email.toLowerCase();
+        });
+        state.adminEnCours = false;
+        state.adminEmail = la ? '' : state.adminEmail;
+        state.adminMsg = la
+          ? { ok: true, texte: '✅ ' + email + ' est administrateur. Il ou elle peut se connecter et verra tout, comme toi.' }
+          : { ok: false, texte: 'Le cahier a répondu, mais la personne n’apparaît pas encore. Recharge la page.' };
+        render();
+      })
+      .catch(function (e) {
+        state.adminEnCours = false;
+        state.adminMsg = { ok: false, texte: '⚠️ ' + DB.messageClair(e) };
+        render();
+      });
+  },
+
+  'admin-retirer': function (el) {
+    var uid = el.dataset.uid;
+    var c = (state.comptes || []).filter(function (x) { return x.uid === uid; })[0];
+    if (!c || !confirm('Retirer l’accès administrateur de ' + (c.nom || c.email) + ' ?\n\n' +
+      'Son compte reste, mais il ne verra plus rien.')) return;
+    state.adminEnCours = true; state.adminMsg = null; render();
+    DB.retirerAdministrateur(uid)
+      .then(function () { return DB.charger(); })
+      .then(function () {
+        state.adminEnCours = false;
+        state.adminMsg = { ok: true, texte: '✅ Accès retiré à ' + (c.nom || c.email) + '.' };
+        render();
+      })
+      .catch(function (e) {
+        state.adminEnCours = false;
+        state.adminMsg = { ok: false, texte: '⚠️ ' + DB.messageClair(e) };
         render();
       });
   },
@@ -14116,6 +14471,9 @@ var actions = {
   'plan-today': function () { state.planStart = premierJourDuMois(TODAY); save(); render(); },
   /* Changer de mois (session 41, D-184). */
   'plan-mois': function (el) { state.planStart = premierJourDuMois(el.dataset.d || TODAY); save(); render(); },
+  // Calendrier d'un logement (D-195) : déplier des mois, sans rien enregistrer.
+  'cal-bien-plus': function () { state.calBienMois = (state.calBienMois || 12) + 6; render(); },
+  'cal-bien-avant': function () { state.calBienAvant = (state.calBienAvant || 0) + 3; render(); },
   'plan-prop': function (el) {
     var pid = el.dataset.pid;
     var l = Array.isArray(state.planProps) ? state.planProps.slice() : state.props.map(function (p) { return p.id; });
@@ -14409,6 +14767,7 @@ var actions = {
   'livret-section': function (el) {
     state.livretSection = el.dataset.s;
     state.livretBlocs = null;
+    state.lvEdit = null;
     save(); render();
   },
   'livret-add': function (el) {
@@ -14433,6 +14792,43 @@ var actions = {
     if (!lv || !lv[s]) return;
     lv[s] = lv[s].filter(function (x, xi) { return xi !== i; });
     state.livretBlocs = null;
+    state.lvEdit = null;
+    save(); render();
+  },
+
+  /* Modifier un bloc en place (session 43, D-196). On garde le titre d'origine
+     pour vérifier, à l'enregistrement, qu'on écrit bien sur le même bloc : une
+     relecture du cahier a pu réordonner la rubrique entre-temps. */
+  'livret-edit': function (el) {
+    var pid = el.dataset.pid, s = el.dataset.s, i = parseInt(el.dataset.i, 10);
+    var x = ((state.livret[pid] || {})[s] || [])[i];
+    if (!x) return;
+    state.lvEdit = { pid: pid, s: s, i: i, origine: x.titre,
+      titre: x.titre || '', texte: x.texte || '', adresse: x.adresse || '', media: x.media || '', erreur: '' };
+    render();
+  },
+  'livret-edit-annuler': function () { state.lvEdit = null; render(); },
+  'livret-edit-ok': function () {
+    var ed = state.lvEdit;
+    if (!ed) return;
+    var list = (state.livret[ed.pid] || {})[ed.s] || [];
+    var x = list[ed.i];
+    if (!x || x.titre !== ed.origine) {
+      ed.erreur = 'Ce bloc a changé de place entre-temps. Annule, puis rouvre-le.';
+      render(); return;
+    }
+    var titre = (ed.titre || '').trim();
+    if (!titre) { ed.erreur = 'Donne un titre à ce bloc.'; render(); return; }
+    // Un nouvel objet, pour que l'envoi au cahier voie bien le changement ;
+    // la traduction anglaise (titreEn, texteEn) suit telle quelle.
+    var neuf = Object.assign({}, x, {
+      titre: titre,
+      texte: (ed.texte || '').trim(),
+      adresse: (ed.adresse || '').trim(),
+      media: (ed.media || '').trim()
+    });
+    state.livret[ed.pid][ed.s] = list.map(function (y, yi) { return yi === ed.i ? neuf : y; });
+    state.lvEdit = null;
     save(); render();
   },
   'livret-move': function (el) {
@@ -14445,6 +14841,7 @@ var actions = {
     var tmp = list[i]; list[i] = list[j]; list[j] = tmp;
     lv[s] = list;
     state.livretBlocs = null;
+    state.lvEdit = null;
     save(); render();
   },
 
@@ -15271,6 +15668,8 @@ var inputs = {
     save();
   },
   'new-service': function (el) { state.newService = el.value; },
+  'admin-email': function (el) { state.adminEmail = el.value; },
+  'lv-edit': function (el) { if (state.lvEdit) state.lvEdit[el.dataset.f] = el.value; },
 
   /* Formulaires de création. */
   'nb-name': function (el) { state.nb.name = el.value; },
@@ -15483,6 +15882,7 @@ var VIEWS = {
   'p-incident': viewPrestaIncident,
   'o-dash': viewOwnerDash,
   'o-cal': viewOwnerCal,
+  'o-cal-bien': viewOwnerCalBien,
   'o-resa': viewOwnerResa,
   'o-msgs': viewOwnerMsgs,
   'o-msg': viewOwnerMsg,

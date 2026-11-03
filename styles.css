@@ -1419,6 +1419,70 @@ textarea.inp { min-height: 90px; resize: vertical; line-height: 1.5; }
 .cal-cell.today .d { color: #8A6A18; }
 .cal-bar { display: block; height: 6px; border-radius: 9px; }
 
+/* Calendrier d'un logement, mois par mois (session 43, D-195) ------------- */
+
+.mcal-liste { display: flex; flex-direction: column; gap: 14px; margin-top: 10px; }
+.mcal { padding: 16px 14px 12px; }
+.mcal-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; padding: 0 4px 10px; }
+.mcal-titre { font: 700 18px Figtree, sans-serif; margin: 0; flex: 1; }
+.mcal-resume { font: 600 12px Figtree, sans-serif; color: var(--muted); }
+.mcal-dows { display: grid; grid-template-columns: repeat(7, 1fr); }
+.mcal-dows span {
+  text-align: center; font: 700 10.5px Figtree, sans-serif; color: var(--muted2);
+  letter-spacing: .05em; text-transform: uppercase; padding-bottom: 6px;
+}
+/* Une semaine : la rangée des jours, puis un couloir par séjour superposé.
+   Les cases de jour s'étirent sur toute la hauteur de la semaine. */
+.mcal-sem {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  grid-template-rows: 26px repeat(var(--couloirs), 24px);
+  row-gap: 3px;
+  padding-bottom: 6px;
+  border-top: 1px solid rgba(36,30,26,.07);
+  min-height: 62px;
+}
+.mcal-jour {
+  grid-row: 1 / -1;
+  padding: 4px 6px;
+  border-left: 1px solid rgba(36,30,26,.05);
+  font: 600 12px Figtree, sans-serif;
+  color: var(--ink-soft);
+}
+.mcal-jour:first-child { border-left: 0; }
+.mcal-jour--we { background: rgba(36,30,26,.025); }
+.mcal-jour--hors { color: var(--muted2); opacity: .45; }
+.mcal-jour--auj span {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 22px; height: 22px; padding: 0 5px; border-radius: 11px;
+  background: var(--terra); color: #fff;
+}
+.mcal-barre {
+  align-self: center;
+  height: 22px;
+  min-width: 0;
+  border-radius: 11px;
+  padding: 0 8px;
+  display: flex;
+  align-items: center;
+  color: #fff;
+  font: 600 11.5px Figtree, sans-serif;
+  text-align: left;
+  overflow: hidden;
+  cursor: pointer;
+  position: relative;
+  z-index: 1;
+}
+.mcal-barre span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mcal-barre--g { border-top-left-radius: 0; border-bottom-left-radius: 0; }
+.mcal-barre--d { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.mcal-barre:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+@media (max-width: 480px) {
+  .mcal { padding: 14px 8px 10px; }
+  .mcal-jour { padding: 3px 3px; font-size: 11px; }
+  .mcal-barre { padding: 0 5px; font-size: 10.5px; }
+}
+
 /* Remise des clés (écran prestataire) ------------------------------------- */
 
 .kd-title { font: 700 17px Figtree, sans-serif; margin: 8px 0 0; }

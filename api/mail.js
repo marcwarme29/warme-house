@@ -34,8 +34,10 @@
         session Supabase de la personne. On le fait vérifier par Supabase
         lui-même : un jeton inventé ou périmé ne passe pas.
      2. **Seul le PROPRIÉTAIRE peut faire partir du courrier.** On relit la
-        fiche du compte (`profiles.role`) et on exige `owner`. Une prestataire
-        connectée, même de bonne foi, n'envoie rien.
+        fiche du compte (`profiles.role`) et on exige `owner` — ou `admin`,
+        l'aide que le propriétaire a nommée et qui voit tout comme lui
+        (session 43, D-194, script 18). Une prestataire connectée, même de
+        bonne foi, n'envoie rien.
      3. **On ne poste que des quantités raisonnables** : 25 destinataires par
         appel au maximum, un sujet et un texte bornés.
 
@@ -133,7 +135,7 @@ async function quiEstCe(jeton) {
   }
 }
 
-/** Le rôle inscrit sur sa fiche : 'owner', 'provider', ou '' si illisible. */
+/** Le rôle inscrit sur sa fiche : 'owner', 'admin', 'provider', ou '' si illisible. */
 async function sonRole(jeton, id) {
   const t = avecDelai(null, DELAI_MAX);
   try {
@@ -274,7 +276,7 @@ module.exports = async function handler(req, res) {
 
   /* --- Verrou 2 : et c'est bien le propriétaire -------------------------- */
   const role = await sonRole(jeton, qui.id);
-  if (role !== 'owner') {
+  if (role !== 'owner' && role !== 'admin') {
     return res.status(403).json({
       erreur: 'Seul le compte du propriétaire peut envoyer des e-mails aux prestataires.'
     });
