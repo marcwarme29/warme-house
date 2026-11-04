@@ -665,7 +665,7 @@ function initialState() {
     charges: [],
     factures: [],                     // D-206 : les factures (table et casier « factures », script 20)
     factureEd: null,                  // le formulaire d'une facture, ou null
-    facturesFiltre: { periode: CURRENT_MONTH, pid: '' },
+    facturesFiltre: { periode: '', pid: '' },   // D-206 : toutes, sinon une facture d'octobre « disparaît » en novembre
     factureDernierBien: '',           // pré-rempli à la facture suivante
     factureMsg: '',
     factureZip: null,                 // « 3/12 » pendant la préparation du dossier du comptable
@@ -1292,7 +1292,7 @@ function upgrade() {
   /* Session 46 (D-206) — les factures. Celles d'un logement supprimé restent :
      elles appartiennent à la comptabilité, pas au logement. */
   if (!Array.isArray(state.factures)) state.factures = [];
-  if (!state.facturesFiltre || typeof state.facturesFiltre !== 'object') state.facturesFiltre = { periode: CURRENT_MONTH, pid: '' };
+  if (!state.facturesFiltre || typeof state.facturesFiltre !== 'object') state.facturesFiltre = { periode: '', pid: '' };
 
   /* Les annonces déjà parties (D-151). On oublie celles dont la mission
      n'existe plus, sinon la liste enfle sans fin et finit par peser dans les
@@ -6534,7 +6534,13 @@ function boutonAjouter() {
             '<span class="ajout-ico" aria-hidden="true">' + x.icone + '</span>' +
             '<span><span class="ajout-t">' + esc(x.titre) + '</span>' +
             '<span class="ajout-s">' + esc(x.aide) + '</span></span></button>';
-        }).join('') + '</div>'
+        }).join('') +
+        /* Une facture (session 46, D-206) : elle a sa propre page, on y va. */
+        '<button type="button" class="ajout-item" role="menuitem"' + act('facture-nouvelle') + '>' +
+          '<span class="ajout-ico" aria-hidden="true">🧾</span>' +
+          '<span><span class="ajout-t">Une facture</span>' +
+          '<span class="ajout-s">Photo ou PDF, comptée dans les frais du logement</span></span></button>' +
+        '</div>'
       : '') +
     '</div>';
 }
@@ -9991,6 +9997,10 @@ function formFacture() {
     '<div style="display:flex;gap:10px;margin-top:14px;flex-wrap:wrap;align-items:center">' +
       '<button type="button" class="btn btn--primary btn--sm"' + (e.enCours ? ' disabled' : '') + act('facture-ok') + '>' +
         (e.enCours ? 'Enregistrement…' : 'Enregistrer la facture') + '</button>' +
+      (e.sansFichierPossible && !e.enCours
+        ? '<button type="button" class="btn btn--sm" style="background:var(--cream);color:var(--ink-soft)"' +
+            act('facture-sans-fichier') + '>Enregistrer sans le fichier</button>'
+        : '') +
       '<button type="button" class="btn btn--sm" style="background:transparent;color:var(--muted)"' + act('facture-annuler') + '>Annuler</button>' +
       (e.pid ? '<span class="sec-note">Le montant s’ajoutera aux frais de ' + esc(nomBienFacture(e.pid)) + ' en ' +
         esc(moisLabel(String(e.date || TODAY).slice(0, 7))) + '.</span>' : '') +
@@ -10032,7 +10042,7 @@ function tableauFactures(liste) {
 /* --- La page ---------------------------------------------------------------- */
 
 function viewOwnerFactures() {
-  var fl = state.facturesFiltre || (state.facturesFiltre = { periode: CURRENT_MONTH, pid: '' });
+  var fl = state.facturesFiltre || (state.facturesFiltre = { periode: '', pid: '' });
   var liste = facturesFiltrees();
   var total = liste.reduce(function (n, f) { return n + (Number(f.montant) || 0); }, 0);
   var biens = state.props.filter(function (p) { return !p.gone; });
@@ -15898,10 +15908,18 @@ var actions = {
     factureFichier = null;
     state.factureEd = factureVide(pid);
     state.factureMsg = '';
+    state.menuAjout = false;
     if (pid) state.facturesFiltre = { periode: '', pid: pid };
     if (route.name !== 'o-factures') go('#/admin/statistiques/factures'); else render();
   },
   'facture-annuler': function () { state.factureEd = null; factureFichier = null; render(); },
+  /* Après un dépôt refusé : la facture d'abord, le fichier plus tard. */
+  'facture-sans-fichier': function () {
+    if (!state.factureEd) return;
+    factureFichier = null;
+    state.factureEd.sansFichierPossible = false;
+    actions['facture-ok']();
+  },
   'facture-modifier': function (el) {
     var f = (state.factures || []).filter(function (x) { return x.id === el.dataset.id; })[0];
     if (!f) return;
@@ -15934,6 +15952,12 @@ var actions = {
     var ranger = function (message) {
       state.factures = (state.factures || []).filter(function (x) { return x.id !== fiche.id; }).concat([fiche]);
       state.factureDernierBien = fiche.pid;
+      /* Elle doit se VOIR dans la liste juste en dessous (session 46) : une
+         facture datée d'octobre, enregistrée avec le filtre sur novembre,
+         semblait ne pas s'être enregistrée. */
+      var fl = state.facturesFiltre || (state.facturesFiltre = { periode: '', pid: '' });
+      if (fl.periode && fiche.date.indexOf(fl.periode) !== 0) fl.periode = '';
+      if (fl.pid && !(fl.pid === '_general' ? !fiche.pid : fl.pid === fiche.pid)) fl.pid = '';
       state.factureEd = null;
       factureFichier = null;
       state.factureMsg = message;
@@ -15959,7 +15983,8 @@ var actions = {
       if (!state.factureEd) return;
       state.factureEd.enCours = false;
       state.factureEd.erreur = 'Le fichier n’a pas pu être déposé : ' + ((err && err.message) || 'raison inconnue') +
-        ' Rien n’est perdu : réessaie.';
+        ' Rien n’est perdu : réessaie, ou enregistre la facture sans son fichier et joins-le plus tard avec ✎.';
+      state.factureEd.sansFichierPossible = true;
       render();
     });
   },

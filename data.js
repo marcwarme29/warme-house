@@ -56,10 +56,57 @@ var DB = (function () {
           lien ne donne le droit que de **choisir un nouveau mot de passe**,
           et la session n'est ouverte qu'au moment où on l'enregistre. */
     client = supabase.createClient(SUPABASE_URL, SUPABASE_KEY, {
-      auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: false }
+      auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: false },
+      global: { fetch: fetchGarde }
     });
     dispo = true;
     return true;
+  }
+
+  /* JAMAIS D'ÉCRITURE ANONYME QUAND QUELQU'UN EST CONNECTÉ (session 46, D-207)
+
+     Signalé deux fois le même jour : un bandeau « Ce compte n'a pas le droit
+     d'écrire ici » sur les avis, les fiches, les stocks, les réglages et les
+     demandes d'accès — alors que les logements et les séjours venaient de
+     partir —, puis une facture qui ne s'enregistre pas. Les droits ont été
+     vérifiés sur la base elle-même, compte par compte (scripts 18b et 18c) :
+     ils sont bons.
+
+     Ce qui reste : la bibliothèque Supabase, quand elle ne parvient pas à
+     renouveler la session (réseau pas encore revenu au réveil de l'iMac,
+     session expirée), **n'arrête pas les requêtes**. Elle les envoie avec la
+     seule clé publique, c'est-à-dire SANS IDENTITÉ — et la base, à juste
+     titre, les refuse toutes en invoquant ses règles de sécurité. D'où le
+     « tu n'as pas le droit » qui ment : le vrai message est « on ne sait plus
+     qui tu es ».
+
+     On intercepte donc chaque requête : si un compte est connecté
+     (`profil`) et que la requête part pourtant sans jeton de session, on
+     l'arrête net, avec un message qui dit la vérité. Les pages du voyageur,
+     sans compte, ne sont pas concernées (`profil` y vaut null), ni les
+     échanges avec le service de connexion lui-même (`/auth/v1/`). */
+  var SESSION_PERDUE = 'SESSION_PERDUE';
+
+  function fetchGarde(entree, options) {
+    if (profil) {
+      var h = options && options.headers;
+      var jeton = !h ? '' : (typeof h.get === 'function' ? h.get('Authorization') : (h.Authorization || h.authorization)) || '';
+      var adresse = typeof entree === 'string' ? entree : (entree && entree.url) || '';
+      if (jeton === 'Bearer ' + SUPABASE_KEY && !/\/auth\/v1\//.test(adresse)) {
+        return Promise.reject(new Error(SESSION_PERDUE));
+      }
+    }
+    return fetch(entree, options);
+  }
+
+  /* Avant d'écrire : la session est-elle là ? Sinon, une tentative de la
+     renouveler. Rend vrai ou faux, sans jamais échouer. */
+  function assurerSession() {
+    if (!dispo || !profil) return Promise.resolve(false);
+    return client.auth.getSession().then(function (r) {
+      if (r && r.data && r.data.session) return true;
+      return client.auth.refreshSession().then(function (x) { return !!(x && x.data && x.data.session); });
+    }).catch(function () { return false; });
   }
 
   /* Récupère la fiche du compte connecté. Rend null si personne n'est connecté. */
@@ -347,6 +394,11 @@ var DB = (function () {
   /* Traduit les messages techniques de Supabase en français compréhensible. */
   function messageClair(e) {
     var m = (e && (e.message || e.error_description)) || String(e || '');
+    // D-207 : la session perdue en route, dite telle qu'elle est.
+    if (m.indexOf('SESSION_PERDUE') >= 0) {
+      return 'La connexion à ton compte a été perdue en route (réseau pas encore revenu, ou session expirée). ' +
+        'Rien n’est perdu : l’application réessaie toute seule. Si ce message reste, déconnecte-toi puis reconnecte-toi.';
+    }
     if (/Invalid login credentials/i.test(m)) return 'Adresse e-mail ou mot de passe incorrect.';
     if (/Email not confirmed/i.test(m)) return 'Ce compte n\'a pas encore été confirmé par e-mail.';
     /* « LOAD FAILED » — LE MESSAGE DE SAFARI (session 24, D-134)
@@ -1933,8 +1985,10 @@ var DB = (function () {
   function deposerFacture(id, fichier, type) {
     if (!dispo || !profil) return Promise.reject(new Error('Pas de connexion au cahier partagé.'));
     var chemin = cheminFacture(id, type);
-    return client.storage.from(CASIER_FACTURES)
-      .upload(chemin, fichier, { contentType: type || 'application/octet-stream', upsert: true })
+    return assurerSession().then(function () {
+      return client.storage.from(CASIER_FACTURES)
+        .upload(chemin, fichier, { contentType: type || 'application/octet-stream', upsert: true });
+    })
       .then(function (r) {
         if (r.error) {
           if (/bucket not found|not found/i.test(r.error.message || '')) {
@@ -2517,6 +2571,7 @@ var DB = (function () {
     if (!dispo || !profil) return Promise.resolve();
     var precedent = envoiEnCours || Promise.resolve();
     var ceLui = precedent.then(function () { return null; }, function () { return null; })
+      .then(assurerSession)               // D-207 : on n'écrit pas sans savoir qui écrit
       .then(relireOublis)
       .then(function () { return pousserApresOublis(); });
     envoiEnCours = ceLui;
@@ -2692,10 +2747,24 @@ var DB = (function () {
          ne doivent plus dépendre l'un de l'autre.
          `majComptesLies()` renseigne elle-même `derniereErreur` si la base
          refuse : on ne masque donc rien en la laissant passer après. */
+      /* LA SESSION PERDUE EN ROUTE SE RATTRAPE TOUTE SEULE (D-207) : un
+         seul nouvel essai, quinze secondes plus tard, après avoir demandé une
+         session neuve. Pas de boucle : si elle est vraiment perdue, le
+         bandeau dit de se reconnecter. */
+      var perdue = /connexion à ton compte a été perdue/.test(bilan.erreur || '') ||
+        (bilan.soucis || []).some(function (x) { return /connexion à ton compte a été perdue/.test(x.message || ''); });
+      if (perdue && !relanceSession) {
+        relanceSession = setTimeout(function () {
+          client.auth.refreshSession().catch(function () { return null; }).then(function () {
+            return pousserMaintenant();
+          }).then(function () { relanceSession = null; }, function () { relanceSession = null; });
+        }, 15000);
+      }
       return majComptesLies().then(function () { return bilan; },
         function () { return bilan; });
     });
   }
+  var relanceSession = null;
 
   /* ----------------------------------------------------------------------
      5. TEMPS RÉEL — l'écran se met à jour quand quelqu'un d'autre écrit
