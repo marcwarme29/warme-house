@@ -49,7 +49,7 @@ function isoDate(d) {
 /* La version de l'application, affichée dans les bandeaux d'erreur et sous le
    compte connecté (session 46) : trois fois, un écran resté sur l'ancienne
    version a fait chercher un défaut déjà corrigé. À changer à chaque envoi. */
-var VERSION_APP = '46.7';
+var VERSION_APP = '46.8';
 
 var TODAY = isoDate(new Date());
 var TODAY_LABEL = new Date().toLocaleDateString('fr-FR',
@@ -935,6 +935,11 @@ function load() {
      ne revenait jamais de lui-même — exactement le défaut du calendrier en
      D-135. Le choix tient tant que l'application reste ouverte, pas plus. */
   state.statMonth = CURRENT_MONTH;
+  /* Idem pour la page Prestataires (*« idem rubrique prestataire »*, même
+     jour) et pour le calendrier de la remise des clés : deux mois choisis
+     dans une liste, enregistrés, qui ne revenaient jamais d'eux-mêmes. */
+  state.ownerMonth = CURRENT_MONTH;
+  state.calMonth = CURRENT_MONTH;
   state.calBienAvant = 0;
   state.lvEdit = null;                // D-196 : une saisie en cours n'est pas une donnée
   state.waTexte = {};                 // D-199 : un message pas encore ouvert dans WhatsApp non plus
