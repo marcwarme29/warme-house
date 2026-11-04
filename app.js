@@ -49,7 +49,7 @@ function isoDate(d) {
 /* La version de l'application, affichée dans les bandeaux d'erreur et sous le
    compte connecté (session 46) : trois fois, un écran resté sur l'ancienne
    version a fait chercher un défaut déjà corrigé. À changer à chaque envoi. */
-var VERSION_APP = '46.6';
+var VERSION_APP = '46.7';
 
 var TODAY = isoDate(new Date());
 var TODAY_LABEL = new Date().toLocaleDateString('fr-FR',
@@ -929,6 +929,12 @@ function load() {
   state.migMsg = '';
   state.adminEmail = ''; state.adminMsg = null; state.adminEnCours = false;   // D-194
   state.calBienMois = 12;             // D-195 : une position d'affichage (règle 7)
+  /* LES STATISTIQUES ROUVRENT SUR LE MOIS EN COURS (session 46, D-208).
+     Demandé le 5 novembre : *« la page par défaut, c'est celle du mois en
+     cours, et pas août »*. Le mois choisi dans la liste était enregistré, et
+     ne revenait jamais de lui-même — exactement le défaut du calendrier en
+     D-135. Le choix tient tant que l'application reste ouverte, pas plus. */
+  state.statMonth = CURRENT_MONTH;
   state.calBienAvant = 0;
   state.lvEdit = null;                // D-196 : une saisie en cours n'est pas une donnée
   state.waTexte = {};                 // D-199 : un message pas encore ouvert dans WhatsApp non plus
