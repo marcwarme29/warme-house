@@ -1879,6 +1879,100 @@ var DB = (function () {
       });
   }
 
+  /* ---- LES FACTURES (session 46, D-206 — script 20) ----------------------
+
+     Une facture, ce sont deux choses : une LIGNE dans la table `factures`
+     (logement, date, montant, produit, fournisseur) et un FICHIER dans le
+     casier privé `factures`, rangé dans le dossier du propriétaire —
+     « <propriétaire>/<facture>.jpg ». La base vérifie ce dossier : seuls le
+     propriétaire et ses administrateurs y lisent et y écrivent (D-194).
+
+     La liste suit la règle des demandes d'accès (`accesDepuisBase`) : ce que
+     le cahier rend fait foi, ce qui n'y est pas encore arrivé est gardé, et
+     ce qui a été supprimé ici ne revient pas (`state.supprimes.factures`,
+     même mémoire que les séjours, D-180). */
+  var CASIER_FACTURES = 'factures';
+
+  function factureVersBase(f, moi) {
+    return {
+      id: f.id,
+      owner_id: moi,
+      property_id: f.pid || null,
+      jour: f.date,
+      montant: Number(f.montant) || 0,
+      produit: f.produit || '',
+      fournisseur: f.fournisseur || '',
+      fichier: f.fichier || '',
+      type_fichier: f.type || '',
+      nom_fichier: f.nomFichier || '',
+      updated_at: new Date(f.maj || Date.now()).toISOString()
+    };
+  }
+
+  function facturesDepuisBase(lignes) {
+    var effacees = (state.supprimes && state.supprimes.factures) || {};
+    var connues = {};
+    lignes.forEach(function (l) { connues[l.id] = true; });
+    var enAttente = (state.factures || []).filter(function (f) { return f && !connues[f.id] && !effacees[f.id]; });
+    state.factures = lignes.filter(function (l) { return !effacees[l.id]; }).map(function (l) {
+      return {
+        id: l.id, pid: l.property_id || '', date: String(l.jour || '').slice(0, 10),
+        montant: Number(l.montant) || 0, produit: l.produit || '', fournisseur: l.fournisseur || '',
+        fichier: l.fichier || '', type: l.type_fichier || '', nomFichier: l.nom_fichier || '',
+        maj: l.updated_at ? Date.parse(l.updated_at) : 0
+      };
+    }).concat(enAttente);
+  }
+
+  function cheminFacture(id, type) {
+    var ext = /pdf/i.test(type || '') ? 'pdf' : /png/i.test(type || '') ? 'png' : 'jpg';
+    return (profil.proprio || profil.id) + '/' + id + '.' + ext;
+  }
+
+  /* Dépose le fichier d'une facture et rend son chemin. */
+  function deposerFacture(id, fichier, type) {
+    if (!dispo || !profil) return Promise.reject(new Error('Pas de connexion au cahier partagé.'));
+    var chemin = cheminFacture(id, type);
+    return client.storage.from(CASIER_FACTURES)
+      .upload(chemin, fichier, { contentType: type || 'application/octet-stream', upsert: true })
+      .then(function (r) {
+        if (r.error) {
+          if (/bucket not found|not found/i.test(r.error.message || '')) {
+            tablesAbsentes.factures = true;
+            throw new Error('le casier des factures n’existe pas encore : colle le script « 20-factures.sql » dans Supabase.');
+          }
+          throw new Error(messageClair(r.error));
+        }
+        return chemin;
+      });
+  }
+
+  /* Une adresse signée, valable une heure, pour ouvrir le fichier. */
+  function lienFacture(chemin) {
+    if (!dispo || !profil || !chemin) return Promise.resolve('');
+    return client.storage.from(CASIER_FACTURES).createSignedUrl(chemin, 3600)
+      .then(function (r) {
+        if (r.error) throw new Error(messageClair(r.error));
+        return (r.data && r.data.signedUrl) || '';
+      });
+  }
+
+  /* Le fichier lui-même, pour le dossier du comptable. */
+  function lireFichierFacture(chemin) {
+    if (!dispo || !profil || !chemin) return Promise.resolve(null);
+    return client.storage.from(CASIER_FACTURES).download(chemin)
+      .then(function (r) { return r.error ? null : r.data; }, function () { return null; });
+  }
+
+  /* Supprime la ligne ET le fichier. La mémoire de suppression est posée
+     par l'appelant, avant : même ordre que pour un séjour (D-180). */
+  function supprimerFacture(id, chemin) {
+    var fichier = (dispo && profil && chemin)
+      ? client.storage.from(CASIER_FACTURES).remove([chemin]).then(function () { return true; }, function () { return false; })
+      : Promise.resolve(true);
+    return Promise.all([supprimerLigne('factures', id), fichier]).then(function (r) { return r[0]; });
+  }
+
   /* ---- LE LIVRET DU VOYAGEUR (lot 3) -------------------------------------
 
      Le voyageur n'a **pas de compte**, et n'en aura jamais. Le cahier partagé
@@ -2149,6 +2243,7 @@ var DB = (function () {
         tablesAbsentes.reglages || tablesAbsentes.acces) out.push('09-lot4.sql');
     // Le mot laissé par le voyageur (session 31, D-164) : une colonne, pas une table.
     if (colonneCommentaireAbsente) out.push('14-commentaire-voyageur.sql');
+    if (tablesAbsentes.factures) out.push('20-factures.sql');   // session 46, D-206
     return out;
   }
 
@@ -2195,7 +2290,8 @@ var DB = (function () {
       lireFacultative('acces'),
       // Le script 14 est-il collé ? (session 31, D-164). Ne rend rien d'utile :
       // il ne sert qu'à savoir si la colonne existe, pour pouvoir le DIRE.
-      sonderCommentaire()
+      sonderCommentaire(),
+      lireFacultative('factures')        // r[11] — session 46, D-206
     ]).then(function (r) {
       var erreur = r.slice(0, 5).filter(function (x) { return x.error; })[0];
       if (erreur) throw erreur.error;
@@ -2257,6 +2353,7 @@ var DB = (function () {
       // viennent donc après `biensDepuisBase()`.
       if (r[7]) stocksDepuisBase(r[7]);
       if (r[9] && (r[9].length || !(state.acces || []).length)) accesDepuisBase(r[9]);
+      if (r[11]) facturesDepuisBase(r[11]);
 
       if (typeof upgrade === 'function') upgrade();
       premiereLectureFaite = true;
@@ -2475,6 +2572,14 @@ var DB = (function () {
     var acces = (state.acces || [])
       .filter(function (d) { return d.id && bienExiste(d.pid); })
       .map(accesVersBase);
+    var facturesEffacees = effaces.factures || {};
+    var factures = (state.factures || [])
+      .filter(function (f) { return f && f.id && f.date && !facturesEffacees[f.id]; })
+      .map(function (f) {
+        var l = factureVersBase(f, moi);
+        if (l.property_id && !bienExiste(l.property_id)) l.property_id = null;
+        return l;
+      });
 
     // Chaque étape est vérifiée : Supabase ne « rejette » pas une écriture
     // refusée, il rend un objet { error }. Sans ce contrôle, une erreur sur
@@ -2509,7 +2614,8 @@ var DB = (function () {
       { nom: 'les fiches des prestataires', table: 'prestataires', lignes: fiches, facultative: true, cle: ['id'] },
       { nom: 'les stocks', table: 'stocks', lignes: stocks, facultative: true, cle: ['property_id', 'article'] },
       { nom: 'les réglages', table: 'reglages', lignes: reglages, facultative: true, cle: ['owner_id', 'cle'] },
-      { nom: 'les demandes d\'accès', table: 'acces', lignes: acces, facultative: true, cle: ['id'] }
+      { nom: 'les demandes d\'accès', table: 'acces', lignes: acces, facultative: true, cle: ['id'] },
+      { nom: 'les factures', table: 'factures', lignes: factures, facultative: true, cle: ['id'] }
     ];
 
     /* UNE ÉTAPE FACULTATIVE QUI ÉCHOUE DOIT PARLER (session 23, D-123)
@@ -2884,6 +2990,12 @@ var DB = (function () {
     envoyerPhoto: envoyerPhoto,
     supprimerPhoto: supprimerPhoto,
     urlsPhotos: urlsPhotos,
+    // Les factures (session 46, D-206).
+    deposerFacture: deposerFacture,
+    lienFacture: lienFacture,
+    lireFichierFacture: lireFichierFacture,
+    supprimerFacture: supprimerFacture,
+    appliquerFactures: facturesDepuisBase,
     // Le livret du voyageur (lot 3) — appelable sans compte.
     sejourParLien: sejourParLien,
     chercherSejour: chercherSejour,

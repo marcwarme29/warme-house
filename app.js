@@ -232,7 +232,11 @@ var INFO_FIELDS = [
   { k: 'capacity', label: 'Capacité' },
   { k: 'surface', label: 'Surface' },
   { k: 'code', label: 'Accès / clés' },
-  { k: 'wifi', label: 'Wi-Fi' },
+  /* Session 46 (D-205) : le nom du réseau, à côté du mot de passe. Il vit
+     dans `info` (il n'a rien de secret) ; le mot de passe reste dans
+     `property_secrets.wifi`, sous la règle des dates (D-47, D-60). */
+  { k: 'wifiNom', label: 'Wi-Fi — nom du réseau' },
+  { k: 'wifi', label: 'Wi-Fi — mot de passe' },
   { k: 'parking', label: 'Stationnement' },
   { k: 'linge', label: 'Linge fourni' },
   { k: 'checkin', label: 'Heure d’arrivée' },
@@ -241,6 +245,15 @@ var INFO_FIELDS = [
      (nuits × prix). Le montant reste modifiable réservation par réservation. */
   { k: 'prixNuit', label: 'Prix par nuit (€)', num: true }
 ];
+
+/** Le Wi-Fi en une phrase : réseau ET mot de passe quand on a les deux
+    (session 46, D-205). Sert aux messages, au récapitulatif et à la mission. */
+function texteWifi(inf) {
+  inf = inf || {};
+  var nom = String(inf.wifiNom || '').trim(), mdp = String(inf.wifi || '').trim();
+  if (nom && mdp) return 'réseau « ' + nom + ' », mot de passe : ' + mdp;
+  return mdp || (nom ? 'réseau « ' + nom + ' »' : '');
+}
 
 /* Livret d'accueil : 5 rubriques, chacune une liste de blocs
    { titre, texte, media } — media = adresse internet d'une photo ou d'une vidéo.
@@ -284,6 +297,8 @@ var T = {
   checkout:     ['Départ avant', 'Check-out before'],
   code:         ['Code d’accès', 'Access code'],
   wifi:         ['Wi-Fi', 'Wi-Fi'],
+  wifiNom:      ['Réseau Wi-Fi', 'Wi-Fi network'],
+  wifiMdp:      ['Mot de passe Wi-Fi', 'Wi-Fi password'],
   // Pied de page et messages généraux
   bonSejour:    ['Bon séjour ! — MAISON WARME', 'Enjoy your stay! — MAISON WARME'],
   livretVide:   ['Le livret de ce logement n’est pas encore rempli.',
@@ -648,6 +663,12 @@ function initialState() {
        est vide). Ponctuelle : ne compte que pour `mois`. Toujours liée à UN
        SEUL logement — c'est le choix de Marc. */
     charges: [],
+    factures: [],                     // D-206 : les factures (table et casier « factures », script 20)
+    factureEd: null,                  // le formulaire d'une facture, ou null
+    facturesFiltre: { periode: CURRENT_MONTH, pid: '' },
+    factureDernierBien: '',           // pré-rempli à la facture suivante
+    factureMsg: '',
+    factureZip: null,                 // « 3/12 » pendant la préparation du dossier du comptable
     /* Problèmes signalés par un prestataire pendant sa mission (session 16).
        Chacun porte : { id, kind, texte, photo, agent, mission, prop, date,
        at, statut } — `photo` est une image gardée sur l'appareil, `statut`
@@ -909,6 +930,9 @@ function load() {
   state.reponseEd = null;             // D-200 : ni une réponse en cours d'écriture
   state.importFichier = null;         // D-201 : un fichier lu n'est pas une donnée
   state.importMsg = '';
+  state.factureEd = null;             // D-206 : une facture en cours de saisie non plus
+  state.factureMsg = '';
+  state.factureZip = null;
   state.photoPlein = null;            // une photo ouverte en grand n'est pas une donnée
   state.apercuSejour = null;          // un aperçu n'est pas une donnée non plus
   state.sejourNet = null;             // une demande en cours ne survit pas à la page
@@ -1245,6 +1269,7 @@ function upgrade() {
   if (!state.supprimes.resas) state.supprimes.resas = {};
   if (!state.supprimes.missions) state.supprimes.missions = {};
   if (!state.supprimes.creneaux) state.supprimes.creneaux = {};
+  if (!state.supprimes.factures) state.supprimes.factures = {};   // D-206
   purgerSupprimes();
   // Session 42 (D-187, D-188) : règle 9, les deux endroits.
   if (!state.resasModifiees || typeof state.resasModifiees !== 'object') state.resasModifiees = {};
@@ -1264,6 +1289,10 @@ function upgrade() {
      même précaution que pour `horsStock` et `photosBien` juste au-dessus. */
   if (!Array.isArray(state.charges)) state.charges = [];
   state.charges = state.charges.filter(function (c) { return c && c.prop && !prop(c.prop).gone; });
+  /* Session 46 (D-206) — les factures. Celles d'un logement supprimé restent :
+     elles appartiennent à la comptabilité, pas au logement. */
+  if (!Array.isArray(state.factures)) state.factures = [];
+  if (!state.facturesFiltre || typeof state.facturesFiltre !== 'object') state.facturesFiltre = { periode: CURRENT_MONTH, pid: '' };
 
   /* Les annonces déjà parties (D-151). On oublie celles dont la mission
      n'existe plus, sinon la liste enfle sans fin et finit par peser dans les
@@ -3077,6 +3106,12 @@ function appliquerOublis() {
     if (typeof DB !== 'undefined' && DB.estDispo() && DB.profil() && DB.supprimerMission) DB.supprimerMission(id);
   });
 
+  // Les factures supprimées ailleurs (D-206).
+  var facturesEffacees = (state.supprimes || {}).factures || {};
+  var facturesAvant = (state.factures || []).length;
+  state.factures = (state.factures || []).filter(function (f) { return f && !facturesEffacees[f.id]; });
+  if (state.factures.length !== facturesAvant) retire = true;
+
   var missionsAvant = (state.missions || []).length;
   var missionsEffacees = (state.supprimes || {}).missions || {};
   state.missions = (state.missions || []).filter(function (m) {
@@ -3087,7 +3122,7 @@ function appliquerOublis() {
 }
 
 function purgerSupprimes() {
-  ['resas', 'missions', 'creneaux'].forEach(function (sorte) {
+  ['resas', 'missions', 'creneaux', 'factures'].forEach(function (sorte) {
     if (!state.supprimes[sorte]) state.supprimes[sorte] = {};
     var cles = Object.keys(state.supprimes[sorte] || {});
     if (cles.length <= MAX_SUPPRIMES) return;
@@ -4560,7 +4595,7 @@ function lignesImport(table) {
         start: lireDateImport(val(l, A.debut)), end: lireDateImport(val(l, A.fin)),
         voyageurs: adultes + enfants || null, detail: adultes + ' adulte(s)' + (enfants ? ', ' + enfants + ' enfant(s)' : '') +
           (bebes ? ', ' + bebes + ' bébé(s)' : ''),
-        montant: rev, montantDetail: rev === null ? '' : 'revenus ' + fmtEuros(rev),
+        montant: rev, montantDetail: rev === null ? '' : 'revenus ' + eurosImport(rev),
         annule: /annul/i.test(String(val(l, A.statut)))
       };
     }) };
@@ -4579,7 +4614,7 @@ function lignesImport(table) {
         start: lireDateImport(val(l, B.arr)), end: lireDateImport(val(l, B.dep)),
         voyageurs: null, detail: '',
         montant: net, montantDetail: total === null ? '' :
-          'payé ' + fmtEuros(total) + (com ? ' − commission ' + fmtEuros(com) : ''),
+          'payé ' + eurosImport(total) + (com ? ' − commission ' + eurosImport(com) : ''),
         annule: /annul|cancel/i.test(String(val(l, B.statut)))
       };
     }) };
@@ -4588,7 +4623,10 @@ function lignesImport(table) {
   throw new Error('Je ne reconnais pas ce fichier : ni l’export des réservations Airbnb, ni celui de Booking.');
 }
 
-function fmtEuros(n) {
+/* Renommée en session 46 : elle portait le nom de `fmtEuros()` (plus haut,
+   sans « € »), et, déclarée plus bas, la remplaçait partout — les charges
+   d'un logement s'affichaient « 45 € € ». */
+function eurosImport(n) {
   return (Math.round(n * 100) / 100).toLocaleString('fr-FR', { minimumFractionDigits: 0, maximumFractionDigits: 2 }) + ' €';
 }
 
@@ -4937,7 +4975,9 @@ function parseRoute() {
     if (seg[1] === 'reservations') return { name: 'o-resa', id: seg[2] || null };
     if (seg[1] === 'messages') return { name: seg[2] ? 'o-msg' : 'o-msgs', id: seg[2] || null };
     if (seg[1] === 'messages-programmes') return { name: 'o-auto', id: null };
-    if (seg[1] === 'statistiques') return { name: seg[2] ? 'o-stat-bien' : 'o-stats', id: seg[2] || null };
+    // `#/admin/statistiques/factures` : les factures (session 46, D-206).
+    if (seg[1] === 'statistiques') return { name: seg[2] === 'factures' ? 'o-factures' : seg[2] ? 'o-stat-bien' : 'o-stats',
+      id: seg[2] && seg[2] !== 'factures' ? seg[2] : null };
     if (seg[1] === 'prestataires') return { name: 'o-agents', id: null };
     if (seg[1] === 'commentaires') return { name: 'o-avis', id: null };
     if (seg[1] === 'repertoire') return { name: 'o-repertoire', id: null };
@@ -5450,7 +5490,7 @@ function viewPrestaDetail() {
          c'est le geste qui ouvre le code, pas le calendrier. */
       '<div class="access-card">' +
         '<div class="access-item"><div class="k">Entrée / clés</div><div class="v num">' + esc(inf.code || '—') + '</div></div>' +
-        '<div class="access-item"><div class="k">Wi-Fi</div><div class="v num">' + esc(inf.wifi || '—') + '</div></div>' +
+        '<div class="access-item"><div class="k">Wi-Fi</div><div class="v num">' + esc(texteWifi(inf) || '—') + '</div></div>' +
       '</div>' +
       (!inf.code && !inf.wifi
         ? '<div style="background:var(--terra-bg2);border-radius:16px;padding:13px 15px;font:600 12.5px/1.5 Figtree,sans-serif;color:var(--terra-dd)">' +
@@ -8940,7 +8980,7 @@ function remplirVars(txt, pid, r) {
     '{arrivee}': fmtDate(r.start), '{depart}': fmtDate(r.end),
     '{heure_arrivee}': inf.checkin || '16:00', '{heure_depart}': inf.checkout || '11:00',
     '{nuits}': nights(r.start, r.end), '{voyageurs}': r.guests,
-    '{code}': inf.code || '—', '{wifi}': inf.wifi || '—',
+    '{code}': inf.code || '—', '{wifi}': texteWifi(inf) || '—',
     '{livret}': lienBien(pid),
     // Le lien PERSONNEL de ce voyageur-là : il est reconnu sans rien taper
     // (session 16, D-80). C'est celui à préférer dans un message programmé.
@@ -9360,8 +9400,12 @@ function chargeApplicable(c, mois) {
 }
 
 function chargesMois(pid, mois) {
-  return chargesDe(pid).filter(function (c) { return chargeApplicable(c, mois); })
+  /* Les factures du mois comptent dans les charges (session 46, D-206).
+     Arrondi à l'euro, comme les revenus : une facture à 45,90 € ne doit pas
+     faire afficher « 145.9 € » dans le cashflow. */
+  var total = chargesDe(pid).filter(function (c) { return chargeApplicable(c, mois); })
     .reduce(function (n, c) { return n + (c.montant || 0); }, 0);
+  return Math.round(total + facturesMois(pid, mois));
 }
 
 /** Le premier mois où ce logement a une trace quelconque — réservation,
@@ -9373,6 +9417,7 @@ function premierMoisBien(pid) {
   resasOf(pid).forEach(function (r) { if (r.start) vus.push(moisDe(r.start)); });
   ledger().forEach(function (l) { if (l.prop === pid) vus.push(l.month); });
   chargesDe(pid).forEach(function (c) { if (c.mois) vus.push(c.mois); });
+  (state.factures || []).forEach(function (f) { if (f && f.pid === pid && f.date) vus.push(f.date.slice(0, 7)); });
   vus.sort();
   return vus[0] || CURRENT_MONTH;
 }
@@ -9644,7 +9689,8 @@ function viewOwnerStatBien() {
       }).join('') +
       '</div></div>' +
 
-    blocCharges(pid));
+    blocCharges(pid) +
+    blocFacturesBien(pid));
 }
 
 /* DIRE LES SÉJOURS QUI SE CHEVAUCHENT (session 24, D-136)
@@ -9728,6 +9774,8 @@ function viewOwnerStats() {
         '<div class="l">net après ménage · ' + tot.sejours + ' séjours</div></div>' +
     '</div>' +
 
+    carteFactures(mois) +
+
     (tot.estimes ? '<p class="sec-note" style="margin-top:12px">⚠︎ ' + tot.estimes + ' séjour(s) sans montant réel : ' +
       'le revenu est calculé au prix par nuit du logement. Corrigez-le sur la fiche de la réservation, ' +
       'ou attendez la connexion Beds24 qui apportera les montants exacts.</p>' : '') +
@@ -9797,6 +9845,362 @@ function viewOwnerStats() {
 
     '<p class="sec-note" style="margin-top:14px">Les revenus sont répartis nuit par nuit : un séjour à cheval sur deux mois ' +
       'compte dans les deux. Les dépenses de ménage viennent des missions terminées du mois.</p>');
+}
+
+/* ==========================================================================
+   LES FACTURES (session 46, D-206 — script 20)
+
+   Demandé : *« dans Statistiques, une option pour scanner une facture, la
+   stocker, y avoir accès ensuite et la transmettre au comptable. Quand on
+   l'enregistre : pour quel appartement, le montant, le nom du produit et la
+   date ; puis ajouter le montant dans les frais du logement. »*
+
+   · LE FICHIER (photo ou PDF) va dans le casier privé `factures`, la LIGNE
+     dans la table du même nom (voir `data.js`). Une photo est réduite à
+     1 800 px — assez pour lire chaque chiffre, dix fois moins lourd que
+     l'original —, un PDF part tel quel.
+   · LES FRAIS : `chargesMois()` ajoute les factures du mois au logement,
+     donc au cashflow et au net de « Statistiques → un logement ». Une facture
+     sans logement (« frais généraux » : le comptable, un logiciel) est rangée
+     et transmise, mais ne pèse sur aucun logement — la répartir serait
+     deviner (règle 15, même parti pris que D-160).
+   · LE COMPTABLE : un dossier `.zip` de la période choisie, avec chaque
+     fichier renommé « date_logement_produit_montant » et un tableau
+     `factures.csv` qui s'ouvre dans Excel. Écrit à la main, sans
+     bibliothèque (même raison que `lireXls`, D-201).
+   · LA LECTURE AUTOMATIQUE (date, montant, produit lus sur la photo) n'est
+     PAS faite : elle demande un service de lecture par intelligence
+     artificielle, payant à l'usage, et sa clé chez Vercel. Proposée à Marc,
+     à sa décision. En attendant, la date du jour et le dernier logement
+     choisi sont pré-remplis.
+   ========================================================================== */
+
+var MAX_PDF_FACTURE = 10 * 1024 * 1024;
+
+/* Le fichier choisi, en attendant « Enregistrer ». Hors de `state` : une
+   photo n'a rien à faire dans la copie de secours du navigateur, qu'elle
+   remplirait en deux factures (D-106). */
+var factureFichier = null;          // { blob, type, nom, apercu }
+
+function factureVide(pid) {
+  return { id: null, pid: pid !== undefined ? pid : (state.factureDernierBien || ''),
+    date: TODAY, montant: '', produit: '', fournisseur: '', erreur: '', enCours: false, lecture: '' };
+}
+
+function nomBienFacture(pid) {
+  if (!pid) return 'Frais généraux';
+  var p = prop(pid);
+  return p.gone ? 'Logement supprimé' : p.name;
+}
+
+function facturesDu(pid, mois) {
+  return (state.factures || []).filter(function (f) {
+    return f && f.pid === pid && String(f.date || '').slice(0, 7) === mois;
+  });
+}
+
+/** Ce que les factures d'un logement pèsent dans un mois (D-206). */
+function facturesMois(pid, mois) {
+  return facturesDu(pid, mois).reduce(function (n, f) { return n + (Number(f.montant) || 0); }, 0);
+}
+
+/** La liste filtrée par la période (« 2026 » ou « 2026-10 ») et le logement. */
+function facturesFiltrees() {
+  var fl = state.facturesFiltre || {};
+  return (state.factures || []).filter(function (f) {
+    if (!f) return false;
+    if (fl.periode && String(f.date || '').indexOf(fl.periode) !== 0) return false;
+    if (fl.pid === '_general' && f.pid) return false;
+    if (fl.pid && fl.pid !== '_general' && f.pid !== fl.pid) return false;
+    return true;
+  }).sort(function (a, b) { return a.date < b.date ? 1 : a.date > b.date ? -1 : 0; });
+}
+
+function periodesFactures() {
+  var vus = {};
+  (state.factures || []).forEach(function (f) {
+    if (!f || !f.date) return;
+    vus[f.date.slice(0, 4)] = true;
+    vus[f.date.slice(0, 7)] = true;
+  });
+  vus[CURRENT_MONTH] = true; vus[CURRENT_MONTH.slice(0, 4)] = true;
+  return Object.keys(vus).sort().reverse();
+}
+
+function libellePeriode(p) {
+  return p.length === 4 ? 'Toute l’année ' + p : moisLabel(p);
+}
+
+function montantFacture(n) { return fmtEuros(n) + ' €'; }
+
+/* --- Le formulaire --------------------------------------------------------- */
+
+function formFacture() {
+  var e = state.factureEd;
+  var biens = state.props.filter(function (p) { return !p.gone; });
+  var f = factureFichier;
+  var existant = e.id ? (state.factures || []).filter(function (x) { return x.id === e.id; })[0] : null;
+
+  var apercu = f
+    ? (f.apercu
+        ? '<img src="' + esc(f.apercu) + '" alt="Facture" style="max-width:100%;max-height:260px;border-radius:12px;display:block;' +
+            'border:1px solid rgba(36,30,26,.15)">'
+        : '<div style="padding:14px;border-radius:12px;background:var(--cream);font:600 13px Figtree,sans-serif">📄 ' + esc(f.nom) + '</div>')
+    : (existant && existant.fichier
+        ? '<p class="sec-note" style="margin:0">Le fichier déjà enregistré est conservé. Choisis-en un autre pour le remplacer.</p>'
+        : '<p class="sec-note" style="margin:0">Aucun fichier pour l’instant.</p>');
+
+  return '<div class="card" style="padding:20px 22px;margin-top:14px;border-left:4px solid var(--terra)">' +
+    '<h2 style="font:700 16px Figtree,sans-serif;margin:0 0 4px">' + (e.id ? 'Modifier la facture' : 'Ajouter une facture') + '</h2>' +
+    '<p class="sec-note" style="margin:0 0 12px">Photographie la facture (sur le téléphone, l’appareil photo s’ouvre) ' +
+      'ou choisis un fichier : une photo ou un PDF reçu par e-mail.</p>' +
+    '<div style="display:flex;gap:10px;flex-wrap:wrap">' +
+      '<label class="btn btn--dark btn--sm" for="fa-photo" style="cursor:pointer">📷 Photographier</label>' +
+      '<input id="fa-photo" type="file" accept="image/*" capture="environment"' +
+        ' style="position:absolute;width:1px;height:1px;opacity:0" data-ch="facture-fichier">' +
+      '<label class="btn btn--sm" for="fa-fichier" style="cursor:pointer;background:var(--cream);color:var(--ink-soft)">📎 Choisir un fichier</label>' +
+      '<input id="fa-fichier" type="file" accept="image/*,application/pdf,.pdf"' +
+        ' style="position:absolute;width:1px;height:1px;opacity:0" data-ch="facture-fichier">' +
+    '</div>' +
+    (e.lecture ? '<p class="sec-note" style="margin:8px 0 0">' + esc(e.lecture) + '</p>' : '') +
+    '<div style="margin-top:12px">' + apercu + '</div>' +
+
+    '<div class="cols" style="gap:12px;margin-top:14px">' +
+      '<div style="flex:1.3;min-width:min(100%,200px)"><label class="lab" for="fa-bien">Pour quel logement ?</label>' +
+        '<select class="inp" id="fa-bien" data-fid="fa-bien" data-ch="facture-champ" data-k="pid">' +
+          biens.map(function (p) {
+            return '<option value="' + esc(p.id) + '"' + (e.pid === p.id ? ' selected' : '') + '>' + esc(p.name) + '</option>';
+          }).join('') +
+          '<option value=""' + (!e.pid ? ' selected' : '') + '>Frais généraux (aucun logement)</option>' +
+        '</select></div>' +
+      '<div style="width:170px"><label class="lab" for="fa-date">Date de la facture</label>' +
+        '<input class="inp num" id="fa-date" type="date" value="' + esc(e.date) + '" data-fid="fa-date" data-ch="facture-champ" data-k="date"></div>' +
+      '<div style="width:150px"><label class="lab" for="fa-montant">Montant TTC (€)</label>' +
+        '<input class="inp num" id="fa-montant" type="text" inputmode="decimal" placeholder="ex. 45,90" value="' + esc(e.montant) + '"' +
+          ' data-fid="fa-montant" data-in="facture-champ" data-k="montant"></div>' +
+    '</div>' +
+    '<div class="cols" style="gap:12px;margin-top:12px">' +
+      '<div style="flex:1.3;min-width:min(100%,200px)"><label class="lab" for="fa-produit">Produit ou service</label>' +
+        '<input class="inp" id="fa-produit" type="text" placeholder="ex. Draps et serviettes" value="' + esc(e.produit) + '"' +
+          ' data-fid="fa-produit" data-in="facture-champ" data-k="produit"></div>' +
+      '<div style="flex:1;min-width:min(100%,180px)"><label class="lab" for="fa-fournisseur">Fournisseur (facultatif)</label>' +
+        '<input class="inp" id="fa-fournisseur" type="text" placeholder="ex. Leroy Merlin" value="' + esc(e.fournisseur) + '"' +
+          ' data-fid="fa-fournisseur" data-in="facture-champ" data-k="fournisseur"></div>' +
+    '</div>' +
+    (e.erreur ? '<p class="login-err" role="alert" style="margin-top:10px">' + esc(e.erreur) + '</p>' : '') +
+    '<div style="display:flex;gap:10px;margin-top:14px;flex-wrap:wrap;align-items:center">' +
+      '<button type="button" class="btn btn--primary btn--sm"' + (e.enCours ? ' disabled' : '') + act('facture-ok') + '>' +
+        (e.enCours ? 'Enregistrement…' : 'Enregistrer la facture') + '</button>' +
+      '<button type="button" class="btn btn--sm" style="background:transparent;color:var(--muted)"' + act('facture-annuler') + '>Annuler</button>' +
+      (e.pid ? '<span class="sec-note">Le montant s’ajoutera aux frais de ' + esc(nomBienFacture(e.pid)) + ' en ' +
+        esc(moisLabel(String(e.date || TODAY).slice(0, 7))) + '.</span>' : '') +
+    '</div>' +
+    '</div>';
+}
+
+function ligneFacture(f) {
+  return '<div class="trow" style="min-width:720px">' +
+    '<span class="num" style="width:96px">' + esc(fmtDate(f.date)) + ' ' + esc(f.date.slice(0, 4)) + '</span>' +
+    '<span style="width:150px;min-width:0;font:600 12.5px Figtree,sans-serif">' + esc(nomBienFacture(f.pid)) + '</span>' +
+    '<span style="flex:1;min-width:0">' +
+      '<span style="font:600 13.5px Figtree,sans-serif">' + esc(f.produit || '—') + '</span>' +
+      (f.fournisseur ? '<span style="display:block;font:500 11.5px Figtree,sans-serif;color:var(--muted2)">' + esc(f.fournisseur) + '</span>' : '') +
+    '</span>' +
+    '<span class="num" style="width:100px;text-align:right;font-weight:700">' + esc(montantFacture(f.montant)) + '</span>' +
+    '<span style="width:150px;display:flex;gap:6px;justify-content:flex-end">' +
+      (f.fichier
+        ? '<button type="button" class="btn btn--xs" style="background:var(--cream);color:var(--ink-soft)"' + act('facture-voir', { id: f.id }) + '>' +
+            (/pdf/i.test(f.type) ? '📄' : '🖼') + ' Voir</button>'
+        : '<span class="sec-note" style="align-self:center" title="Enregistrée sans fichier">sans fichier</span>') +
+      '<button type="button" class="x-btn" aria-label="Modifier"' + act('facture-modifier', { id: f.id }) + '>✎</button>' +
+      '<button type="button" class="x-btn" aria-label="Supprimer"' + act('facture-supprimer', { id: f.id }) + '>×</button>' +
+    '</span>' +
+    '</div>';
+}
+
+function tableauFactures(liste) {
+  if (!liste.length) return '<p class="empty">Aucune facture pour cette sélection.</p>';
+  return '<div class="card" style="padding:0;overflow:hidden">' +
+    '<div class="table-scroll"><div class="thead" style="min-width:720px">' +
+      '<span style="width:96px">Date</span><span style="width:150px">Logement</span>' +
+      '<span style="flex:1">Produit</span><span style="width:100px;text-align:right">Montant</span>' +
+      '<span style="width:150px"></span></div>' +
+    liste.map(ligneFacture).join('') +
+    '</div></div>';
+}
+
+/* --- La page ---------------------------------------------------------------- */
+
+function viewOwnerFactures() {
+  var fl = state.facturesFiltre || (state.facturesFiltre = { periode: CURRENT_MONTH, pid: '' });
+  var liste = facturesFiltrees();
+  var total = liste.reduce(function (n, f) { return n + (Number(f.montant) || 0); }, 0);
+  var biens = state.props.filter(function (p) { return !p.gone; });
+
+  return ownerShell('stats',
+    '<div class="page-head">' +
+      '<div>' +
+        '<button type="button" class="btn btn--xs" style="background:var(--cream);color:var(--ink-soft);margin-bottom:10px"' +
+          act('nav', { path: '#/admin/statistiques' }) + '>← Toutes les statistiques</button>' +
+        '<h1 class="page-title">Factures</h1>' +
+        '<p class="page-sub">Photographiées ou reçues en PDF, rangées par logement, comptées dans ses frais, prêtes pour le comptable.</p></div>' +
+      (state.factureEd ? '' :
+        '<button type="button" class="btn btn--xs" style="background:var(--terra);color:#fff;min-height:42px;font-size:13px"' +
+          act('facture-nouvelle') + '>🧾 Ajouter une facture</button>') +
+    '</div>' +
+    (state.factureMsg ? '<p class="sec-note" style="margin-top:12px;color:' +
+      (/^✅/.test(state.factureMsg) ? 'var(--green-t)' : 'var(--terra-d)') + '">' + esc(state.factureMsg) + '</p>' : '') +
+    (state.factureEd ? formFacture() : '') +
+
+    '<div class="cols" style="gap:12px;margin-top:22px;align-items:flex-end">' +
+      '<div style="min-width:200px"><label class="lab" for="fa-periode">Période</label>' +
+        '<select class="inp" id="fa-periode" data-fid="fa-periode" data-ch="factures-filtre" data-k="periode">' +
+          '<option value=""' + (!fl.periode ? ' selected' : '') + '>Toutes les factures</option>' +
+          periodesFactures().map(function (p) {
+            return '<option value="' + p + '"' + (fl.periode === p ? ' selected' : '') + '>' + esc(libellePeriode(p)) + '</option>';
+          }).join('') + '</select></div>' +
+      '<div style="min-width:200px"><label class="lab" for="fa-filtre-bien">Logement</label>' +
+        '<select class="inp" id="fa-filtre-bien" data-fid="fa-filtre-bien" data-ch="factures-filtre" data-k="pid">' +
+          '<option value=""' + (!fl.pid ? ' selected' : '') + '>Tous</option>' +
+          biens.map(function (p) {
+            return '<option value="' + esc(p.id) + '"' + (fl.pid === p.id ? ' selected' : '') + '>' + esc(p.name) + '</option>';
+          }).join('') +
+          '<option value="_general"' + (fl.pid === '_general' ? ' selected' : '') + '>Frais généraux</option>' +
+        '</select></div>' +
+      '<div class="kpi" style="min-width:170px"><div class="v num" style="color:' + C.terracotta + '">' + esc(montantFacture(total)) + '</div>' +
+        '<div class="l">' + liste.length + ' facture(s)</div></div>' +
+    '</div>' +
+
+    '<div style="margin-top:14px">' + tableauFactures(liste) + '</div>' +
+
+    '<div class="card" style="padding:18px 20px;margin-top:16px">' +
+      '<h2 style="font:700 15px Figtree,sans-serif;margin:0 0 4px">Pour le comptable</h2>' +
+      '<p class="sec-note" style="margin:0 0 10px">Un dossier .zip avec toutes les factures de la sélection ci-dessus, ' +
+        'renommées « date_logement_produit_montant », et un tableau récapitulatif qui s’ouvre dans Excel. ' +
+        'Tu n’as plus qu’à le joindre à un e-mail.</p>' +
+      '<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">' +
+        '<button type="button" class="btn btn--dark btn--sm"' + (liste.length && !state.factureZip ? '' : ' disabled') +
+          act('factures-zip') + '>' + (state.factureZip ? 'Préparation… ' + esc(state.factureZip) : '📦 Télécharger le dossier') + '</button>' +
+        '<button type="button" class="btn btn--sm" style="background:var(--cream);color:var(--ink-soft)"' +
+          (liste.length ? '' : ' disabled') + act('factures-csv') + '>📄 Le tableau seul (.csv)</button>' +
+      '</div>' +
+    '</div>');
+}
+
+/** Le bloc d'un logement, sous ses charges (Statistiques → un logement). */
+function blocFacturesBien(pid) {
+  var liste = (state.factures || []).filter(function (f) { return f && f.pid === pid; })
+    .sort(function (a, b) { return a.date < b.date ? 1 : -1; });
+  return '<h2 class="sec-title" style="margin-top:26px">Factures de ce logement</h2>' +
+    '<p class="sec-note" style="margin:0 0 12px">Comptées dans les charges du mois de leur date.</p>' +
+    tableauFactures(liste.slice(0, 8)) +
+    '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:12px">' +
+      '<button type="button" class="btn btn--xs" style="background:var(--cream);color:var(--ink-soft)"' +
+        act('facture-nouvelle', { pid: pid }) + '>🧾 Ajouter une facture</button>' +
+      (liste.length
+        ? '<button type="button" class="btn btn--xs" style="background:var(--cream);color:var(--ink-soft)"' +
+            act('factures-du-bien', { pid: pid }) + '>Toutes ses factures (' + liste.length + ') →</button>'
+        : '') +
+    '</div>';
+}
+
+/** La carte d'accès, en tête de « Statistiques ». */
+function carteFactures(mois) {
+  var du = (state.factures || []).filter(function (f) { return f && String(f.date || '').slice(0, 7) === mois; });
+  var total = du.reduce(function (n, f) { return n + (Number(f.montant) || 0); }, 0);
+  return '<div class="card" style="margin-top:16px;padding:16px 20px;display:flex;gap:14px;align-items:center;flex-wrap:wrap;' +
+      'border-left:4px solid var(--terra)">' +
+    '<div class="grow" style="min-width:200px"><div style="font:700 15px Figtree,sans-serif">🧾 Factures</div>' +
+      '<div class="sec-note" style="margin-top:2px">' + du.length + ' en ' + esc(moisLabel(mois)) + ' · ' +
+        esc(montantFacture(total)) + ' · comptées dans les frais de chaque logement</div></div>' +
+    '<button type="button" class="btn btn--xs" style="background:var(--terra);color:#fff"' + act('facture-nouvelle') + '>+ Ajouter</button>' +
+    '<button type="button" class="btn btn--xs" style="background:var(--cream);color:var(--ink-soft)"' +
+      act('factures-ouvrir', { periode: mois }) + '>Voir et transmettre →</button>' +
+    '</div>';
+}
+
+/* --- Le dossier du comptable : un .zip écrit à la main ---------------------- */
+
+var TABLE_CRC = null;
+function crc32(octets) {
+  if (!TABLE_CRC) {
+    TABLE_CRC = [];
+    for (var n = 0; n < 256; n++) {
+      var c = n;
+      for (var k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1;
+      TABLE_CRC[n] = c >>> 0;
+    }
+  }
+  var crc = 0xFFFFFFFF;
+  for (var i = 0; i < octets.length; i++) crc = TABLE_CRC[(crc ^ octets[i]) & 0xFF] ^ (crc >>> 8);
+  return (crc ^ 0xFFFFFFFF) >>> 0;
+}
+
+/** Un .zip « stocké » (sans compression : photos et PDF le sont déjà).
+    `fichiers` = [{ nom, octets: Uint8Array }]. Rend un Blob. */
+function fabriquerZip(fichiers) {
+  var enc = new TextEncoder();
+  var maintenant = new Date();
+  var heure = (maintenant.getHours() << 11) | (maintenant.getMinutes() << 5) | Math.floor(maintenant.getSeconds() / 2);
+  var jour = ((maintenant.getFullYear() - 1980) << 9) | ((maintenant.getMonth() + 1) << 5) | maintenant.getDate();
+  var morceaux = [], central = [], decalage = 0;
+
+  fichiers.forEach(function (f) {
+    var nom = enc.encode(f.nom), data = f.octets, crc = crc32(data);
+    var tete = new DataView(new ArrayBuffer(30));
+    tete.setUint32(0, 0x04034b50, true); tete.setUint16(4, 20, true); tete.setUint16(6, 0x0800, true);
+    tete.setUint16(8, 0, true); tete.setUint16(10, heure, true); tete.setUint16(12, jour, true);
+    tete.setUint32(14, crc, true); tete.setUint32(18, data.length, true); tete.setUint32(22, data.length, true);
+    tete.setUint16(26, nom.length, true); tete.setUint16(28, 0, true);
+    morceaux.push(tete.buffer, nom, data);
+
+    var c = new DataView(new ArrayBuffer(46));
+    c.setUint32(0, 0x02014b50, true); c.setUint16(4, 20, true); c.setUint16(6, 20, true);
+    c.setUint16(8, 0x0800, true); c.setUint16(10, 0, true); c.setUint16(12, heure, true); c.setUint16(14, jour, true);
+    c.setUint32(16, crc, true); c.setUint32(20, data.length, true); c.setUint32(24, data.length, true);
+    c.setUint16(28, nom.length, true); c.setUint16(30, 0, true); c.setUint16(32, 0, true);
+    c.setUint16(34, 0, true); c.setUint16(36, 0, true); c.setUint32(38, 0, true); c.setUint32(42, decalage, true);
+    central.push(c.buffer, nom);
+    decalage += 30 + nom.length + data.length;
+  });
+
+  var tailleCentrale = central.reduce(function (n, b) { return n + (b.byteLength || b.length); }, 0);
+  var fin = new DataView(new ArrayBuffer(22));
+  fin.setUint32(0, 0x06054b50, true); fin.setUint16(4, 0, true); fin.setUint16(6, 0, true);
+  fin.setUint16(8, fichiers.length, true); fin.setUint16(10, fichiers.length, true);
+  fin.setUint32(12, tailleCentrale, true); fin.setUint32(16, decalage, true); fin.setUint16(20, 0, true);
+  return new Blob(morceaux.concat(central, [fin.buffer]), { type: 'application/zip' });
+}
+
+function nomPropre(t) {
+  return String(t || '').normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .replace(/[^A-Za-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'sans-nom';
+}
+
+function csvFactures(liste) {
+  var cellule = function (v) { return '"' + String(v === undefined || v === null ? '' : v).replace(/"/g, '""') + '"'; };
+  var lignes = [['Date', 'Logement', 'Produit', 'Fournisseur', 'Montant TTC (€)', 'Fichier'].map(cellule).join(';')];
+  liste.forEach(function (f) {
+    lignes.push([f.date.split('-').reverse().join('/'), nomBienFacture(f.pid), f.produit, f.fournisseur,
+      fmtEuros(f.montant), f.nomZip || ''].map(cellule).join(';'));
+  });
+  var total = liste.reduce(function (n, f) { return n + (Number(f.montant) || 0); }, 0);
+  lignes.push(['', '', '', 'TOTAL', fmtEuros(total), ''].map(cellule).join(';'));
+  return '﻿' + lignes.join('\r\n') + '\r\n';
+}
+
+function nomDossierFactures() {
+  var fl = state.facturesFiltre || {};
+  return 'Factures-MAISON-WARME' + (fl.periode ? '-' + fl.periode : '') +
+    (fl.pid ? '-' + nomPropre(fl.pid === '_general' ? 'frais-generaux' : nomBienFacture(fl.pid)) : '');
+}
+
+function telechargerBlob(blob, nom) {
+  var url = URL.createObjectURL(blob);
+  var lien = document.createElement('a');
+  lien.href = url; lien.download = nom;
+  document.body.appendChild(lien); lien.click(); document.body.removeChild(lien);
+  setTimeout(function () { URL.revokeObjectURL(url); }, 8000);
 }
 
 /* Le rapprochement « fiche ↔ compte » (§19.8).
@@ -11916,7 +12320,7 @@ function bienLivret(pid, b) {
       act('bien-tab', { t: 'infos' }) + '>✎ Modifier les horaires, le code ou le Wi-Fi</button>' +
     '<div class="livret-recap">' +
       [['Arrivée', inf.checkin || '—'], ['Départ', inf.checkout || '—'],
-       ['Code d\'accès', inf.code || '—'], ['Wi-Fi', inf.wifi || '—']].map(function (r) {
+       ['Code d\'accès', inf.code || '—'], ['Wi-Fi', texteWifi(inf) || '—']].map(function (r) {
         return '<div><div class="k">' + r[0] + '</div><div class="v num">' + esc(r[1]) + '</div></div>';
       }).join('') +
     '</div>' +
@@ -12670,7 +13074,9 @@ function viewLivret() {
   // pas qu'un lien retrouvé ou transféré donne la clé du logement (D-47).
   var ouvert = peutVoirSensible(pid);
   var cles = [[t('checkin'), heureArrivee], [t('checkout'), inf.checkout]]
-    .concat(ouvert ? [[t('code'), inf.code], [t('wifi'), inf.wifi]] : [])
+    .concat(ouvert ? [[t('code'), inf.code]].concat(inf.wifiNom
+      ? [[t('wifiNom'), inf.wifiNom], [t('wifiMdp'), inf.wifi]]
+      : [[t('wifi'), inf.wifi]]) : [])
     .filter(function (r) { return r[1]; });
 
   var tuiles = LIVRET_SECTIONS.filter(function (s) { return (lv[s.k] || []).length; }).map(function (s) {
@@ -13499,7 +13905,7 @@ function etapeDe(pid, sid) {
 /** Réduit une image choisie ou prise par l'appareil photo.
     Rend deux formes de la même image : `url` pour l'afficher tout de suite et
     la garder sur l'appareil, `fichier` pour la déposer dans le casier. */
-function reduirePhoto(fichier, quand, cote) {
+function reduirePhoto(fichier, quand, cote, qualite) {
   var lecteur = new FileReader();
   lecteur.onerror = function () { quand(null, 'La photo n\'a pas pu être lue.'); };
   lecteur.onload = function () {
@@ -13516,11 +13922,13 @@ function reduirePhoto(fichier, quand, cote) {
       c.height = Math.round(img.height * ech);
       try {
         c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
-        var url = c.toDataURL('image/jpeg', 0.55);
+        // Une facture doit rester lisible chiffre par chiffre (D-206) : 0,8.
+        var q = qualite || 0.55;
+        var url = c.toDataURL('image/jpeg', q);
         // `toBlob` est asynchrone et peut manquer sur un très vieux navigateur :
         // on rend la photo dans tous les cas, quitte à ne pas pouvoir l'envoyer.
         if (!c.toBlob) { quand({ url: url, image: null }, null); return; }
-        c.toBlob(function (b) { quand({ url: url, image: b }, null); }, 'image/jpeg', 0.55);
+        c.toBlob(function (b) { quand({ url: url, image: b }, null); }, 'image/jpeg', q);
       } catch (e) {
         quand(null, 'La photo n\'a pas pu être enregistrée sur cet appareil.');
       }
@@ -15202,7 +15610,7 @@ var actions = {
       state.durations[pid][s.key] = s.duration || '';
     });
     state.checklists[pid] = checklistModele();
-    state.info[pid] = { capacity: '', surface: '', code: '', wifi: '', parking: '', linge: '', checkin: '16:00', checkout: '11:00', early: true };
+    state.info[pid] = { capacity: '', surface: '', code: '', wifiNom: '', wifi: '', parking: '', linge: '', checkin: '16:00', checkout: '11:00', early: true };
     state.notes[pid] = '';
     state.resas[pid] = [];
     state.livret[pid] = livretModele((nb.city || '').trim());
@@ -15482,6 +15890,164 @@ var actions = {
     state.showNewCharge = false;
     state.ncEdit = null;
     save(); render();
+  },
+
+  /* Les factures (session 46, D-206). */
+  'facture-nouvelle': function (el) {
+    var pid = el && el.dataset && el.dataset.pid !== undefined ? el.dataset.pid : undefined;
+    factureFichier = null;
+    state.factureEd = factureVide(pid);
+    state.factureMsg = '';
+    if (pid) state.facturesFiltre = { periode: '', pid: pid };
+    if (route.name !== 'o-factures') go('#/admin/statistiques/factures'); else render();
+  },
+  'facture-annuler': function () { state.factureEd = null; factureFichier = null; render(); },
+  'facture-modifier': function (el) {
+    var f = (state.factures || []).filter(function (x) { return x.id === el.dataset.id; })[0];
+    if (!f) return;
+    factureFichier = null;
+    state.factureEd = { id: f.id, pid: f.pid || '', date: f.date, montant: fmtEuros(f.montant),
+      produit: f.produit, fournisseur: f.fournisseur, erreur: '', enCours: false, lecture: '' };
+    state.factureMsg = '';
+    if (route.name !== 'o-factures') go('#/admin/statistiques/factures'); else render();
+    window.scrollTo(0, 0);
+  },
+  'facture-ok': function () {
+    var e = state.factureEd;
+    if (!e || e.enCours) return;
+    var montant = parseFloat(String(e.montant || '').replace(/\s/g, '').replace('€', '').replace(',', '.'));
+    var produit = String(e.produit || '').trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(e.date || '')) { e.erreur = 'Indique la date de la facture.'; render(); return; }
+    if (!isFinite(montant) || montant <= 0) { e.erreur = 'Indique le montant, par exemple 45,90.'; render(); return; }
+    if (!produit) { e.erreur = 'Indique le produit ou le service acheté.'; render(); return; }
+
+    var ancien = e.id ? (state.factures || []).filter(function (x) { return x.id === e.id; })[0] : null;
+    var fiche = {
+      id: e.id || ('fa_' + jeton(12)), pid: e.pid || '', date: e.date,
+      montant: Math.round(montant * 100) / 100, produit: produit,
+      fournisseur: String(e.fournisseur || '').trim(),
+      fichier: ancien ? ancien.fichier : '', type: ancien ? ancien.type : '',
+      nomFichier: ancien ? ancien.nomFichier : '', maj: Date.now()
+    };
+    var fichier = factureFichier;
+
+    var ranger = function (message) {
+      state.factures = (state.factures || []).filter(function (x) { return x.id !== fiche.id; }).concat([fiche]);
+      state.factureDernierBien = fiche.pid;
+      state.factureEd = null;
+      factureFichier = null;
+      state.factureMsg = message;
+      save(); render();
+    };
+
+    if (!fichier) {
+      ranger('✅ Facture ' + (ancien ? 'modifiée' : 'enregistrée' + (fiche.fichier ? '' : ' (sans fichier)')) + ' : ' +
+        fiche.produit + ', ' + montantFacture(fiche.montant) + '.');
+      return;
+    }
+    if (typeof DB === 'undefined' || !DB.estDispo() || !DB.profil()) {
+      ranger('⚠️ Facture enregistrée SANS son fichier : pas de connexion au cahier partagé. ' +
+        'Rouvre-la avec ✎ pour joindre la photo une fois connecté.');
+      return;
+    }
+    e.enCours = true; e.erreur = ''; render();
+    DB.deposerFacture(fiche.id, fichier.blob, fichier.type).then(function (chemin) {
+      fiche.fichier = chemin; fiche.type = fichier.type; fiche.nomFichier = fichier.nom;
+      ranger('✅ Facture enregistrée : ' + fiche.produit + ', ' + montantFacture(fiche.montant) +
+        (fiche.pid ? ', ajoutée aux frais de ' + nomBienFacture(fiche.pid) : ', en frais généraux') + '.');
+    }, function (err) {
+      if (!state.factureEd) return;
+      state.factureEd.enCours = false;
+      state.factureEd.erreur = 'Le fichier n’a pas pu être déposé : ' + ((err && err.message) || 'raison inconnue') +
+        ' Rien n’est perdu : réessaie.';
+      render();
+    });
+  },
+  'facture-supprimer': function (el) {
+    var f = (state.factures || []).filter(function (x) { return x.id === el.dataset.id; })[0];
+    if (!f) return;
+    if (!confirm('Supprimer la facture « ' + (f.produit || '') + ' » du ' + fmtDate(f.date) + ' (' +
+      montantFacture(f.montant) + ') ? Son fichier sera effacé.')) return;
+    oublier('factures', f.id);
+    state.factures = state.factures.filter(function (x) { return x.id !== f.id; });
+    state.factureMsg = '✅ Facture supprimée.';
+    if (typeof DB !== 'undefined' && DB.estDispo() && DB.profil() && DB.supprimerFacture) {
+      DB.supprimerFacture(f.id, f.fichier).then(function (ok) {
+        if (ok === false) { state.factureMsg = '⚠️ Supprimée de cet écran, mais le cahier partagé ne l’a pas effacée : ' +
+          (DB.derniereErreur() || 'raison inconnue') + ' Elle ne reviendra pas ici.'; render(); }
+      });
+    }
+    save(); render();
+  },
+  /* La fenêtre s'ouvre TOUT DE SUITE, vide, puis reçoit l'adresse : Safari
+     bloque une fenêtre ouverte après une attente réseau. */
+  'facture-voir': function (el) {
+    var f = (state.factures || []).filter(function (x) { return x.id === el.dataset.id; })[0];
+    if (!f || !f.fichier || typeof DB === 'undefined' || !DB.lienFacture) return;
+    var fenetre = window.open('', '_blank');
+    DB.lienFacture(f.fichier).then(function (url) {
+      if (!url) throw new Error('adresse vide');
+      if (fenetre) fenetre.location = url; else location.href = url;
+    }).catch(function (err) {
+      if (fenetre) fenetre.close();
+      state.factureMsg = '⚠️ Le fichier n’a pas pu être ouvert : ' + ((err && err.message) || 'raison inconnue');
+      render();
+    });
+  },
+  'factures-ouvrir': function (el) {
+    state.facturesFiltre = { periode: (el && el.dataset.periode) || CURRENT_MONTH, pid: '' };
+    state.factureMsg = '';
+    go('#/admin/statistiques/factures');
+  },
+  'factures-du-bien': function (el) {
+    state.facturesFiltre = { periode: '', pid: el.dataset.pid };
+    state.factureMsg = '';
+    go('#/admin/statistiques/factures');
+  },
+  'factures-csv': function () {
+    var liste = facturesFiltrees();
+    if (!liste.length) return;
+    telechargerBlob(new Blob([csvFactures(liste)], { type: 'text/csv;charset=utf-8' }), nomDossierFactures() + '.csv');
+  },
+  /* Le dossier du comptable : chaque fichier est relu dans le casier, l'un
+     après l'autre (un téléphone n'aime pas vingt téléchargements à la fois),
+     renommé, puis tout part dans un seul .zip avec le tableau. */
+  'factures-zip': function () {
+    var liste = facturesFiltrees().slice().reverse();      // du plus ancien au plus récent
+    if (!liste.length || state.factureZip) return;
+    var fichiers = [], pris = {}, manquants = 0, i = 0;
+    var dispo = typeof DB !== 'undefined' && DB.estDispo() && DB.profil() && DB.lireFichierFacture;
+    var copie = liste.map(function (f) { return Object.assign({}, f); });
+    state.factureZip = '0/' + copie.length; render();
+
+    var suivant = function () {
+      if (i >= copie.length) {
+        fichiers.push({ nom: 'factures.csv', octets: new TextEncoder().encode(csvFactures(copie)) });
+        telechargerBlob(fabriquerZip(fichiers), nomDossierFactures() + '.zip');
+        state.factureZip = null;
+        state.factureMsg = '✅ Dossier prêt : ' + (copie.length - manquants) + ' fichier(s) et le tableau.' +
+          (manquants ? ' ' + manquants + ' facture(s) sans fichier (ou introuvable) : elles figurent quand même dans le tableau.' : '');
+        render();
+        return;
+      }
+      var f = copie[i++];
+      state.factureZip = i + '/' + copie.length; render();
+      var lire = f.fichier && dispo ? DB.lireFichierFacture(f.fichier) : Promise.resolve(null);
+      lire.then(function (blob) {
+        if (!blob) { manquants++; return null; }
+        return blob.arrayBuffer().then(function (buf) {
+          var ext = (f.fichier.split('.').pop() || 'jpg').toLowerCase();
+          var base = f.date + '_' + nomPropre(nomBienFacture(f.pid)) + '_' + nomPropre(f.produit) + '_' +
+            fmtEuros(f.montant).replace(',', '-') + 'EUR';
+          var nom = base, n = 2;
+          while (pris[nom]) nom = base + '-' + (n++);
+          pris[nom] = true;
+          f.nomZip = nom + '.' + ext;
+          fichiers.push({ nom: f.nomZip, octets: new Uint8Array(buf) });
+        });
+      }).catch(function () { manquants++; }).then(suivant);
+    };
+    suivant();
   },
 
   'charge-del': function (el) {
@@ -16524,6 +17090,10 @@ var inputs = {
   'inv-pwd': function (el) { state.inv.pwd = el.value; },
   'inv-pwd2': function (el) { state.inv.pwd2 = el.value; },
   'charge-libelle': function (el) { state.nc.libelle = el.value; },
+  // Les factures (session 46, D-206) : saisie silencieuse, sans redessin.
+  'facture-champ': function (el) {
+    if (state.factureEd) state.factureEd[el.dataset.k] = el.value;
+  },
   'charge-montant': function (el) { state.nc.montant = el.value; },
   'nm-window': function (el) { state.nm.window = el.value; },
   'nm-price': function (el) { state.nm.price = parseInt(el.value || '0', 10) || 0; },
@@ -16682,6 +17252,48 @@ function setBienField(el) {
 
 /* Changements qui demandent un redessin (listes déroulantes, dates). */
 var changes = {
+  /* Les factures (session 46, D-206). */
+  'facture-champ': function (el) {
+    if (!state.factureEd) return;
+    state.factureEd[el.dataset.k] = el.value;
+    state.factureEd.erreur = '';
+    render();
+  },
+  'factures-filtre': function (el) {
+    if (!state.facturesFiltre) state.facturesFiltre = { periode: '', pid: '' };
+    state.facturesFiltre[el.dataset.k] = el.value;
+    save(); render();
+  },
+  /* La photo est réduite (1 800 px : chaque chiffre reste lisible), le PDF
+     part tel quel. Rien n'est envoyé avant « Enregistrer ». */
+  'facture-fichier': function (el) {
+    var f = el.files && el.files[0];
+    el.value = '';
+    if (!f || !state.factureEd) return;
+    var e = state.factureEd;
+    e.erreur = '';
+    if (/pdf/i.test(f.type) || /\.pdf$/i.test(f.name || '')) {
+      if (f.size > MAX_PDF_FACTURE) { e.erreur = 'Ce PDF dépasse 10 Mo : enregistre-le plus léger, ou photographie la facture.'; render(); return; }
+      factureFichier = { blob: f, type: 'application/pdf', nom: f.name || 'facture.pdf', apercu: '' };
+      e.lecture = '';
+      render();
+      return;
+    }
+    e.lecture = 'Préparation de la photo…'; render();
+    reduirePhoto(f, function (res, err) {
+      if (!state.factureEd) return;
+      if (err || !res) { state.factureEd.lecture = ''; state.factureEd.erreur = err || 'Cette photo n’a pas pu être lue.'; render(); return; }
+      var blob = res.image;
+      if (!blob) {                         // très vieux navigateur : on repart de l'aperçu
+        var morceaux = res.url.split(','), bin = atob(morceaux[1]), oct = new Uint8Array(bin.length);
+        for (var i = 0; i < bin.length; i++) oct[i] = bin.charCodeAt(i);
+        blob = new Blob([oct], { type: 'image/jpeg' });
+      }
+      factureFichier = { blob: blob, type: 'image/jpeg', nom: f.name || 'facture.jpg', apercu: res.url };
+      state.factureEd.lecture = '';
+      render();
+    }, 1800, 0.8);
+  },
   /* Choix du compte à relier à une fiche de prestataire (§19.8). */
   'choix-compte': function (el) {
     if (!state.lienCompte) state.lienCompte = {};
@@ -16876,6 +17488,7 @@ var VIEWS = {
   'o-auto': viewOwnerAuto,
   'o-stats': viewOwnerStats,
   'o-stat-bien': viewOwnerStatBien,
+  'o-factures': viewOwnerFactures,
   'o-missions': viewOwnerMissions,
   'o-mission': viewOwnerMission,
   'o-agents': viewOwnerAgents,
