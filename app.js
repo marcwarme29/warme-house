@@ -46,6 +46,11 @@ function isoDate(d) {
   history.replaceState(null, '', '/#/' + m[1].replace(/\/+$/, ''));
 })();
 
+/* La version de l'application, affichée dans les bandeaux d'erreur et sous le
+   compte connecté (session 46) : trois fois, un écran resté sur l'ancienne
+   version a fait chercher un défaut déjà corrigé. À changer à chaque envoi. */
+var VERSION_APP = '46.5';
+
 var TODAY = isoDate(new Date());
 var TODAY_LABEL = new Date().toLocaleDateString('fr-FR',
   { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
@@ -6114,7 +6119,7 @@ function viewPrestaProfil() {
 function compteConnecte() {
   var p = typeof DB !== 'undefined' && DB.estDispo() ? DB.profil() : null;
   if (!p || !p.email) return 'Connecté';
-  return 'Connecté : ' + p.email + (DB.estAdmin && DB.estAdmin() ? ' (administrateur)' : '');
+  return 'Connecté : ' + p.email + (DB.estAdmin && DB.estAdmin() ? ' (administrateur)' : '') + ' · version ' + VERSION_APP;
 }
 
 /* L'ALARME QUI MANQUAIT (session 19, règle 4 du §6)
@@ -6185,7 +6190,14 @@ function alerteEnvoi() {
       }).join('') + '</ul>' +
       '<span class="sec-note">Les <strong>liens iCal</strong>, les articles, les seuils et les ' +
       'versements voyagent dans « les réglages » : si c’est cette ligne qui apparaît, c’est ' +
-      'précisément ce qui ne se sauvegarde pas. Recopie-nous la phrase entre guillemets.</span>',
+      'précisément ce qui ne se sauvegarde pas. Recopie-nous la phrase entre guillemets.</span>' +
+      (e.diag
+        ? '<span class="sec-note" style="display:block;margin-top:6px">Pour l’assistant — version ' + esc(VERSION_APP) +
+            ' · au premier refus (' + esc(e.diag.etape || '?') + ') : session ouverte ' + (e.diag.session ? 'oui' : 'NON') +
+            ' · même compte ' + (e.diag.memeCompte ? 'oui' : 'NON') +
+            (e.diag.expireMin !== null && e.diag.expireMin !== undefined ? ' · expire dans ' + e.diag.expireMin + ' min' : '') +
+            ' · pour qui ' + esc(e.diag.pourQui || '?') + '</span>'
+        : '<span class="sec-note" style="display:block;margin-top:6px">Version ' + esc(VERSION_APP) + '</span>'),
       true);
   }
   return '';

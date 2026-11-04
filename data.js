@@ -2688,6 +2688,7 @@ var DB = (function () {
        On garde le « ça n'emporte pas le reste », on supprime le « en
        silence » : chaque refus est collecté et affiché, en nommant l'étape. */
     var soucis = [];
+    var diag = null;                       // D-207 : voir plus bas
 
     return etapes.reduce(function (chaine, e) {
       return chaine.then(function () {
@@ -2699,6 +2700,23 @@ var DB = (function () {
             if (e.facultative) {
               if (tableAbsente(r.error)) tablesAbsentes[e.table] = true;
               else soucis.push({ nom: e.nom, table: e.table, message: messageClair(r.error) });
+              /* LE CONSTAT, AU MOMENT MÊME DU PREMIER REFUS (session 46, D-207).
+                 « Pas le droit » alors que les droits sont prouvés bons : on
+                 note qui la bibliothèque croit être À CET INSTANT — une session
+                 ouverte ? le même compte que celui affiché ? expire quand ? —
+                 et l'écran l'affiche. La prochaine fois, on saura au lieu de
+                 supposer. */
+              if (!diag && /row-level security/i.test(r.error.message || '')) {
+                return client.auth.getSession().then(function (x) {
+                  var se = x && x.data && x.data.session;
+                  diag = { etape: e.nom, session: !!se,
+                    memeCompte: !!(se && se.user && profil && se.user.id === profil.id),
+                    expireMin: se && se.expires_at ? Math.round((se.expires_at * 1000 - Date.now()) / 60000) : null,
+                    // Le compte pour lequel on écrit, comparé au compte connecté.
+                    pourQui: moi === (profil && (profil.proprio || profil.id)) ? 'ok' : 'différent' };
+                  return null;
+                }, function () { diag = { etape: e.nom, session: false, lecture: 'impossible' }; return null; });
+              }
               return null;
             }
             var err = new Error(messageClair(r.error) + ' (en écrivant ' + e.nom + ')');
@@ -2736,7 +2754,8 @@ var DB = (function () {
         missions: bilan.missions || 0, resas: bilan.resas || 0, biens: bilan.biens || 0,
         // Les refus des étapes facultatives : le lot est parti, mais pas tout
         // (session 23). Sans cette liste, ils n'existaient pour personne.
-        soucis: bilan.soucis || []
+        soucis: bilan.soucis || [],
+        diag: diag
       };
       /* LES DROITS PARTENT DANS TOUS LES CAS (session 15, après incident).
          Ils étaient jusqu'ici accrochés à la fin de la chaîne ci-dessus : la
