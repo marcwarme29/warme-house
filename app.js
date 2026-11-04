@@ -49,7 +49,7 @@ function isoDate(d) {
 /* La version de l'application, affichée dans les bandeaux d'erreur et sous le
    compte connecté (session 46) : trois fois, un écran resté sur l'ancienne
    version a fait chercher un défaut déjà corrigé. À changer à chaque envoi. */
-var VERSION_APP = '46.5';
+var VERSION_APP = '46.6';
 
 var TODAY = isoDate(new Date());
 var TODAY_LABEL = new Date().toLocaleDateString('fr-FR',
@@ -6196,7 +6196,8 @@ function alerteEnvoi() {
             ' · au premier refus (' + esc(e.diag.etape || '?') + ') : session ouverte ' + (e.diag.session ? 'oui' : 'NON') +
             ' · même compte ' + (e.diag.memeCompte ? 'oui' : 'NON') +
             (e.diag.expireMin !== null && e.diag.expireMin !== undefined ? ' · expire dans ' + e.diag.expireMin + ' min' : '') +
-            ' · pour qui ' + esc(e.diag.pourQui || '?') + '</span>'
+            ' · pour qui ' + esc(e.diag.pourQui || '?') +
+            (e.diag.reessais ? ' · second essai : ' + esc(e.diag.reessais.join(', ')) : '') + '</span>'
         : '<span class="sec-note" style="display:block;margin-top:6px">Version ' + esc(VERSION_APP) + '</span>'),
       true);
   }
@@ -10093,6 +10094,13 @@ function viewOwnerFactures() {
         '<div class="l">' + liste.length + ' facture(s)</div></div>' +
     '</div>' +
 
+    (function () {
+      var cachees = (state.factures || []).length - liste.length;
+      return cachees > 0
+        ? '<p class="sec-note" style="margin:12px 0 0">' + cachees + ' autre(s) facture(s) hors de cette sélection. ' +
+            '<button type="button" class="lienbtn"' + act('factures-tout') + '>Tout afficher</button></p>'
+        : '';
+    })() +
     '<div style="margin-top:14px">' + tableauFactures(liste) + '</div>' +
 
     '<div class="card" style="padding:18px 20px;margin-top:16px">' +
@@ -10137,7 +10145,7 @@ function carteFactures(mois) {
         esc(montantFacture(total)) + ' · comptées dans les frais de chaque logement</div></div>' +
     '<button type="button" class="btn btn--xs" style="background:var(--terra);color:#fff"' + act('facture-nouvelle') + '>+ Ajouter</button>' +
     '<button type="button" class="btn btn--xs" style="background:var(--cream);color:var(--ink-soft)"' +
-      act('factures-ouvrir', { periode: mois }) + '>Voir et transmettre →</button>' +
+      act('factures-ouvrir') + '>Voir et transmettre →</button>' +
     '</div>';
 }
 
@@ -16032,10 +16040,13 @@ var actions = {
     });
   },
   'factures-ouvrir': function (el) {
-    state.facturesFiltre = { periode: (el && el.dataset.periode) || CURRENT_MONTH, pid: '' };
+    // Toutes, toujours (session 46) : une facture datée d'un autre mois que
+    // celui des statistiques semblait avoir disparu.
+    state.facturesFiltre = { periode: (el && el.dataset && el.dataset.periode) || '', pid: '' };
     state.factureMsg = '';
     go('#/admin/statistiques/factures');
   },
+  'factures-tout': function () { state.facturesFiltre = { periode: '', pid: '' }; save(); render(); },
   'factures-du-bien': function (el) {
     state.facturesFiltre = { periode: '', pid: el.dataset.pid };
     state.factureMsg = '';

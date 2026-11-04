@@ -2689,6 +2689,7 @@ var DB = (function () {
        silence » : chaque refus est collecté et affiché, en nommant l'étape. */
     var soucis = [];
     var diag = null;                       // D-207 : voir plus bas
+    var rafraichiCeLot = false;
 
     return etapes.reduce(function (chaine, e) {
       return chaine.then(function () {
@@ -2706,16 +2707,31 @@ var DB = (function () {
                  ouverte ? le même compte que celui affiché ? expire quand ? —
                  et l'écran l'affiche. La prochaine fois, on saura au lieu de
                  supposer. */
-              if (!diag && /row-level security/i.test(r.error.message || '')) {
-                return client.auth.getSession().then(function (x) {
+              if (/row-level security/i.test(r.error.message || '')) {
+                var constat = diag ? Promise.resolve() : client.auth.getSession().then(function (x) {
                   var se = x && x.data && x.data.session;
                   diag = { etape: e.nom, session: !!se,
                     memeCompte: !!(se && se.user && profil && se.user.id === profil.id),
                     expireMin: se && se.expires_at ? Math.round((se.expires_at * 1000 - Date.now()) / 60000) : null,
                     // Le compte pour lequel on écrit, comparé au compte connecté.
                     pourQui: moi === (profil && (profil.proprio || profil.id)) ? 'ok' : 'différent' };
+                }, function () { diag = { etape: e.nom, session: false, lecture: 'impossible' }; });
+                /* UN SECOND ESSAI, AVEC UNE SESSION NEUVE (session 46). Si le
+                   refus venait d'une identité perdue en route, il passe, et la
+                   facture — ou le réglage — arrive quand même. La session n'est
+                   renouvelée qu'une fois par lot. */
+                return constat.then(function () {
+                  if (rafraichiCeLot) return null;
+                  rafraichiCeLot = true;
+                  return client.auth.refreshSession().catch(function () { return null; });
+                }).then(function () {
+                  return e.envoi ? e.envoi(lignes) : client.from(e.table).upsert(lignes);
+                }).then(function (r2) {
+                  var passe = !(r2 && r2.error);
+                  if (passe) soucis = soucis.filter(function (x) { return x.nom !== e.nom; });
+                  if (diag) diag.reessais = (diag.reessais || []).concat([e.nom + (passe ? ' ✓' : ' ✗')]);
                   return null;
-                }, function () { diag = { etape: e.nom, session: false, lecture: 'impossible' }; return null; });
+                }, function () { return null; });
               }
               return null;
             }
