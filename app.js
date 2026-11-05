@@ -49,7 +49,7 @@ function isoDate(d) {
 /* La version de l'application, affichée dans les bandeaux d'erreur et sous le
    compte connecté (session 46) : trois fois, un écran resté sur l'ancienne
    version a fait chercher un défaut déjà corrigé. À changer à chaque envoi. */
-var VERSION_APP = '48.1';
+var VERSION_APP = '48.2';
 
 var TODAY = isoDate(new Date());
 var TODAY_LABEL = new Date().toLocaleDateString('fr-FR',
@@ -5090,14 +5090,14 @@ var CLES_TABS = [
 ];
 
 var OWNER_NAV = [
-  { key: 'dash', path: '#/admin', label: 'Tableau de bord', color: C.terracotta },
+  { key: 'dash', path: '#/admin', label: 'Accueil', color: C.terracotta },
   { key: 'calendrier', path: '#/admin/calendrier', label: 'Calendrier', color: C.bleu },
   { key: 'missions', path: '#/admin/missions', label: 'Missions', color: C.bleu },
   { key: 'messages', path: '#/admin/messages', label: 'Messages', color: C.vert },
   { key: 'auto', path: '#/admin/messages-programmes', label: 'Messages programmés', color: '#7A6BA8' },
   { key: 'stats', path: '#/admin/statistiques', label: 'Statistiques', color: C.ambre },
   { key: 'agents', path: '#/admin/prestataires', label: 'Prestataires', color: '#8A6A4F' },
-  { key: 'avis', path: '#/admin/commentaires', label: 'Commentaires', color: '#7A6BA8' },
+  { key: 'avis', path: '#/admin/commentaires', label: 'Avis des voyageurs', color: '#7A6BA8' },
   { key: 'repertoire', path: '#/admin/repertoire', label: 'Répertoire voyageurs', color: '#8A6A4F' },
   { key: 'stocks', path: '#/admin/stocks', label: 'Stocks', color: C.ambre },
   { key: 'biens', path: '#/admin/biens', label: 'Biens & connexions', color: C.vert }
@@ -6952,7 +6952,7 @@ function blocApercuPresta(a) {
    L'ouverture du menu est une POSITION D'AFFICHAGE (règle 7) : une variable
    de module, jamais dans `state`, donc jamais enregistrée. */
 var OWNER_TABS = ['dash', 'calendrier', 'missions', 'agents'];
-var OWNER_TAB_COURT = { dash: 'Accueil', calendrier: 'Calendrier', missions: 'Missions', agents: 'Équipe' };
+var OWNER_TAB_COURT = { dash: 'Accueil', calendrier: 'Calendrier', missions: 'Missions', agents: 'Prestataires' };
 var OWNER_TAB_ICONE = { dash: '⌂', calendrier: '▦', missions: '✓', agents: '☺' };
 var menuProprioOuvert = false;
 
@@ -12603,7 +12603,7 @@ function viewOwnerAvis() {
 
   return ownerShell('avis',
     '<div class="page-head">' +
-      '<div><h1 class="page-title">Commentaires</h1>' +
+      '<div><h1 class="page-title">Avis des voyageurs</h1>' +
       '<p class="page-sub">Tout ce que les voyageurs ont écrit : la propreté à leur arrivée, le séjour à leur départ.</p></div>' +
     '</div>' + kpis + filtres + cartes);
 }
@@ -12977,7 +12977,7 @@ function viewOwnerBiens() {
 
   return ownerShell('biens',
     '<div class="page-head">' +
-      '<div><h1 class="page-title">Biens</h1>' +
+      '<div><h1 class="page-title">Biens & connexions</h1>' +
       '<p class="page-sub">Checklist, tarifs, réservations, livret d\'accueil et connexions — pour chaque logement.</p></div>' +
       '<button type="button" class="btn btn--xs" style="' + (state.showNewBien ? 'background:var(--cream);color:var(--ink-soft)' : 'background:var(--terra);color:#fff') +
         ';min-height:42px;font-size:13px"' + act('toggle-new-bien') + '>' +
