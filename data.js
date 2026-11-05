@@ -1254,7 +1254,12 @@ var DB = (function () {
     'waOuverts',
     /* Session 45 (D-201) : quelle annonce Airbnb / Booking est quel logement,
        choisi une fois à l'import d'un fichier. */
-    'importAnnonces'];
+    'importAnnonces',
+    /* Session 47 : la liste de tâches par logement (D-213), les logements
+       qu'on ne confie à aucun prestataire (D-214) et ce que chaque
+       administrateur voit (D-215). Les trois portent `_maj` : voir
+       `REGLAGES_DATES` plus bas. */
+    'todos', 'sansPresta', 'adminDroits'];
 
   /* Deux clés ne doivent JAMAIS être remplacées par une liste vide : sans
      prestation ni article, l'application n'a plus rien à afficher et
@@ -1311,6 +1316,23 @@ var DB = (function () {
      règle — parce qu'on n'ajoute que des oublis, jamais des données. */
   var REGLAGES_CUMULATIFS = { icalOublies: 1, fichesSupprimees: 1, supprimes: 1 };
 
+  /* LE PLUS RÉCENT L'EMPORTE (session 47, D-213)
+
+     Trois réglages portent un horodatage `_maj`, posé à chaque modification :
+     la liste de tâches, les logements sans prestataire, les droits des
+     administrateurs. Ils ne sont jamais « vides » au sens de `reglageVide()`
+     (la clé `_maj` est toujours là) : effacer la dernière tâche ne laisse donc
+     pas un `{}` que le second appareil, plein, refuserait d'adopter (D-124).
+
+     En échange, il faut une autre règle pour ne pas faire reculer une saisie :
+     la valeur du cahier n'est adoptée que si elle est AU MOINS aussi récente
+     que la copie locale. Et, comme les mémoires de suppression (D-186), ces
+     trois-là sont relues juste avant chaque envoi : l'appareil resté ouvert
+     depuis ce matin apprend la tâche ajoutée ailleurs avant de renvoyer sa
+     copie, au lieu de l'effacer. */
+  var REGLAGES_DATES = { todos: 1, sansPresta: 1, adminDroits: 1 };
+  function majDe(v) { return v && typeof v === 'object' && typeof v._maj === 'number' ? v._maj : 0; }
+
   function fusionnerOublis(local, distant) {
     if (!distant || typeof distant !== 'object') return local;
     if (!local || typeof local !== 'object') return distant;
@@ -1335,6 +1357,10 @@ var DB = (function () {
       if (v === null || v === undefined) return;
       if (REGLAGES_CUMULATIFS[l.cle]) {
         state[l.cle] = fusionnerOublis(state[l.cle], v);
+        return;
+      }
+      if (REGLAGES_DATES[l.cle]) {
+        if (v && typeof v === 'object' && !Array.isArray(v) && majDe(v) >= majDe(state[l.cle])) state[l.cle] = v;
         return;
       }
       if (REGLAGES_NON_VIDES[l.cle] && (!Array.isArray(v) || !v.length)) return;
@@ -1372,7 +1398,8 @@ var DB = (function () {
     if (!dispo || !profil || profil.role !== 'owner') return Promise.resolve(false);
     return client.from('reglages').select('cle, valeur')
       .eq('owner_id', profil.proprio || profil.id)
-      .in('cle', Object.keys(REGLAGES_CUMULATIFS))
+      // Et les trois réglages horodatés (session 47, D-213), même raison.
+      .in('cle', Object.keys(REGLAGES_CUMULATIFS).concat(Object.keys(REGLAGES_DATES)))
       .then(function (r) {
         if (!r || r.error || !Array.isArray(r.data)) return false;
         reglagesDepuisBase(r.data);

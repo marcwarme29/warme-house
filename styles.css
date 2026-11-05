@@ -1716,6 +1716,22 @@ textarea.inp { min-height: 90px; resize: vertical; line-height: 1.5; }
 .hist-l { font: 600 11.5px Figtree, sans-serif; color: var(--muted); margin-top: 8px; text-transform: uppercase; }
 .hist-col--on .hist-l { color: var(--ink); font-weight: 800; }
 .hist-col--on .hist-v { color: var(--ink-soft); }
+/* Session 47 (D-209) : le bénéfice net écrit en haut, les mois à venir plus
+   pâles, et douze colonnes qui tiennent sur un téléphone. */
+.hist-col--avenir .hist-bars { opacity: .45; }
+.hist--12 { gap: 4px; }
+.hist--12 .hist-bar { width: 42%; max-width: 20px; }
+.hist--12 .hist-bar--dep { width: 30%; max-width: 14px; }
+.hist--12 .hist-bars { gap: 2px; }
+.hist--12 .hist-v { font-size: 10px; white-space: nowrap; }
+.hist--12 .hist-l { font-size: 10.5px; }
+.hist-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+@media (max-width: 620px) {
+  .hist--12 { min-width: 600px; }
+}
+.hist-leg { display: flex; align-items: center; gap: 7px; font: 600 12px Figtree, sans-serif; color: var(--muted3); }
+.hist-leg > span { width: 14px; height: 8px; border-radius: 9px; }
+.stat-periode { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; }
 
 /* Le graphique à trois courbes de la sous-page d'un logement (session 30). */
 .cashflow-chart { width: 100%; }
@@ -2248,3 +2264,151 @@ textarea.inp { min-height: 90px; resize: vertical; line-height: 1.5; }
     color: var(--muted2); margin-bottom: 2px;
   }
 }
+
+/* ==========================================================================
+   L'ACCUEIL DE LA SESSION 47 (D-212, D-213)
+   « Aujourd'hui », les séjours sur deux colonnes, la liste de tâches.
+   ========================================================================== */
+.jour { margin-top: 24px; }
+.jour-grille { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.jour-tuile { background: var(--surface); border-radius: 18px; padding: 14px 16px; box-shadow: var(--sh-card); min-width: 0; }
+.jour-t { display: flex; align-items: center; gap: 8px; font: 700 14px Figtree, sans-serif; color: var(--ink-soft); }
+.jour-n { font: 800 22px/1 Figtree, sans-serif; color: var(--ink); min-width: 14px; }
+.jour-l { display: flex; flex-direction: column; margin-top: 8px; }
+.jour-ligne {
+  display: flex; align-items: center; gap: 8px; width: 100%; min-height: 44px;
+  padding: 6px 4px; border-top: 1px solid rgba(36,30,26,.06); text-align: left;
+  font: 500 13.5px Figtree, sans-serif; color: var(--ink);
+}
+.jour-ligne:hover { background: var(--sand); }
+.jour-g { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.jour-h { font: 600 12.5px Figtree, sans-serif; color: var(--muted3); flex: none; }
+.jour-ligne .badge { flex: none; max-width: 52%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.jour-vide { margin: 10px 0 2px; font: 500 13px Figtree, sans-serif; color: var(--muted2); }
+
+.dt-cols { margin-top: 22px; gap: 18px; align-items: flex-start; }
+.dt-col { flex: 1; min-width: min(100%, 440px); }
+.dt-titre { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; margin-bottom: 10px; }
+.dt { padding: 4px 0; }
+.dt-tete, .dt-row {
+  display: grid; grid-template-columns: 74px minmax(0, 1fr) minmax(0, 1.3fr) auto;
+  gap: 10px; align-items: center; padding: 0 16px;
+}
+.dt-tete { font: 600 10.5px Figtree, sans-serif; letter-spacing: .05em; text-transform: uppercase; color: var(--muted2); padding-top: 10px; padding-bottom: 6px; }
+.dt-tete > span:last-child { text-align: right; }
+.dt-row { width: 100%; min-height: 56px; border-top: 1px solid rgba(36,30,26,.06); text-align: left; padding-top: 8px; padding-bottom: 8px; }
+.dt-row:hover { background: var(--sand); }
+.dt-quand { font: 700 13.5px Figtree, sans-serif; display: flex; flex-direction: column; line-height: 1.2; }
+.dt-quand small, .dt-voy small { font: 500 11.5px Figtree, sans-serif; color: var(--muted); }
+.dt-bien { display: flex; align-items: center; gap: 8px; min-width: 0; font: 600 13.5px Figtree, sans-serif; }
+.dt-bien > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dt-voy { display: flex; flex-direction: column; min-width: 0; line-height: 1.3; }
+.dt-voy small { display: flex; align-items: center; gap: 5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dt-nom { font: 600 14px Figtree, sans-serif; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dt-men { justify-self: end; max-width: 170px; }
+.dt-men .badge { max-width: 170px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block; }
+
+.todo { margin-top: 22px; padding: 14px 16px 16px; max-width: 560px; touch-action: pan-y; }
+.todo-tete { display: flex; align-items: center; gap: 8px; }
+.todo-titre { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: center; text-align: center; }
+.todo-k { font: 600 10.5px Figtree, sans-serif; letter-spacing: .06em; text-transform: uppercase; color: var(--muted2); }
+.todo-bien { display: flex; align-items: center; gap: 7px; font: 700 15px Figtree, sans-serif; max-width: 100%; }
+.todo-bien > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.todo-fl {
+  width: 44px; height: 44px; flex: none; border-radius: 50%; background: var(--cream);
+  font: 700 22px/1 Figtree, sans-serif; color: var(--ink-soft); display: flex; align-items: center; justify-content: center;
+}
+.todo-fl:hover { background: var(--fill); }
+.todo-points { display: flex; justify-content: center; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
+.todo-point {
+  min-width: 10px; height: 10px; border-radius: 9px; background: var(--fill5); padding: 0;
+  font: 700 9px/10px Figtree, sans-serif; color: #fff; position: relative;
+}
+.todo-point > span { padding: 0 4px; }
+.todo-point::before { content: ""; position: absolute; inset: -17px -6px; }   /* cible tactile de 44 px */
+.todo-point[aria-selected="true"] { background: var(--accent, var(--terra)); min-width: 22px; }
+.todo-liste { margin-top: 10px; display: flex; flex-direction: column; }
+.todo-item { display: flex; align-items: center; gap: 10px; min-height: 44px; border-top: 1px solid rgba(36,30,26,.06); }
+.todo-case {
+  width: 26px; height: 26px; flex: none; border-radius: 8px; border: 2px solid var(--fill5); background: #fff;
+  font: 800 14px/1 Figtree, sans-serif; color: #fff; display: flex; align-items: center; justify-content: center;
+  position: relative;
+}
+.todo-case::before { content: ""; position: absolute; inset: -9px; }
+.todo-item--fait .todo-case { background: var(--green); border-color: var(--green); }
+.todo-t { flex: 1; min-width: 0; font: 500 14px/1.35 Figtree, sans-serif; overflow-wrap: anywhere; }
+.todo-item--fait .todo-t { text-decoration: line-through; color: var(--muted2); }
+.todo-vide { margin: 8px 0; font: 500 13px Figtree, sans-serif; color: var(--muted2); text-align: center; }
+.todo-ajout { display: flex; gap: 8px; margin-top: 10px; }
+.todo-ajout .inp { flex: 1; min-width: 0; }
+.todo-effacer { background: transparent; color: var(--muted); padding-left: 0; margin-top: 6px; }
+
+.stock-grille { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 10px; }
+
+@media (max-width: 760px) {
+  .jour-grille { grid-template-columns: 1fr; }
+}
+@media (max-width: 480px) {
+  .dt-tete { display: none; }
+  .dt-row { grid-template-columns: 64px minmax(0, 1fr); grid-template-areas: "quand bien" "quand voy" "men men"; row-gap: 4px; }
+  .dt-quand { grid-area: quand; align-self: start; }
+  .dt-bien { grid-area: bien; }
+  .dt-voy { grid-area: voy; }
+  .dt-men { grid-area: men; justify-self: start; max-width: 100%; }
+  .dt-men .badge { max-width: 100%; }
+  .todo { max-width: none; }
+}
+
+/* ==========================================================================
+   LE CALENDRIER DE LA SESSION 47 (D-216, D-217)
+   La pastille du ménage au bout de chaque séjour, et les cases qui se
+   touchent pour choisir une arrivée puis un départ.
+   ========================================================================== */
+.men {
+  flex: none; display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px; border-radius: 50%; margin-left: auto;
+  background: #fff; font: 800 11px/1 Figtree, sans-serif; color: var(--muted3);
+  box-shadow: 0 0 0 1px rgba(36,30,26,.08);
+}
+.men--pris    { color: var(--blue-t); }
+.men--fait    { background: var(--green); color: #fff; box-shadow: 0 0 0 1.5px #fff; }
+.men--encours { color: var(--amber-t); }
+.men--libre   { color: #fff; background: var(--terra-d); box-shadow: 0 0 0 1.5px #fff; }
+.men--aucun   { color: var(--muted2); }
+.plan-bar { gap: 6px; }
+.plan-bar .men { margin-right: -5px; }
+.mcal-barre { gap: 5px; }
+.mcal-barre .men { width: 16px; height: 16px; font-size: 10px; margin-right: -4px; }
+.men-leg { display: inline-flex; align-items: center; gap: 6px; font: 600 12px Figtree, sans-serif; color: var(--muted3); }
+.men-leg .men { margin-left: 0; }
+
+button.plan-cell { display: block; height: 100%; border-radius: 0; cursor: cell; }
+button.plan-cell:hover { background: var(--blue-bg); }
+.plan-cell--sel, button.plan-cell--sel:hover { background: var(--blue); }
+button.mcal-jour { text-align: left; align-self: stretch; cursor: cell; border-radius: 0; }
+button.mcal-jour:hover { background: var(--blue-bg); }
+.mcal-jour--sel, button.mcal-jour--sel:hover { background: var(--blue); color: #fff; }
+.mcal-jour--sel.mcal-jour--hors { opacity: 1; }
+
+/* ==========================================================================
+   L'APERÇU DE L'APPLICATION D'UN PRESTATAIRE (session 47, D-218)
+   Son écran, dessiné dans un cadre de téléphone, en lecture seule.
+   ========================================================================== */
+.apercu { display: flex; gap: 22px; flex-wrap: wrap; align-items: flex-start; padding: 6px 22px 22px; }
+.apercu-cote { flex: 1; min-width: min(100%, 240px); max-width: 420px; }
+.apercu-tel {
+  flex: none; width: 360px; max-width: 100%; height: 640px; overflow: hidden;
+  border: 9px solid var(--ink); border-radius: 36px; background: var(--sand);
+  box-shadow: var(--sh-panel); position: relative;
+}
+.apercu-tel .presta { height: 100%; }
+.apercu-tel .presta-head { padding-top: 16px; }
+.apercu-tel .tabbar { padding-bottom: 10px; }
+.apercu-tel button, .apercu-tel a { cursor: default; }
+@media (max-width: 480px) {
+  .apercu { padding: 6px 12px 16px; }
+  .apercu-tel { width: 100%; height: 560px; border-width: 7px; border-radius: 28px; }
+}
+
+/* Ce que voit un administrateur (session 47, D-215). */
+.droits { margin-top: 8px; padding: 10px 14px; background: var(--sand); border-radius: 14px; }

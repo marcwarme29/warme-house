@@ -49,7 +49,7 @@ function isoDate(d) {
 /* La version de l'application, affichée dans les bandeaux d'erreur et sous le
    compte connecté (session 46) : trois fois, un écran resté sur l'ancienne
    version a fait chercher un défaut déjà corrigé. À changer à chaque envoi. */
-var VERSION_APP = '46.8';
+var VERSION_APP = '47.0';
 
 var TODAY = isoDate(new Date());
 var TODAY_LABEL = new Date().toLocaleDateString('fr-FR',
@@ -668,6 +668,18 @@ function initialState() {
        est vide). Ponctuelle : ne compte que pour `mois`. Toujours liée à UN
        SEUL logement — c'est le choix de Marc. */
     charges: [],
+    /* Session 47 — trois réglages partagés et horodatés (`_maj`, voir
+       `REGLAGES_DATES` dans data.js) :
+       · `todos` (D-213) : la liste de tâches par logement,
+         `{ _maj, <logement>: [{ id, t, fait, at }] }` ;
+       · `sansPresta` (D-214) : les logements qu'on ne confie à personne,
+         `{ _maj, <logement>: true }` — le bandeau « confié à personne » se tait ;
+       · `adminDroits` (D-215) : ce que voit chaque administrateur,
+         `{ _maj, <compte>: { biens: [logements] | null, rubriques: [clés] | null } }`
+         — `null` voulant dire « tout ». */
+    todos: { _maj: 0 },
+    sansPresta: { _maj: 0 },
+    adminDroits: { _maj: 0 },
     factures: [],                     // D-206 : les factures (table et casier « factures », script 20)
     factureEd: null,                  // le formulaire d'une facture, ou null
     facturesFiltre: { periode: '', pid: '' },   // D-206 : toutes, sinon une facture d'octobre « disparaît » en novembre
@@ -821,6 +833,9 @@ function initialState() {
     planStart: TODAY,                 // premier jour affiché dans le planning
     planProps: null,                  // logements affichés (null = tous)
     statMonth: CURRENT_MONTH,         // mois des statistiques
+    statMode: 'mois',                 // D-209 : 'mois' | 'annee' — position d'affichage
+    statYear: CURRENT_MONTH.slice(0, 4),
+    statOcc: {},                      // D-210 : { pid: 'in' | 'out' } — choix manuel du taux d'occupation
     msgFilter: 'encours',             // 'encours' | 'avenir' | 'tous'
     showNewAuto: false,
     am: null,                         // message programmé en cours d'écriture
@@ -862,6 +877,13 @@ var mdpSaisie = { pwd: '', pwd2: '' };
 var recupJetons = null;      // { acces, rafraichi } — jamais enregistré
 
 function save() {
+  /* Pendant le dessin de l'écran filtré d'un administrateur (D-215), `state`
+     est une copie partielle : on ne l'écrit pas dans la mémoire locale. L'envoi
+     au cahier, lui, part 800 ms plus tard et relit le vrai état. */
+  if (renduFiltre) {
+    if (typeof DB !== 'undefined' && DB.estDispo()) DB.pousser();
+    return true;
+  }
   var ecrit = true;
   try {
     localStorage.setItem(STORE_KEY, JSON.stringify(state));
@@ -935,6 +957,12 @@ function load() {
      ne revenait jamais de lui-même — exactement le défaut du calendrier en
      D-135. Le choix tient tant que l'application reste ouverte, pas plus. */
   state.statMonth = CURRENT_MONTH;
+  /* Et la vue mensuelle, l'année en cours, le choix automatique des logements
+     comptés dans le taux d'occupation (session 47, D-209 et D-210) : trois
+     positions d'affichage, même traitement. */
+  state.statMode = 'mois';
+  state.statYear = CURRENT_MONTH.slice(0, 4);
+  state.statOcc = {};
   /* Idem pour la page Prestataires (*« idem rubrique prestataire »*, même
      jour) et pour le calendrier de la remise des clés : deux mois choisis
      dans une liste, enregistrés, qui ne revenaient jamais d'eux-mêmes. */
@@ -1305,6 +1333,14 @@ function upgrade() {
      même précaution que pour `horsStock` et `photosBien` juste au-dessus. */
   if (!Array.isArray(state.charges)) state.charges = [];
   state.charges = state.charges.filter(function (c) { return c && c.prop && !prop(c.prop).gone; });
+  /* Session 47 (D-213 à D-215) — les trois réglages horodatés. On ne retire
+     PAS les entrées d'un logement inconnu : sur un appareil neuf, les
+     logements peuvent arriver après les réglages, et nettoyer ici effacerait
+     dans le cahier ce qui n'est qu'en retard (règle 3). */
+  ['todos', 'sansPresta', 'adminDroits'].forEach(function (k) {
+    if (!state[k] || typeof state[k] !== 'object' || Array.isArray(state[k])) state[k] = { _maj: 0 };
+    if (typeof state[k]._maj !== 'number') state[k]._maj = 0;
+  });
   /* Session 46 (D-206) — les factures. Celles d'un logement supprimé restent :
      elles appartiennent à la comptabilité, pas au logement. */
   if (!Array.isArray(state.factures)) state.factures = [];
@@ -6258,8 +6294,18 @@ function prestasDuBien(pid) {
   });
 }
 
+/* UN LOGEMENT PEUT N'ÊTRE CONFIÉ À PERSONNE (session 47, D-214). Demandé le
+   5 novembre : *« la possibilité qu'un logement ne soit pas attribué forcément
+   à un prestataire ; le message qui me signale que j'ai tel logement qui n'est
+   pas attribué est bien, mais j'aimerais pouvoir le supprimer »*. Le bandeau
+   garde sa raison d'être (D-109 : un logement NEUF oublié), mais chaque
+   logement peut être déclaré « sans prestataire » d'un toucher : il n'y est
+   plus nommé, ni confié par « Confier à… ». Le choix voyage (réglage partagé
+   `sansPresta`, règle 14) et se défait sur la page Prestataires. */
+function sansPrestataire(pid) { return !!(state.sansPresta && state.sansPresta[pid] === true); }
+
 function biensNonConfies() {
-  return (state.props || []).filter(function (p) { return !prestasDuBien(p.id).length; });
+  return (state.props || []).filter(function (p) { return !prestasDuBien(p.id).length && !sansPrestataire(p.id); });
 }
 
 function alerteBiensNonConfies() {
@@ -6280,10 +6326,216 @@ function alerteBiensNonConfies() {
     'parties dans le cahier partagé, mais <em>aucun téléphone n’a le droit de les voir</em> : ' +
     'tant que personne ne l’a coché, l’écran de tes prestataires reste vide pour ce logement. ' +
     'Le réglage fin est dans « Prestataires » → « ⚙ Réglages et accès ».' +
-    '<button type="button" class="btn btn--xs" style="background:var(--ink);color:#fff;margin-top:10px"' +
-      act('confier-a-tous') + '>Confier ' + (plusieurs ? 'ces logements' : 'ce logement') +
-      ' à ' + aQui + '</button>' +
+    '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">' +
+      '<button type="button" class="btn btn--xs" style="background:var(--ink);color:#fff"' +
+        act('confier-a-tous') + '>Confier ' + (plusieurs ? 'ces logements' : 'ce logement') +
+        ' à ' + aQui + '</button>' +
+      /* D-214 : un logement qui n'a pas besoin de prestataire se tait. */
+      orphelins.map(function (p) {
+        return '<button type="button" class="btn btn--xs" style="background:#fff;color:var(--amber-t)"' +
+          act('sans-presta', { pid: p.id }) + '>' +
+          (plusieurs ? '« ' + esc(p.short) + ' » n’a pas besoin de prestataire' : 'Pas besoin de prestataire : ne plus le signaler') +
+          '</button>';
+      }).join('') +
+    '</div>' +
     '</div>';
+}
+
+/* La ligne qui permet de défaire « sans prestataire » (D-214), page Prestataires. */
+function ligneSansPresta() {
+  var l = (state.props || []).filter(function (p) { return sansPrestataire(p.id); });
+  if (!l.length) return '';
+  return '<p class="sec-note" style="margin-top:16px">Logement' + (l.length > 1 ? 's' : '') + ' sans prestataire, ' +
+    'que le bandeau ne signale plus : ' + l.map(function (p) {
+      return '<strong>' + esc(p.name) + '</strong> <button type="button" class="btn btn--xs" style="background:var(--cream);' +
+        'color:var(--ink-soft);margin-left:4px"' + act('avec-presta', { pid: p.id }) + '>Le signaler à nouveau</button>';
+    }).join(' · ') + '</p>';
+}
+
+/* ==========================================================================
+   CE QUE VOIT UN ADMINISTRATEUR (session 47, D-215)
+
+   Demandé le 5 novembre : *« pour les administrateurs, pouvoir leur donner
+   accès à seulement une partie des rubriques ou certains logements (voir les
+   stats que pour un logement, les messages et le calendrier seulement pour
+   les logements sélectionnés, etc.) »*. À la question posée — filtrer son
+   écran, ou un vrai verrou dans le cahier ? — Marc a choisi **filtrer son
+   écran**.
+
+   C'EST UN FILTRE D'AFFICHAGE, PAS UN COFFRE-FORT, et l'écran du propriétaire
+   le dit en toutes lettres (règle 5). L'appareil de l'administrateur reçoit
+   toujours tout du cahier (script 18 : il voit tout comme le propriétaire) ;
+   ce sont ses menus et ses pages qui ne montrent que les logements et les
+   rubriques cochés. Un vrai verrou demanderait de réécrire les règles du
+   cahier ET de découper les réglages partagés, qui tiennent en une ligne par
+   sorte pour tous les logements à la fois.
+
+   COMMENT : plutôt que de retoucher une à une les quelque cent vues qui
+   parcourent `state.props`, `state.resas` et `state.missions`, on dessine
+   l'écran de l'administrateur à partir d'une COPIE de l'état où ces trois
+   listes (et les charges, factures et paies qui en dépendent) ne contiennent
+   que ses logements. La copie ne vit que le temps du dessin :
+     · rien n'y est enregistré — `save()` ne réécrit pas la mémoire locale
+       pendant le dessin, et l'envoi au cahier, qui part 800 ms plus tard,
+       relit le VRAI état (règle 3 : ne jamais envoyer une vue partielle) ;
+     · les gestes (clics, saisies) agissent toujours sur le vrai état, par
+       identifiant — jamais par position dans une liste filtrée.
+
+   Forme du réglage partagé `adminDroits` : `{ _maj, <compte>: { biens:
+   [logements] | null, rubriques: [clés] | null } }`, `null` = tout.
+   L'accueil reste toujours ouvert : il faut bien atterrir quelque part.
+   ========================================================================== */
+function droitsAdmin() {
+  if (typeof DB === 'undefined' || !DB.estDispo() || !DB.estAdmin || !DB.estAdmin()) return null;
+  var p = DB.profil();
+  var d = p && state.adminDroits && state.adminDroits[p.id];
+  return d && typeof d === 'object' ? d : null;
+}
+
+function biensVisibles() {
+  var d = droitsAdmin();
+  var tous = state.props || [];
+  if (!d || !Array.isArray(d.biens)) return tous;
+  return tous.filter(function (p) { return d.biens.indexOf(p.id) >= 0; });
+}
+
+function rubriqueVisible(k) {
+  if (k === 'dash') return true;
+  var d = droitsAdmin();
+  if (!d || !Array.isArray(d.rubriques)) return true;
+  return d.rubriques.indexOf(k) >= 0;
+}
+
+var renduFiltre = false;
+
+function rendreSelonDroits(view) {
+  var d = state.auth === 'owner' ? droitsAdmin() : null;
+  if (!d || !Array.isArray(d.biens)) return view();
+  var vrai = state;
+  var vus = {};
+  d.biens.forEach(function (pid) { vus[pid] = true; });
+  var vue = {};
+  Object.keys(vrai).forEach(function (k) { vue[k] = vrai[k]; });
+  vue.props = (vrai.props || []).filter(function (p) { return vus[p.id]; });
+  vue.resas = {};
+  Object.keys(vrai.resas || {}).forEach(function (pid) { if (vus[pid]) vue.resas[pid] = vrai.resas[pid]; });
+  vue.missions = (vrai.missions || []).filter(function (m) { return m && vus[m.prop]; });
+  vue.done = (vrai.done || []).filter(function (r) { return r && vus[r.prop]; });
+  vue.charges = (vrai.charges || []).filter(function (c) { return c && vus[c.prop]; });
+  vue.factures = (vrai.factures || []).filter(function (f) { return f && vus[f.pid]; });
+  renduFiltre = true;
+  state = vue;
+  try { return view(); }
+  finally { state = vrai; renduFiltre = false; }
+}
+
+/* Le résumé d'une ligne : « voit tout », ou ce qui est coché. */
+function resumeDroits(d) {
+  if (!d || (!Array.isArray(d.biens) && !Array.isArray(d.rubriques))) return 'Voit tout, comme toi.';
+  var nb = (state.props || []).length, nr = OWNER_NAV.length - 1;
+  return (Array.isArray(d.biens)
+      ? 'Logements : ' + (state.props || []).filter(function (p) { return d.biens.indexOf(p.id) >= 0; })
+          .map(function (p) { return p.short; }).join(', ') + ' (' + d.biens.length + ' sur ' + nb + ')'
+      : 'Tous les logements') + ' · ' +
+    (Array.isArray(d.rubriques) ? d.rubriques.length + ' rubrique(s) sur ' + nr : 'toutes les rubriques') + '.';
+}
+
+var adminDroitsOuvert = null;     // le compte dont on règle les droits (position d'affichage)
+
+function panneauDroitsAdmin(c) {
+  var d = (state.adminDroits || {})[c.uid] || {};
+  var biens = state.props || [];
+  var rubs = OWNER_NAV.filter(function (n) { return n.key !== 'dash'; });
+  var tousBiens = !Array.isArray(d.biens), toutesRubs = !Array.isArray(d.rubriques);
+  return '<div class="droits">' +
+    '<div class="perm-row" style="border:0;padding:6px 0">' +
+      '<span class="perm-label">Logements qu’il voit :</span>' +
+      '<button type="button" class="perm-chip" aria-pressed="' + tousBiens + '"' + act('admin-biens-tous', { uid: c.uid }) + '>' +
+        '<span class="checkbox-sq' + (tousBiens ? ' checkbox-sq--on' : '') + '"></span>Tous</button>' +
+      biens.map(function (p) {
+        var on = tousBiens || d.biens.indexOf(p.id) >= 0;
+        return '<button type="button" class="perm-chip" aria-pressed="' + on + '" style="--accent:' + p.color + '"' +
+          act('admin-bien', { uid: c.uid, pid: p.id }) + '>' +
+          '<span class="dot" style="background:' + (on ? p.color : 'rgba(36,30,26,.2)') + '"></span>' + esc(p.short) + '</button>';
+      }).join('') +
+    '</div>' +
+    '<div class="perm-row" style="border:0;padding:6px 0">' +
+      '<span class="perm-label">Rubriques :</span>' +
+      '<button type="button" class="perm-chip" aria-pressed="' + toutesRubs + '"' + act('admin-rubs-tous', { uid: c.uid }) + '>' +
+        '<span class="checkbox-sq' + (toutesRubs ? ' checkbox-sq--on' : '') + '"></span>Toutes</button>' +
+      rubs.map(function (n) {
+        var on = toutesRubs || d.rubriques.indexOf(n.key) >= 0;
+        return '<button type="button" class="perm-chip" aria-pressed="' + on + '" style="--accent:' + n.color + '"' +
+          act('admin-rub', { uid: c.uid, k: n.key }) + '>' +
+          '<span class="checkbox-sq' + (on ? ' checkbox-sq--on' : '') + '" style="--accent:' + n.color + '"></span>' + esc(n.label) + '</button>';
+      }).join('') +
+    '</div>' +
+    '<p class="sec-note" style="margin:4px 0 0">L’accueil reste toujours ouvert. Ses menus et ses pages ne montrent que ce qui est ' +
+      'coché — statistiques, calendrier, messages, missions… seulement pour ces logements. ' +
+      '<strong>C’est un filtre d’affichage, pas un coffre-fort</strong> : son appareil reçoit quand même tout, et une personne ' +
+      'qui s’y connaît en informatique pourrait voir le reste. À réserver à quelqu’un de confiance.</p>' +
+  '</div>';
+}
+
+/* ==========================================================================
+   VOIR CE QUE VOIT UN PRESTATAIRE (session 47, D-218)
+
+   Demandé le 5 novembre : *« un visuel en temps réel sur ce qu'il voit dans
+   son application »*. L'écran du prestataire est dessiné ici, dans un cadre
+   de téléphone, par les MÊMES fonctions que sur son téléphone, avec sa fiche
+   à la place de la tienne. Il se redessine à chaque nouvelle du cahier
+   partagé, comme le reste de ta page : c'est le « temps réel » demandé.
+
+   Ce qu'il ne peut pas montrer, et qu'il DIT (règle 5, et la leçon de D-144 :
+   un parcours vu depuis l'écran du propriétaire ne prouve pas ce que voit
+   l'autre appareil) :
+     · il part de TA fiche. Le téléphone, lui, obéit à SON compte : si le
+       panneau au-dessus est ambre, il peut en montrer moins ;
+     · une case cochée pendant le ménage ne quitte le téléphone qu'au
+       « Terminer » (D-185) — les photos, elles, arrivent au fil de l'eau.
+
+   Lecture seule : un clic dans le cadre ne fait rien (voir l'écouteur des
+   clics). Ce serait sinon prendre une mission à sa place. L'onglet affiché
+   est une position d'affichage (règle 7).
+   ========================================================================== */
+var apercuPresta = null;
+var apercuOnglet = 'missions';
+
+function apercuPrestaHtml(agId, onglet) {
+  var a = agent(agId);
+  var cles = a.kind === 'cles';
+  var vue = cles ? viewPrestaCles : onglet === 'mes' ? viewPrestaMes : onglet === 'gains' ? viewPrestaGains : viewPrestaMissions;
+  var vraiMe = state.me, vraiRoute = route, vraiMsg = state.mMsg;
+  state.me = agId;
+  state.mMsg = '';
+  route = { name: cles ? 'p-cles' : onglet === 'mes' ? 'p-mes' : onglet === 'gains' ? 'p-gains' : 'p-missions', id: null, sec: null };
+  try { return vue(); }
+  catch (e) { return '<p class="empty">Aperçu indisponible : ' + esc(e && e.message) + '</p>'; }
+  finally { state.me = vraiMe; route = vraiRoute; state.mMsg = vraiMsg; }
+}
+
+function blocApercuPresta(a) {
+  var cles = a.kind === 'cles';
+  var onglets = cles ? [['cles', 'Calendrier']] : [['missions', 'Missions à prendre'], ['mes', 'Mes missions'], ['gains', 'Gains']];
+  if (!onglets.some(function (o) { return o[0] === apercuOnglet; })) apercuOnglet = onglets[0][0];
+  return '<div class="apercu">' +
+    '<div class="apercu-cote">' +
+      '<h3 style="font:700 15px Figtree,sans-serif;margin:0">Ce que ' + esc(a.name) + ' voit sur son téléphone</h3>' +
+      (onglets.length > 1
+        ? '<div class="seg" style="margin-top:10px">' + onglets.map(function (o) {
+            return '<button type="button" aria-pressed="' + (apercuOnglet === o[0]) + '"' + act('apercu-onglet', { o: o[0] }) + '>' + esc(o[1]) + '</button>';
+          }).join('') + '</div>'
+        : '') +
+      '<p class="sec-note" style="margin:10px 0 0">Se met à jour tout seul dès que quelque chose change. ' +
+        'Lecture seule : les boutons du cadre ne font rien ici.</p>' +
+      '<p class="sec-note" style="margin:8px 0 0">Calculé à partir de <strong>ta fiche</strong>. Si le panneau au-dessus est ' +
+        'ambre, son téléphone peut en montrer moins tant que ce n’est pas réparé. Les cases cochées pendant un ménage ' +
+        'n’arrivent qu’au moment où elle appuie sur « Terminer » ; les photos, elles, arrivent au fur et à mesure.</p>' +
+    '</div>' +
+    '<div class="apercu-tel" aria-label="' + esc('Aperçu de l’application de ' + a.name) + '">' +
+      apercuPrestaHtml(a.id, apercuOnglet) +
+    '</div>' +
+  '</div>';
 }
 
 /* LE PROPRIÉTAIRE SUR SON TÉLÉPHONE (session 40, D-183).
@@ -6309,7 +6561,7 @@ var menuProprioOuvert = false;
 
 function barreProprio(page, openCount) {
   var dansPlus = OWNER_TABS.indexOf(page) < 0;
-  var onglets = OWNER_TABS.map(function (k) {
+  var onglets = OWNER_TABS.filter(rubriqueVisible).map(function (k) {     // D-215
     var n = OWNER_NAV.filter(function (x) { return x.key === k; })[0];
     var on = page === k && !menuProprioOuvert;
     return '<button type="button"' + (on ? ' aria-current="page"' : '') + ' style="--nav:' + n.color + '"' +
@@ -6332,7 +6584,7 @@ function menuProprio(page, openCount) {
     '<div class="omenu-fond"' + act('menu-proprio') + '></div>' +
     '<div class="omenu-feuille">' +
       '<div class="omenu-t">Toutes les rubriques</div>' +
-      OWNER_NAV.map(function (n) {
+      OWNER_NAV.filter(function (n) { return rubriqueVisible(n.key); }).map(function (n) {
         return '<button type="button" class="omenu-l"' + (page === n.key ? ' aria-current="page"' : '') +
           ' style="--nav:' + n.color + '"' + act('nav', { path: n.path }) + '>' +
           '<span class="rail-dot"></span>' + esc(n.label) +
@@ -6348,7 +6600,15 @@ function menuProprio(page, openCount) {
 function ownerShell(page, content) {
   var openCount = state.missions.filter(function (m) { return m.status === 'dispo'; }).length;
 
-  var nav = OWNER_NAV.map(function (n) {
+  /* Les rubriques qu'un administrateur n'a pas (D-215) ne sont ni dans le
+     menu, ni ouvertes si on y arrive par une adresse. */
+  if (!rubriqueVisible(page)) {
+    content = '<div class="page-head"><div><h1 class="page-title">Rubrique non ouverte</h1>' +
+      '<p class="page-sub">Le propriétaire ne t’a pas ouvert cette rubrique. Demande-lui s’il te la faut.</p></div></div>' +
+      '<button type="button" class="btn btn--xs" style="background:var(--cream);color:var(--ink-soft);margin-top:16px"' +
+        act('nav', { path: '#/admin' }) + '>← Retour à l’accueil</button>';
+  }
+  var nav = OWNER_NAV.filter(function (n) { return rubriqueVisible(n.key); }).map(function (n) {
     var on = page === n.key;
     return '<button type="button"' + (on ? ' aria-current="page"' : '') + ' style="--nav:' + n.color + '"' +
       act('nav', { path: n.path }) + '>' +
@@ -6760,20 +7020,262 @@ function creerMissionAjout() {
   return m;
 }
 
+/* ==========================================================================
+   L'ACCUEIL, REDESSINÉ (session 47, D-212)
+
+   Demandé le 5 novembre : *« modifier la mise en page de "réservations en
+   cours et à venir", quelque chose de plus lisible, comme un tableau avec les
+   réservations en cours et à droite celles des 14 prochains jours »*,
+   *« supprime les 4 petits carrés, les infos ne m'intéressent pas »*, et *« une
+   petite todoliste qui prend pas beaucoup de place, par logement, qu'on
+   swiperait pour passer d'un logement à l'autre »*. Parmi trois mises en page
+   proposées, Marc a choisi : « Aujourd'hui » en haut, puis ses deux colonnes,
+   puis la liste de tâches, puis les alertes.
+
+   Les quatre carrés (missions à venir, non prises, articles sous seuil, à
+   payer) sont retirés de l'écran : les deux premiers restent dans la phrase
+   sous le titre et sur la pastille du menu « Missions », le troisième dans
+   l'alerte « Stock bas », le quatrième sur la page Prestataires. Rien n'est
+   perdu, ils ne sont simplement plus en tête.
+
+   `blocResasEnCours()` (la liste unique des séjours à 30 jours, session 12)
+   n'est plus appelée ; elle reste écrite plus haut.
+   ========================================================================== */
+
+/** Le ménage d'un séjour, en une pastille courte : 🧹 et son état. */
+function pastilleMenage(m, vide) {
+  if (!m) return { l: vide || 'pas de ménage prévu', c: 'badge--soft', i: '·' };
+  if (m.status === 'dispo') return { l: 'non pris', c: 'badge--terra', i: '!' };
+  if (m.status === 'termine') return { l: 'fait · ' + nomPreneur(m), c: 'badge--green', i: '✓' };
+  if (m.status === 'encours') return { l: 'en cours · ' + nomPreneur(m), c: 'badge--amber', i: '…' };
+  return { l: 'pris · ' + nomPreneur(m), c: 'badge--blue', i: '✓' };
+}
+
+/* LE MÉNAGE QUI PRÉPARE LE LOGEMENT POUR CE VOYAGEUR. Pour un séjour à venir,
+   la question n'est pas « qui fera le ménage à son départ ? » mais « le
+   logement sera-t-il prêt à son arrivée ? ». C'est la dernière mission de ce
+   logement entre le départ du séjour précédent et cette arrivée — le ménage
+   d'abord, comme `missionDuDepart()`. Rien trouvé : on le dit, on n'invente
+   pas (règle 5). */
+function missionAvantArrivee(pid, r) {
+  var precedent = resasOf(pid).filter(function (q) {
+    return q && q.statut !== 'annule' && q.id !== r.id && q.end <= r.start;
+  }).sort(function (a, b) { return a.end < b.end ? 1 : -1; })[0];
+  var depuis = precedent ? precedent.end : jourPlus(r.start, -14);
+  var mm = state.missions.filter(function (q) {
+    return q.prop === pid && q.status !== 'annulee' && q.date >= depuis && q.date <= r.start && q.type !== 'maintenance';
+  }).sort(function (a, b) { return a.date < b.date ? 1 : -1; });
+  if (!mm.length) return null;
+  var premier = state.services[0] ? state.services[0].key : 'menage';
+  return mm.find(function (q) { return q.type === premier; }) || mm[0];
+}
+
+/* « AUJOURD'HUI » : départs, arrivées, ménages et missions du jour. */
+function blocAujourdhui() {
+  var vivantes = allResas().filter(function (x) {
+    return x.r && x.r.statut !== 'annule' && biensVisibles().some(function (p) { return p.id === x.pid; });
+  });
+  var parNom = function (a, b) { return prop(a.pid).short < prop(b.pid).short ? -1 : 1; };
+  var departs = vivantes.filter(function (x) { return x.r.end === TODAY; }).sort(parNom);
+  var arrivees = vivantes.filter(function (x) { return x.r.start === TODAY; }).sort(parNom);
+  var missions = state.missions.filter(function (m) {
+    return m.date === TODAY && m.status !== 'annulee' && biensVisibles().some(function (p) { return p.id === m.prop; });
+  });
+  var nonPris = missions.filter(function (m) { return m.status === 'dispo'; }).length;
+
+  var ligne = function (attrs, couleur, gauche, droite) {
+    return '<button type="button" class="jour-ligne"' + attrs + '>' +
+      '<span class="dot" style="background:' + couleur + '"></span>' +
+      '<span class="jour-g">' + gauche + '</span>' + droite + '</button>';
+  };
+  var tuile = function (titre, n, extra, lignes, vide) {
+    return '<div class="jour-tuile">' +
+      '<div class="jour-t"><span class="jour-n num">' + n + '</span><span>' + esc(titre) + '</span>' + (extra || '') + '</div>' +
+      (lignes.length ? '<div class="jour-l">' + lignes.join('') + '</div>' : '<p class="jour-vide">' + esc(vide) + '</p>') +
+      '</div>';
+  };
+
+  var lDeparts = departs.map(function (x) {
+    var p = prop(x.pid), inf = state.info[x.pid] || {};
+    var parti = departAt(x.pid, x.r);
+    return ligne(act('open-resa', { rid: x.r.id }), p.color,
+      '<strong>' + esc(p.short) + '</strong> · ' + esc(x.r.guest),
+      parti ? '<span class="badge badge--green">parti à ' + esc(parti) + '</span>'
+        : inf.checkout ? '<span class="jour-h num">' + esc(inf.checkout) + '</span>' : '');
+  });
+  var lArrivees = arrivees.map(function (x) {
+    var p = prop(x.pid), inf = state.info[x.pid] || {};
+    var h = x.r.arriveePrevue || inf.checkin || '';
+    return ligne(act('open-resa', { rid: x.r.id }), p.color,
+      '<strong>' + esc(p.short) + '</strong> · ' + esc(x.r.guest),
+      h ? '<span class="jour-h num">' + esc(h) + '</span>' : '');
+  });
+  var lMissions = missions.map(function (m) {
+    var p = prop(m.prop), pm = pastilleMenage(m);
+    return ligne(act('nav', { path: '#/admin/missions/' + m.id }), p.color,
+      '<strong>' + esc(p.short) + '</strong> · ' + esc(service(m.type).label),
+      '<span class="badge ' + pm.c + '">' + esc(pm.l) + '</span>');
+  });
+
+  return '<section class="jour" aria-label="Aujourd’hui">' +
+    '<h2 class="sec-title" style="margin:0 0 10px">Aujourd’hui</h2>' +
+    '<div class="jour-grille">' +
+      tuile('départ' + (departs.length > 1 ? 's' : ''), departs.length, '', lDeparts, 'Aucun départ aujourd’hui.') +
+      tuile('arrivée' + (arrivees.length > 1 ? 's' : ''), arrivees.length, '', lArrivees, 'Aucune arrivée aujourd’hui.') +
+      tuile('ménage' + (missions.length > 1 ? 's' : '') + ' et missions', missions.length,
+        nonPris ? '<span class="badge badge--terra" style="margin-left:auto">' + nonPris + ' non pris' + (nonPris > 1 ? 'es' : 'e') + '</span>' : '',
+        lMissions, 'Rien de prévu aujourd’hui.') +
+    '</div>' +
+  '</section>';
+}
+
+/* « EN CE MOMENT » À GAUCHE, « LES 14 PROCHAINS JOURS » À DROITE. Une ligne
+   par séjour, quatre colonnes qu'on lit d'un coup d'œil : quand, où, qui, et
+   le ménage. À gauche, c'est le ménage de SON départ ; à droite, celui qui
+   prépare le logement pour SON arrivée — la seule question qui compte pour
+   quelqu'un qui n'est pas encore là. */
+function blocSejoursAccueil() {
+  var fin14 = jourPlus(TODAY, 14);
+  var vivantes = allResas().filter(function (x) {
+    return x.r && x.r.statut !== 'annule' && biensVisibles().some(function (p) { return p.id === x.pid; });
+  });
+  var enCours = vivantes.filter(function (x) { return x.r.start <= TODAY && x.r.end >= TODAY; })
+    .sort(function (a, b) { return a.r.end < b.r.end ? -1 : a.r.end > b.r.end ? 1 : 0; });
+  var aVenir = vivantes.filter(function (x) { return x.r.start > TODAY && x.r.start <= fin14; })
+    .sort(function (a, b) { return a.r.start < b.r.start ? -1 : a.r.start > b.r.start ? 1 : 0; });
+
+  var quand = function (iso) {
+    var n = nights(TODAY, iso);
+    return esc(fmtDate(iso)) + '<small>' + (n === 0 ? 'aujourd’hui' : n === 1 ? 'demain' : 'dans ' + n + ' j') + '</small>';
+  };
+  var ligne = function (x, dateIso, menage, info) {
+    var p = prop(x.pid), r = x.r;
+    var pl = PLATS[r.plat] || PLATS['Direct'];
+    return '<button type="button" class="dt-row"' + act('open-resa', { rid: r.id }) + '>' +
+      '<span class="dt-quand num">' + quand(dateIso) + '</span>' +
+      '<span class="dt-bien">' + vignetteBien(x.pid, p.color) + '<span>' + esc(p.short) + '</span></span>' +
+      '<span class="dt-voy"><span class="dt-nom">' + esc(r.guest) + '</span>' +
+        '<small><span class="dot" style="width:6px;height:6px;background:' + pl.color + '"></span>' + esc(info) + '</small></span>' +
+      '<span class="dt-men"><span class="badge ' + menage.c + '" title="' + esc('Ménage : ' + menage.l) + '">🧹 ' + esc(menage.l) + '</span></span>' +
+      '</button>';
+  };
+  var tete = function (a, b) {
+    return '<div class="dt-tete"><span>' + a + '</span><span>Logement</span><span>Voyageur</span><span>' + b + '</span></div>';
+  };
+
+  var gauche = enCours.map(function (x) {
+    var nb = nights(x.r.start, x.r.end);
+    var etat = x.r.end === TODAY ? 'part aujourd’hui' : x.r.start === TODAY ? 'arrive aujourd’hui' : 'sur place';
+    return ligne(x, x.r.end, pastilleMenage(missionDuDepart(x.pid, x.r)),
+      etat + ' · ' + nb + ' nuit' + (nb > 1 ? 's' : '') + (x.r.guests ? ' · ' + x.r.guests + ' pers.' : ''));
+  });
+  var droite = aVenir.map(function (x) {
+    var nb = nights(x.r.start, x.r.end);
+    return ligne(x, x.r.start, pastilleMenage(missionAvantArrivee(x.pid, x.r), 'aucun ménage avant'),
+      x.r.plat + ' · ' + nb + ' nuit' + (nb > 1 ? 's' : '') + (x.r.guests ? ' · ' + x.r.guests + ' pers.' : ''));
+  });
+
+  return '<div class="cols dt-cols">' +
+    '<section class="dt-col">' +
+      '<div class="dt-titre"><h2 class="sec-title" style="margin:0">En ce moment</h2>' +
+        '<span class="sec-note">' + enCours.length + ' séjour' + (enCours.length > 1 ? 's' : '') + '</span></div>' +
+      '<div class="card card--flush dt">' + tete('Départ', 'Ménage du départ') +
+        (gauche.length ? gauche.join('') : '<p class="empty">Aucun voyageur sur place.</p>') + '</div>' +
+    '</section>' +
+    '<section class="dt-col">' +
+      '<div class="dt-titre"><h2 class="sec-title" style="margin:0">Les 14 prochains jours</h2>' +
+        '<button type="button" style="font:600 12.5px Figtree,sans-serif;color:var(--terra)"' +
+          act('nav', { path: '#/admin/calendrier' }) + '>Le calendrier →</button></div>' +
+      '<div class="card card--flush dt">' + tete('Arrivée', 'Ménage avant') +
+        (droite.length ? droite.join('') : '<p class="empty">Aucune arrivée dans les 14 jours.</p>') + '</div>' +
+    '</section>' +
+  '</div>';
+}
+
+/* --------------------------------------------------------------------------
+   LA PETITE LISTE DE TÂCHES, PAR LOGEMENT (session 47, D-213)
+
+   Une carte, un logement à la fois : on passe au suivant avec les flèches,
+   ou en faisant glisser la carte du doigt sur un téléphone. Une tâche se
+   coche (elle reste, barrée, jusqu'à « Effacer les tâches faites ») ou se
+   supprime d'un ×.
+
+   Où elle vit : dans les réglages partagés (`todos`, data.js), comme les
+   charges ou les réponses toutes faites — sinon une tâche notée sur
+   l'ordinateur n'existerait pas sur le téléphone ni chez l'administrateur
+   (règle 14). Forme : `{ _maj: horodatage, <logement>: [{ id, t, fait, at }] }`.
+   `_maj` n'est pas décoratif : un réglage VIDE venu du cahier ne remplace
+   jamais un réglage local plein (D-124) — sans lui, la dernière tâche effacée
+   ici reviendrait depuis le second appareil.
+
+   Le logement affiché est une position d'affichage (règle 7) : une variable
+   de module, jamais enregistrée. Idem pour la saisie en cours.
+   -------------------------------------------------------------------------- */
+var todoIdx = 0;
+var todoSaisie = '';
+
+function todosDe(pid) {
+  var t = state.todos && state.todos[pid];
+  return Array.isArray(t) ? t.filter(function (x) { return x && x.id; }) : [];
+}
+
+function blocTodo() {
+  var biens = biensVisibles().filter(function (p) { return !p.gone; });
+  if (!biens.length) return '';
+  if (todoIdx >= biens.length || todoIdx < 0) todoIdx = 0;
+  var p = biens[todoIdx];
+  var liste = todosDe(p.id);
+  var aFaire = liste.filter(function (x) { return !x.fait; });
+  var faites = liste.filter(function (x) { return x.fait; });
+
+  var item = function (x) {
+    return '<div class="todo-item' + (x.fait ? ' todo-item--fait' : '') + '">' +
+      '<button type="button" class="todo-case" role="checkbox" aria-checked="' + !!x.fait + '" aria-label="' +
+        esc((x.fait ? 'Décocher : ' : 'Cocher : ') + x.t) + '"' + act('todo-fait', { pid: p.id, id: x.id }) + '>' +
+        (x.fait ? '✓' : '') + '</button>' +
+      '<span class="todo-t">' + esc(x.t) + '</span>' +
+      '<button type="button" class="x-btn" aria-label="' + esc('Supprimer : ' + x.t) + '"' +
+        act('todo-del', { pid: p.id, id: x.id }) + '>×</button>' +
+      '</div>';
+  };
+
+  return '<section class="todo card" data-swipe="todo-bien" aria-label="À faire, par logement">' +
+    '<div class="todo-tete">' +
+      (biens.length > 1 ? '<button type="button" class="todo-fl" aria-label="Logement précédent"' + act('todo-bien', { d: '-1' }) + '>‹</button>' : '') +
+      '<div class="todo-titre"><span class="todo-k">À faire</span>' +
+        '<span class="todo-bien">' + vignetteBien(p.id, p.color) + '<span>' + esc(p.name) + '</span></span></div>' +
+      (biens.length > 1 ? '<button type="button" class="todo-fl" aria-label="Logement suivant"' + act('todo-bien', { d: '1' }) + '>›</button>' : '') +
+    '</div>' +
+    (biens.length > 1
+      ? '<div class="todo-points" role="tablist">' + biens.map(function (b, i) {
+          var n = todosDe(b.id).filter(function (x) { return !x.fait; }).length;
+          return '<button type="button" role="tab" aria-selected="' + (i === todoIdx) + '" class="todo-point" style="--accent:' + b.color + '"' +
+            ' aria-label="' + esc(b.name + (n ? ' — ' + n + ' tâche(s)' : '')) + '"' + act('todo-aller', { i: String(i) }) + '>' +
+            (n ? '<span class="num">' + n + '</span>' : '') + '</button>';
+        }).join('') + '</div>'
+      : '') +
+    '<div class="todo-liste">' +
+      (aFaire.length ? aFaire.map(item).join('') : '<p class="todo-vide">Rien à faire pour ce logement.</p>') +
+      faites.map(item).join('') +
+    '</div>' +
+    '<div class="todo-ajout">' +
+      '<input class="inp" type="text" maxlength="200" placeholder="Ajouter une tâche pour ' + esc(p.short) + '…"' +
+        ' aria-label="Nouvelle tâche" value="' + esc(todoSaisie) + '" data-fid="todo-new" data-in="todo-new">' +
+      '<button type="button" class="btn btn--xs" style="background:var(--terra);color:#fff"' + act('todo-add', { pid: p.id }) + '>Ajouter</button>' +
+    '</div>' +
+    (faites.length
+      ? '<button type="button" class="btn btn--xs todo-effacer"' + act('todo-effacer', { pid: p.id }) + '>Effacer les tâches faites (' + faites.length + ')</button>'
+      : '') +
+  '</section>';
+}
+
 function viewOwnerDash() {
   var openCount = state.missions.filter(function (m) { return m.status === 'dispo'; }).length;
   var lowByProp = state.props.map(function (p) { return { p: p, lows: lowsFor(p.id) }; });
   var totalLow = lowByProp.reduce(function (n, x) { return n + x.lows.length; }, 0);
 
-  var kpis = [
-    { v: String(state.missions.filter(function (m) {
-        return m.status !== 'termine' && m.status !== 'annulee';   // une annulée n'est plus à venir
-      }).length), l: 'missions à venir', c: C.ink },
-    { v: String(openCount), l: 'non prises', c: C.terracotta },
-    { v: String(totalLow), l: 'articles sous seuil', c: C.ambre },
-    { v: state.agents.reduce(function (n, a) { return n + monthTotal(a.id, CURRENT_MONTH); }, 0) + ' €',
-      l: 'à payer en ' + MOIS_LONGS[parseInt(CURRENT_MONTH.split('-')[1], 10) - 1], c: C.vert }
-  ];
+  /* Les quatre carrés (missions à venir, non prises, articles sous seuil, à
+     payer) sont retirés de l'accueil (session 47, D-212) : voir plus haut. */
 
   /* Les alertes se calculent sur les vraies réservations du jour (session 14 :
      elles étaient écrites en dur, du temps de la démonstration). */
@@ -6898,14 +7400,16 @@ function viewOwnerDash() {
       '<div><h1 class="page-title">' + esc(bonjourProprio()) + '</h1>' +
       '<p class="page-sub">' + openCount + ' mission(s) encore sans prestataire · ' + totalLow + ' articles sous le seuil</p></div>' +
       // Le menu « + Ajouter », en haut à droite (session 42, D-189).
-      '<div class="dash-droite">' + boutonAjouter() +
-      '<div class="kpis">' + kpis.map(function (k) {
-        return '<div class="kpi"><div class="v num" style="color:' + k.c + '">' + esc(k.v) + '</div><div class="l">' + k.l + '</div></div>';
-      }).join('') + '</div>' +
-      '</div>' +
+      '<div class="dash-droite">' + boutonAjouter() + '</div>' +
     '</div>' +
     (state.ajoutMsg ? '<div class="alert alert--green" style="margin-top:18px"><div class="det">' + esc(state.ajoutMsg) + '</div></div>' : '') +
     formulaireAjout() +
+
+    /* L'accueil de la session 47 (D-212, D-213) : la journée, les séjours sur
+       deux colonnes, la liste de tâches — puis les alertes, comme avant. */
+    blocAujourdhui() +
+    blocSejoursAccueil() +
+    blocTodo() +
 
     /* CHAQUE ALERTE MÈNE QUELQUE PART (session 30, D-159). Signalé par Marc : le
        voyant s'allumait, mais rien ne menait à la mission concernée, et la
@@ -6939,10 +7443,9 @@ function viewOwnerDash() {
     blocAcces(attente) +
 
     '<div class="cols" style="margin-top:26px;gap:20px">' +
-      blocResasEnCours() +
       '<section style="flex:1;min-width:min(100%,300px)">' +
         '<h2 class="sec-title">Stocks à surveiller</h2>' +
-        '<div class="stack" style="gap:10px">' + lowByProp.map(function (x) {
+        '<div class="stock-grille">' + lowByProp.map(function (x) {
           var n = x.lows.length;
           var cls = n > 3 ? 'badge--terra' : n ? 'badge--amber' : 'badge--green';
           return '<button type="button" class="card" style="border-radius:18px;padding:15px 17px;width:100%"' +
@@ -8001,6 +8504,37 @@ function viewOwnerMission() {
       ' data-fid="mn-' + esc(m.id) + '" data-in="mission-note" data-id="' + esc(m.id) + '">' + esc(m.note || '') + '</textarea>' +
   '</div>';
 
+  /* LE TARIF D'UNE MISSION SE CORRIGE (session 47, D-211). Demandé le 5
+     novembre : *« personnaliser si besoin le tarif de la prestation d'une
+     mission, si jamais ça a pris plus de temps que prévu »*. Le tarif était
+     posé à la création, d'après la fiche du logement, et ne se touchait plus.
+     C'est ce montant qui entre dans les gains de la prestataire et dans la
+     paie du mois (`ledger()` lit `m.price`) : le corriger ici suffit. Il part
+     dans l'envoi groupé des missions — le propriétaire est le seul à l'écrire,
+     du premier au dernier jour (règle 25). */
+  var tarifBase = (state.tariffs[m.prop] || {})[m.type] || 0;
+  var moisPaie = moisDe(m.date);
+  var dejaPaye = fini && m.taker && isPaid(m.taker, moisPaie);
+  var tarifCard = m.status === 'annulee' ? '' : '<div class="card" style="padding:20px">' +
+    '<h2 style="font:700 16px Figtree,sans-serif;margin:0">Tarif de cette mission</h2>' +
+    '<p class="sec-note" style="margin-top:4px">Si elle a pris plus de temps que prévu, ajuste le montant : ' +
+      'c’est lui qui entre dans les gains ' + (ag ? 'de ' + esc(ag.name) : 'du prestataire') + ' et dans la paie du mois.</p>' +
+    '<div style="display:flex;gap:10px;align-items:center;margin-top:12px;flex-wrap:wrap">' +
+      '<input class="inp num" style="width:120px" id="mp-' + esc(m.id) + '" type="number" min="0" step="1" inputmode="numeric"' +
+        ' aria-label="Tarif de la mission en euros" value="' + esc(m.price || 0) + '"' +
+        ' data-fid="mp-' + esc(m.id) + '" data-ch="mission-price" data-id="' + esc(m.id) + '">' +
+      '<span style="font:600 14px Figtree,sans-serif">€</span>' +
+      ((m.price || 0) !== tarifBase
+        ? '<button type="button" class="btn btn--xs" style="background:var(--cream);color:var(--ink-soft)"' +
+            act('mission-tarif-base', { id: m.id }) + '>Revenir au tarif du logement (' + tarifBase + ' €)</button>'
+        : '<span class="sec-note">tarif habituel de ce logement</span>') +
+    '</div>' +
+    (dejaPaye
+      ? '<p class="sec-note" style="margin:10px 0 0;color:var(--amber-t)">Le mois de ' + esc(moisLabel(moisPaie)) +
+        ' est déjà marqué payé pour ' + esc(ag ? ag.name : 'cette personne') + ' : pense à lui verser la différence.</p>'
+      : '') +
+  '</div>';
+
   /* Ce que le propriétaire voit sur une mission encore en cours. */
   var suivi = fini ? '' : '<div class="card" style="padding:20px">' +
     '<h2 style="font:700 16px Figtree,sans-serif;margin:0 0 14px">Suivi</h2>' +
@@ -8062,7 +8596,7 @@ function viewOwnerMission() {
           : fini ? 'Checklist' : 'Ce qui est déjà arrivé') + '</h2>' + checklist +
       '</section>' +
       '<section style="flex:1;min-width:min(100%,280px);display:flex;flex-direction:column;gap:14px">' +
-        problemesCard + noteCard + suivi + recap + carteCloreMission(m) + quiCard +
+        problemesCard + noteCard + suivi + tarifCard + recap + carteCloreMission(m) + quiCard +
         carteMailMission(m) + decision +
         (state.migMsg ? '<p class="sec-note">' + esc(state.migMsg) + '</p>' : '') +
         '<button type="button" class="btn-danger-xs" style="align-self:flex-start"' +
@@ -8239,6 +8773,74 @@ function planPropIds() {
    d'un mois à l'autre, et l'on ne voyait jamais un mois entier, du 1er au 30.
    La fenêtre est désormais **le mois calendaire** de `state.planStart` — du 1er
    au dernier jour —, et les flèches changent de mois. */
+/* ==========================================================================
+   LE CALENDRIER DIT LE MÉNAGE, ET SE TOUCHE POUR RÉSERVER (session 47)
+
+   Deux demandes du 5 novembre :
+   · *« ajouter à la réservation un petit symbole pour dire que le ménage a été
+     pris ou pas »* (D-216) — une pastille blanche au bout de chaque séjour, du
+     côté du départ, puisque c'est là que tombe le ménage : ✓ pris, ✓ sur fond
+     vert fait, … en cours, ! pas encore pris, – aucun ménage prévu ;
+   · *« ajouter une réservation en sélectionnant directement sur le calendrier
+     les dates »* (D-217) — on touche le jour d'arrivée, puis le jour du
+     départ, sur la ligne du logement : le formulaire s'ouvre avec le logement
+     et les deux dates déjà remplis. Deux touchers plutôt qu'un glisser : ça
+     marche pareil au doigt et à la souris, et un défilement du planning sur
+     téléphone n'est jamais pris pour une sélection.
+
+   La sélection en cours est une position d'affichage (règle 7) : une
+   variable de module, jamais enregistrée.
+   ========================================================================== */
+var calSel = null;          // { pid, start } : l'arrivée choisie, en attente du départ
+
+function etatMenageCal(pid, r) {
+  if (!r || r.statut === 'annule') return null;
+  var m = missionDuDepart(pid, r);
+  var pm = pastilleMenage(m);
+  var cls = !m ? 'aucun' : m.status === 'dispo' ? 'libre' : m.status === 'termine' ? 'fait'
+    : m.status === 'encours' ? 'encours' : 'pris';
+  var signe = { aucun: '–', libre: '!', fait: '✓', encours: '…', pris: '✓' }[cls];
+  return { cls: cls, signe: signe, label: pm.l };
+}
+
+function signeMenage(pid, r) {
+  var e = etatMenageCal(pid, r);
+  if (!e) return '';
+  return '<span class="men men--' + e.cls + '" aria-label="' + esc('Ménage : ' + e.label) + '">' + e.signe + '</span>';
+}
+
+function legendeMenage() {
+  return '<span class="men-leg"><span class="men men--pris">✓</span>ménage pris</span>' +
+    '<span class="men-leg"><span class="men men--fait">✓</span>fait</span>' +
+    '<span class="men-leg"><span class="men men--libre">!</span>pas encore pris</span>' +
+    '<span class="men-leg"><span class="men men--aucun">–</span>aucun ménage</span>';
+}
+
+/* Le bandeau qui guide la sélection, et l'avertissement si les dates choisies
+   empiètent sur un séjour déjà là — on prévient, on n'interdit pas : deux
+   séjours le même jour (l'un part, l'autre arrive) sont normaux. */
+function bandeauSelectionCal() {
+  if (!calSel) return '';
+  return '<div class="alert alert--blue cal-sel-msg" role="status" style="margin-top:14px">' +
+    '<div class="det"><strong>Arrivée le ' + esc(fmtDateLongue(calSel.start)) + ' — ' + esc(prop(calSel.pid).name) + '.</strong> ' +
+      'Touche maintenant le jour du <strong>départ</strong>, sur la même ligne.</div>' +
+    '<button type="button" class="btn btn--xs" style="background:#fff;color:var(--ink-soft);margin-top:8px"' +
+      act('cal-sel-annuler') + '>Annuler</button>' +
+  '</div>';
+}
+
+function avertissementNouvelleResa() {
+  var r = state.nr;
+  if (!state.showNewResa || !r || !r.pid || !r.start || !r.end || r.end <= r.start) return '';
+  var gene = resasOf(r.pid).filter(function (x) {
+    return x && x.statut !== 'annule' && x.start < r.end && x.end > r.start;
+  });
+  if (!gene.length) return '';
+  return '<div class="alert alert--amber" style="margin-top:12px"><div class="det">⚠︎ Ces dates empiètent sur ' +
+    esc(gene.map(function (x) { return x.guest + ' (' + fmtDate(x.start) + ' → ' + fmtDate(x.end) + ')'; }).join(', ')) +
+    '. Vérifie avant d’enregistrer.</div></div>';
+}
+
 function viewOwnerCal() {
   var start = premierJourDuMois(state.planStart || TODAY);
   var PLAN_JOURS = nbJoursMois(moisDe(start));
@@ -8267,8 +8869,12 @@ function viewOwnerCal() {
     for (var j = 0; j < PLAN_JOURS; j++) {
       var iso2 = jourPlus(start, j);
       var wd2 = new Date(Date.parse(iso2 + 'T00:00:00Z')).getUTCDay();
-      fond += '<div class="plan-cell' + (wd2 === 0 || wd2 === 6 ? ' plan-cell--we' : '') +
-        (iso2 === TODAY ? ' plan-cell--today' : '') + '"></div>';
+      /* Chaque case se touche pour choisir une arrivée puis un départ (D-217). */
+      var choisie = calSel && calSel.pid === pid && calSel.start === iso2;
+      fond += '<button type="button" class="plan-cell' + (wd2 === 0 || wd2 === 6 ? ' plan-cell--we' : '') +
+        (iso2 === TODAY ? ' plan-cell--today' : '') + (choisie ? ' plan-cell--sel' : '') + '"' +
+        ' aria-label="' + esc(p.short + ', ' + fmtDateLongue(iso2) + (calSel && calSel.pid === pid ? ' : départ' : ' : arrivée')) + '"' +
+        act('cal-jour', { pid: pid, d: iso2 }) + '></button>';
     }
 
     // Jours distincts occupés dans la fenêtre affichée : additionner séjour par
@@ -8286,12 +8892,16 @@ function viewOwnerCal() {
       var left = coupeG ? 0 : (g + 0.5) / PLAN_JOURS * 100;
       var right = coupeD ? 100 : (dte + 0.5) / PLAN_JOURS * 100;
       var pl = PLATS[r.plat] || PLATS['Direct'];
+      var em = etatMenageCal(pid, r);
 
       return '<button type="button" class="plan-bar' + (coupeG ? ' plan-bar--g' : '') + (coupeD ? ' plan-bar--d' : '') + '"' +
         ' style="left:calc(' + left.toFixed(3) + '% + 2px);width:calc(' + (right - left).toFixed(3) + '% - 4px);background:' + pl.color + '"' +
-        ' title="' + esc(r.guest + ' · ' + fmtDate(r.start) + ' → ' + fmtDate(r.end) + ' · ' + r.plat) + '"' +
+        ' title="' + esc(r.guest + ' · ' + fmtDate(r.start) + ' → ' + fmtDate(r.end) + ' · ' + r.plat +
+          (em ? ' · ménage : ' + em.label : '')) + '"' +
         act('open-resa', { rid: r.id }) + '>' +
-        '<span class="plan-guest">' + esc(r.guest) + '</span></button>';
+        '<span class="plan-guest">' + esc(r.guest) + '</span>' +
+        // La pastille du ménage, au bout qui porte le départ (D-216).
+        (coupeD ? '' : signeMenage(pid, r)) + '</button>';
     }).join('');
 
     var taux = Math.round(nuitsOcc / PLAN_JOURS * 100);
@@ -8322,7 +8932,8 @@ function viewOwnerCal() {
     '<div class="page-head">' +
       '<div><h1 class="page-title">Calendrier · ' + esc(titreMois) + '</h1>' +
       '<p class="page-sub">' + totalResas + ' séjour(s) ce mois-ci' +
-        ' · cliquez sur une barre pour ouvrir la réservation, ou sur un logement pour le voir mois par mois</p></div>' +
+        ' · cliquez sur une barre pour ouvrir la réservation, sur un logement pour le voir mois par mois, ' +
+        'ou sur deux cases libres (arrivée puis départ) pour ajouter une réservation</p></div>' +
       '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">' +
         '<button type="button" class="btn btn--xs" style="background:var(--cream);color:var(--ink-soft)"' +
           act('plan-mois', { d: avant }) + '>← ' + esc(nomMois(avant)) + '</button>' +
@@ -8344,9 +8955,10 @@ function viewOwnerCal() {
 
     (state.showNewResa
       ? (state.props.length
-          ? formNewResa(null)
+          ? formNewResa(null) + avertissementNouvelleResa()
           : '<p class="empty" style="margin-top:14px">Créez d’abord un logement dans « Biens &amp; connexions ».</p>')
       : '') +
+    bandeauSelectionCal() +
 
     '<div class="chiprow" style="margin-top:18px">' +
       '<span class="perm-label">Logements :</span>' +
@@ -8374,6 +8986,8 @@ function viewOwnerCal() {
         '</div>' +
       '</div>' +
     '</div>' +
+
+    '<div class="chiprow" style="margin-top:12px;gap:14px">' + legendeMenage() + '</div>' +
 
     '<p class="sec-note" style="margin-top:14px">Les séjours viennent des liens iCal et des saisies manuelles. ' +
       'Avec Beds24, ils arriveront tout seuls, montant compris — voir « Biens & connexions ».</p>');
@@ -8420,7 +9034,7 @@ function viewOwnerCalBien() {
         (state.photosBien[pid] ? vignetteBien(pid, p.color, 'l') : '') +
         '<div style="min-width:0"><h1 class="page-title">' + esc(p.name) + '</h1>' +
         '<p class="page-sub">' + aVenir + ' séjour' + (aVenir > 1 ? 's' : '') + ' à venir' +
-          ' · touchez une barre pour ouvrir la réservation</p></div>' +
+          ' · touchez une barre pour ouvrir la réservation, ou deux jours libres (arrivée puis départ) pour en ajouter une</p></div>' +
       '</div>' +
       '<button type="button" class="btn btn--xs" style="background:var(--cream);color:var(--ink-soft)"' +
         act('nav', { path: '#/admin/biens/' + pid }) + '>Fiche du logement</button>' +
@@ -8434,6 +9048,18 @@ function viewOwnerCalBien() {
             '<span class="dot" style="background:' + x.color + '"></span>' + esc(x.short) + '</button>';
         }).join('') + '</div>'
       : '') +
+
+    /* Le formulaire de réservation, ouvert par la sélection de deux jours
+       (D-217) — le logement est celui de la page. */
+    (state.showNewResa && state.nr.pid === pid
+      ? '<div class="card" style="margin-top:14px;padding:16px 18px">' +
+          '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">' +
+            '<h2 style="font:700 16px Figtree,sans-serif;margin:0">Nouvelle réservation</h2>' +
+            '<button type="button" class="btn btn--xs" style="background:var(--cream);color:var(--ink-soft)"' +
+              act('toggle-new-resa') + '>Fermer</button></div>' +
+          formNewResa(pid) + avertissementNouvelleResa() + '</div>'
+      : '') +
+    bandeauSelectionCal() +
 
     '<div style="margin-top:14px">' +
       '<button type="button" class="btn btn--xs" style="background:transparent;color:var(--muted);padding-left:0"' +
@@ -8450,7 +9076,8 @@ function viewOwnerCalBien() {
     '<div class="chiprow" style="margin-top:18px;gap:16px">' + Object.keys(PLATS).map(function (k2) {
       return '<span style="display:flex;align-items:center;gap:7px;font:600 12px Figtree,sans-serif;color:var(--muted3)">' +
         '<span style="width:16px;height:8px;border-radius:9px;background:' + PLATS[k2].color + '"></span>' + k2 + '</span>';
-    }).join('') + '</div>');
+    }).join('') + '</div>' +
+    '<div class="chiprow" style="margin-top:10px;gap:14px">' + legendeMenage() + '</div>');
 }
 
 /** Un mois du calendrier d'un logement : semaines du lundi au dimanche. */
@@ -8466,7 +9093,7 @@ function moisBien(pid, mois, resas) {
 
   var semaines = '';
   for (var lu = lundi; lu <= dernier; lu = jourPlus(lu, 7)) {
-    semaines += semaineBien(lu, mois, resas);
+    semaines += semaineBien(lu, mois, resas, pid);
   }
 
   return '<section class="card mcal" id="mcal-' + esc(mois) + '">' +
@@ -8483,15 +9110,19 @@ function moisBien(pid, mois, resas) {
 }
 
 /** Une semaine : la ligne des jours, puis les séjours rangés en couloirs. */
-function semaineBien(lundi, mois, resas) {
+function semaineBien(lundi, mois, resas, pid) {
   var dim = jourPlus(lundi, 6);
   var cases = '';
   for (var i = 0; i < 7; i++) {
     var iso = jourPlus(lundi, i);
     var hors = moisDe(iso) !== mois;
-    cases += '<span class="mcal-jour' + (hors ? ' mcal-jour--hors' : '') + (i >= 5 ? ' mcal-jour--we' : '') +
-      (iso === TODAY ? ' mcal-jour--auj' : '') + '" style="grid-column:' + (i + 1) + '">' +
-      '<span class="num">' + parseInt(iso.slice(8), 10) + '</span></span>';
+    var choisie = calSel && calSel.pid === pid && calSel.start === iso;
+    /* Chaque jour se touche pour choisir une arrivée puis un départ (D-217). */
+    cases += '<button type="button" class="mcal-jour' + (hors ? ' mcal-jour--hors' : '') + (i >= 5 ? ' mcal-jour--we' : '') +
+      (iso === TODAY ? ' mcal-jour--auj' : '') + (choisie ? ' mcal-jour--sel' : '') + '" style="grid-column:' + (i + 1) + '"' +
+      ' aria-label="' + esc(fmtDateLongue(iso) + (calSel && calSel.pid === pid ? ' : départ' : ' : arrivée')) + '"' +
+      act('cal-jour', { pid: pid, d: iso }) + '>' +
+      '<span class="num">' + parseInt(iso.slice(8), 10) + '</span></button>';
   }
 
   /* Les morceaux de séjour qui touchent cette semaine. Colonnes 1 à 7 ;
@@ -8526,9 +9157,12 @@ function semaineBien(lundi, mois, resas) {
     return '<button type="button" class="mcal-barre' + (m.g ? ' mcal-barre--g' : '') + (m.d ? ' mcal-barre--d' : '') + '"' +
       ' style="grid-column:' + (m.c0 + 1) + ' / ' + (m.c1 + 2) + ';grid-row:' + (m.l + 2) +
       ';margin-left:' + mg + ';margin-right:' + md + ';background:' + pl.color + '"' +
-      ' title="' + esc(m.r.guest + ' · ' + fmtDate(m.r.start) + ' → ' + fmtDate(m.r.end) + ' · ' + m.r.plat) + '"' +
+      ' title="' + esc(m.r.guest + ' · ' + fmtDate(m.r.start) + ' → ' + fmtDate(m.r.end) + ' · ' + m.r.plat +
+        (etatMenageCal(pid, m.r) ? ' · ménage : ' + etatMenageCal(pid, m.r).label : '')) + '"' +
       act('open-resa', { rid: m.r.id }) + '>' +
-      '<span>' + esc(m.r.guest) + '</span></button>';
+      '<span>' + esc(m.r.guest) + '</span>' +
+      // La pastille du ménage, sur le morceau qui porte le départ (D-216).
+      (m.d ? '' : signeMenage(pid, m.r)) + '</button>';
   }).join('');
 
   return '<div class="mcal-sem" style="--couloirs:' + Math.max(1, fins.length) + '">' + cases + barres + '</div>';
@@ -9252,36 +9886,125 @@ function moisDispo() {
   return Object.keys(vus).sort().reverse();
 }
 
-/** Une ligne par logement pour le mois demandé. */
-function statsMois(mois) {
-  var jours = nbJoursMois(mois);
+/* LA PÉRIODE DES STATISTIQUES : UN MOIS OU UNE ANNÉE (session 47, D-209)
+
+   Demandé le 5 novembre : *« la possibilité de passer en statistique annuel
+   plutôt que mensuel »*. Une période est une suite de mois — un seul en vue
+   mensuelle, les douze de l'année en vue annuelle — et une fenêtre de jours.
+
+   Ce qui se compte PAR MOIS (missions payées, charges, factures) s'additionne
+   mois par mois. Ce qui se compte PAR NUIT (occupation, revenus au prorata)
+   se compte sur la fenêtre entière : additionner des mois ferait compter
+   deux séjours pour un séjour à cheval sur deux mois.
+
+   L'année en cours se compte en entier, de janvier à décembre, comme le mois
+   en cours se compte en entier : les séjours déjà réservés et les charges
+   récurrentes des mois à venir y figurent. L'écran le dit (règle 5). */
+function periodeMois(m) {
+  return { mode: 'mois', cle: m, mois: [m], label: moisLabel(m), debut: m + '-01', fin: moisPlus(m, 1) + '-01' };
+}
+
+function periodeStats() {
+  if (state.statMode === 'annee') {
+    var an = String(state.statYear || CURRENT_MONTH.slice(0, 4));
+    var liste = [];
+    for (var i = 1; i <= 12; i++) liste.push(an + '-' + String(i).padStart(2, '0'));
+    return { mode: 'annee', cle: an, mois: liste, label: an, debut: an + '-01-01', fin: (parseInt(an, 10) + 1) + '-01-01' };
+  }
+  return periodeMois(state.statMonth || CURRENT_MONTH);
+}
+
+/** Les années qui ont quelque chose à montrer, la plus récente d'abord. */
+function anneesDispo() {
+  var vus = {};
+  moisDispo().forEach(function (m) { vus[m.slice(0, 4)] = true; });
+  (state.charges || []).forEach(function (c) { if (c && c.mois) vus[String(c.mois).slice(0, 4)] = true; });
+  vus[CURRENT_MONTH.slice(0, 4)] = true;
+  return Object.keys(vus).sort().reverse();
+}
+
+/** Nuits d'un séjour comprises dans la fenêtre [debut, fin[. */
+function nuitsDansPeriode(r, debut, fin) {
+  var a = r.start > debut ? r.start : debut;
+  var b = r.end < fin ? r.end : fin;
+  return b > a ? nights(a, b) : 0;
+}
+
+/** Une ligne par logement pour la période demandée.
+
+    LES CHARGES Y SONT, DÉSORMAIS (session 47, D-209). Signalé le 5 novembre :
+    *« le tableau ne prend pas en compte les charges globales du logement »*.
+    Il ne comptait que le ménage : l'eau, l'électricité, le crédit et les
+    factures n'apparaissaient que sur la sous-page de chaque logement, et le
+    « net » de la vue d'ensemble était un net avant charges — une étiquette qui
+    laisse conclure faux (règle 5, D-128). `net` est maintenant le bénéfice
+    après TOUTES les dépenses ; `depenses` garde son ancien sens (les missions
+    payées seules) pour le cashflow de la sous-page, qui y ajoute les charges
+    lui-même.
+
+    UN SÉJOUR ANNULÉ NE RAPPORTE RIEN (session 47, trouvé en chemin). Les nuits
+    l'ignoraient déjà (D-136), mais son montant entrait encore dans les revenus
+    et dans le nombre de séjours. */
+function statsPeriode(per) {
+  var jours = nights(per.debut, per.fin);
+  var paie = ledger();
+  var dansPer = {};
+  per.mois.forEach(function (m) { dansPer[m] = true; });
+
   return state.props.map(function (p) {
     var nuitsCumul = 0, sejours = 0, revenus = 0, estimes = 0;
-    var duMois = [];
+    var duPer = [];
     resasOf(p.id).forEach(function (r) {
-      var n = nuitsDansMois(r, mois);
+      if (!r || r.statut === 'annule') return;
+      var n = nuitsDansPeriode(r, per.debut, per.fin);
       if (!n) return;
-      duMois.push(r);
+      duPer.push(r);
       nuitsCumul += n; sejours++;
       var total = nights(r.start, r.end) || 1;
-      revenus += Math.round(montantResa(p.id, r) * n / total);   // au prorata des nuits du mois
+      revenus += Math.round(montantResa(p.id, r) * n / total);   // au prorata des nuits de la période
       if (montantEstime(r)) estimes++;
     });
-    var depenses = ledger().filter(function (l) { return l.month === mois && l.prop === p.id; })
-      .reduce(function (n, l) { return n + l.price; }, 0);
+    var menage = paie.filter(function (l) { return dansPer[l.month] && l.prop === p.id; })
+      .reduce(function (n, l) { return n + (l.price || 0); }, 0);
+    var charges = per.mois.reduce(function (n, m) { return n + chargesMois(p.id, m); }, 0);
 
     /* LE TAUX SE CALCULE SUR LES JOURS DISTINCTS (D-136) : deux séjours qui se
        chevauchent occupent la même nuit une seule fois. `nuitsCumul` est gardé
        à part — l'écart entre les deux est exactement ce qui est compté deux
-       fois, et c'est ce qu'on affiche pour le dire. */
-    var nuits = nuitsOccupeesMois(duMois, mois);
+       fois. */
+    var nuits = nuitsOccupeesFenetre(duPer, per.debut, jours);
     return {
-      p: p, nuits: nuits, jours: jours, taux: Math.round(nuits / jours * 100),
+      p: p, nuits: nuits, jours: jours, taux: jours ? Math.round(nuits / jours * 100) : 0,
       doublons: Math.max(0, nuitsCumul - nuits),
-      sejours: sejours, revenus: revenus, depenses: depenses, net: revenus - depenses,
-      estimes: estimes, adr: nuits ? Math.round(revenus / nuits) : 0
+      sejours: sejours, revenus: revenus, estimes: estimes,
+      depenses: menage, menage: menage, charges: charges, chargesGlobales: menage + charges,
+      net: revenus - menage - charges,
+      adr: nuits ? Math.round(revenus / nuits) : 0
     };
   });
+}
+
+/** Une ligne par logement pour le mois demandé. */
+function statsMois(mois) { return statsPeriode(periodeMois(mois)); }
+
+/* LE TAUX D'OCCUPATION NE COMPTE QUE LES LOGEMENTS OUVERTS (session 47, D-210)
+
+   Demandé le 5 novembre : *« qu'il ne prenne pas en compte le logement si son
+   taux d'occupation est à zéro — c'est que le logement est peut-être fermé et
+   ça fausse le taux — ou alors pouvoir sélectionner les appartements qu'on
+   prend en compte »*. Les deux : par défaut, un logement sans AUCUNE nuit sur
+   la période n'est pas compté ; chacun s'ajoute ou se retire d'un toucher.
+
+   Le choix ne touche QUE le taux moyen : un logement fermé garde ses charges
+   (le crédit court toujours), et elles restent dans le bénéfice.
+
+   C'est une position d'affichage (règle 7) : elle repart sur « automatique »
+   à chaque ouverture de l'application, comme le mois choisi (D-208). */
+function compteDansOccupation(l) {
+  var choix = (state.statOcc || {})[l.p.id];
+  if (choix === 'in') return true;
+  if (choix === 'out') return false;
+  return l.nuits > 0;
 }
 
 /* D'OÙ VIENNENT LES RÉSERVATIONS D'UN LOGEMENT (session 23, D-131)
@@ -9295,11 +10018,14 @@ function statsMois(mois) {
    peut n'avoir que deux séjours, donc des pourcentages qui ne veulent rien
    dire — et **depuis le début**, qui est la seule base honnête pour une part
    de marché. Afficher le premier seul serait trompeur (règle 5).
+   *(Obsolète depuis la session 47, D-209 : « depuis le début » est retiré à
+   la demande de Marc ; la base large est désormais la vue annuelle, et la
+   vue mensuelle dit quand le mois est trop maigre — voir `detailStatBien`.)*
 
    On répartit par **nuits** autant que par nombre de séjours : trois séjours
    d'une nuit chez l'un et un séjour de trois semaines chez l'autre ne disent
    pas du tout la même chose, et le compte de séjours seul le cacherait. */
-function repartitionPlat(pid, mois) {
+function repartitionPlat(pid, per) {
   var parPlat = {};
   Object.keys(PLATS).forEach(function (k) {
     parPlat[k] = { plat: k, sejours: 0, nuits: 0, revenus: 0 };
@@ -9308,7 +10034,7 @@ function repartitionPlat(pid, mois) {
   resasOf(pid).forEach(function (r) {
     if (r.statut === 'annule') return;
     var k = PLATS[r.plat] ? r.plat : 'Direct';        // une plateforme inconnue compte en direct
-    var n = mois ? nuitsDansMois(r, mois) : nights(r.start, r.end);
+    var n = per ? nuitsDansPeriode(r, per.debut, per.fin) : nights(r.start, r.end);
     if (!n) return;
     var total = nights(r.start, r.end) || 1;
     parPlat[k].sejours++;
@@ -9329,10 +10055,15 @@ function repartitionPlat(pid, mois) {
   return { lignes: lignes, tot: tot };
 }
 
-function detailStatBien(l, mois) {
+/* « DEPUIS LE DÉBUT » EST RETIRÉ (session 47, D-209), à la demande de Marc,
+   au profit de la vue annuelle. La raison d'être de cette colonne — une base
+   plus large que le mois, seule honnête pour une part de marché — est tenue
+   autrement : en vue annuelle, la répartition porte sur l'année entière, et
+   en vue mensuelle l'écran dit quand le mois est trop maigre pour conclure.
+   `repartitionPlat(pid, null)` sait toujours compter « depuis le début ». */
+function detailStatBien(l, per) {
   var pid = l.p.id;
-  var duMois = repartitionPlat(pid, mois);
-  var toujours = repartitionPlat(pid, null);
+  var rep = repartitionPlat(pid, per);
 
   var barres = function (r, quoi) {
     if (!r.tot.sejours) {
@@ -9355,30 +10086,25 @@ function detailStatBien(l, mois) {
     }).join('') + '</div>';
   };
 
-  var meilleur = toujours.lignes.slice().sort(function (a, b) { return b.adr - a.adr; })[0];
+  var meilleur = rep.lignes.slice().sort(function (a, b) { return b.adr - a.adr; })[0];
 
   return '<div class="trow-detail">' +
-    '<div class="cols" style="gap:18px">' +
-      '<div style="flex:1;min-width:min(100%,300px)">' +
-        '<h3 class="sec-title" style="margin:0 0 10px">Répartition en ' + esc(moisLabel(mois)) +
-          ' <span style="font-weight:500;color:var(--muted2)">(part des nuits)</span></h3>' +
-        barres(duMois, 'nuits') +
-        (duMois.tot.sejours && duMois.tot.sejours < 4
-          ? '<p class="sec-note" style="margin-top:10px">Seulement ' + duMois.tot.sejours + ' séjour(s) ce ' +
-            'mois-ci : ces pourcentages ne veulent pas dire grand-chose. Regarde la colonne de droite.</p>'
-          : '') +
-      '</div>' +
-      '<div style="flex:1;min-width:min(100%,300px)">' +
-        '<h3 class="sec-title" style="margin:0 0 10px">Depuis le début ' +
-          '<span style="font-weight:500;color:var(--muted2)">(part des nuits)</span></h3>' +
-        barres(toujours, 'nuits') +
-        (meilleur && meilleur.adr
-          ? '<p class="sec-note" style="margin-top:10px">Prix moyen par nuit le plus élevé : ' +
-            '<strong>' + esc(meilleur.plat) + '</strong>, ' + meilleur.adr + ' € la nuit. ' +
-            'Ce chiffre est <strong>avant commission</strong> — l’application ne connaît pas ' +
-            'les commissions des plateformes.</p>'
-          : '') +
-      '</div>' +
+    '<div style="max-width:620px">' +
+      '<h3 class="sec-title" style="margin:0 0 10px">Répartition ' +
+        (per.mode === 'annee' ? 'sur l’année ' : 'en ') + esc(per.label) +
+        ' <span style="font-weight:500;color:var(--muted2)">(part des nuits)</span></h3>' +
+      barres(rep, 'nuits') +
+      (rep.tot.sejours && rep.tot.sejours < 4
+        ? '<p class="sec-note" style="margin-top:10px">Seulement ' + rep.tot.sejours + ' séjour(s) sur cette période : ' +
+          'ces pourcentages ne veulent pas dire grand-chose.' +
+          (per.mode === 'mois' ? ' Passe en vue <strong>Annuel</strong> pour une base plus large.' : '') + '</p>'
+        : '') +
+      (meilleur && meilleur.adr
+        ? '<p class="sec-note" style="margin-top:10px">Prix moyen par nuit le plus élevé : ' +
+          '<strong>' + esc(meilleur.plat) + '</strong>, ' + meilleur.adr + ' € la nuit. ' +
+          'Ce chiffre est <strong>avant commission</strong> — l’application ne connaît pas ' +
+          'les commissions des plateformes.</p>'
+        : '') +
     '</div>' +
     '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:16px">' +
       '<button type="button" class="btn btn--xs" style="background:var(--cream);color:var(--ink-soft)"' +
@@ -9755,78 +10481,166 @@ function bandeauChevauchements() {
     '</div>';
 }
 
-function viewOwnerStats() {
-  var mois = state.statMonth;
-  var lignes = statsMois(mois);
-  var tot = lignes.reduce(function (a, l) {
-    return { nuits: a.nuits + l.nuits, jours: a.jours + l.jours, revenus: a.revenus + l.revenus,
-      depenses: a.depenses + l.depenses, sejours: a.sejours + l.sejours, estimes: a.estimes + l.estimes };
-  }, { nuits: 0, jours: 0, revenus: 0, depenses: 0, sejours: 0, estimes: 0 });
-  var tauxMoyen = tot.jours ? Math.round(tot.nuits / tot.jours * 100) : 0;
-  var net = tot.revenus - tot.depenses;
+/* Un montant court pour le haut d'une colonne étroite : « 850 € », « 1,2 k€ ». */
+function eurosCourt(v) {
+  var s = v < 0 ? '− ' : '';
+  var a = Math.abs(v);
+  return s + (a >= 1000 ? (Math.round(a / 100) / 10).toFixed(1).replace('.', ',') + ' k€' : a + ' €');
+}
 
-  // Six mois pour situer le mois affiché.
+/* LE GRAPHIQUE EN COLONNES (session 47, D-209). Demandé : *« qu'il montre le
+   CA, les charges globales, et en haut écrit le bénéfice net »*. Il montrait
+   les revenus et le seul ménage, avec les revenus écrits en haut. Les deux
+   barres partagent la même échelle ; le bénéfice, lui, est écrit et non
+   dessiné — une troisième barre, souvent négative, aurait brouillé les deux
+   autres. Les mois à venir sont plus pâles : ce sont des séjours réservés et
+   des charges prévues, pas encore de l'argent. */
+function histStats(series, moisOn) {
+  var maxi = Math.max.apply(null, series.map(function (s) { return s.revenus; })
+    .concat(series.map(function (s) { return s.charges; })).concat([1]));
+  var douze = series.length > 6;
+  // Douze colonnes ne tiennent pas sur un téléphone : elles défilent dans leur carte.
+  return '<div class="hist-scroll"><div class="hist' + (douze ? ' hist--12' : '') + '">' + series.map(function (s) {
+    var h = Math.round(s.revenus / maxi * 100);
+    var hd = Math.round(s.charges / maxi * 100);
+    var nom = MOIS[parseInt(s.mois.slice(5, 7), 10) - 1];
+    return '<div class="hist-col' + (s.mois === moisOn ? ' hist-col--on' : '') + (s.avenir ? ' hist-col--avenir' : '') + '"' +
+        ' title="' + esc(moisLabel(s.mois) + ' · CA ' + s.revenus + ' € · charges ' + s.charges + ' € · net ' + s.net + ' €' +
+          (s.avenir ? ' (prévu)' : '')) + '">' +
+      '<div class="hist-v num" style="color:' + (s.net < 0 ? 'var(--terra-d)' : 'var(--green-t)') + '">' +
+        esc(douze ? eurosCourt(s.net) : (s.net < 0 ? '− ' + Math.abs(s.net) : s.net) + ' €') + '</div>' +
+      '<div class="hist-bars">' +
+        '<span class="hist-bar" style="height:' + h + '%"></span>' +
+        '<span class="hist-bar hist-bar--dep" style="height:' + hd + '%"></span>' +
+      '</div>' +
+      '<div class="hist-l num">' + esc(nom) + '</div>' +
+      '</div>';
+  }).join('') + '</div></div>' +
+  '<div class="chiprow" style="margin-top:14px;gap:16px">' +
+    '<span class="hist-leg"><span style="background:' + C.vert + '"></span>CA (revenus)</span>' +
+    '<span class="hist-leg"><span style="background:' + C.terracotta + '"></span>Charges globales</span>' +
+    '<span class="hist-leg">En haut : bénéfice net</span>' +
+  '</div>';
+}
+
+function viewOwnerStats() {
+  var per = periodeStats();
+  var annuel = per.mode === 'annee';
+  var lignes = statsPeriode(per);
+  var tot = lignes.reduce(function (a, l) {
+    return { revenus: a.revenus + l.revenus, menage: a.menage + l.menage, charges: a.charges + l.charges,
+      sejours: a.sejours + l.sejours, estimes: a.estimes + l.estimes };
+  }, { revenus: 0, menage: 0, charges: 0, sejours: 0, estimes: 0 });
+  var chargesG = tot.menage + tot.charges;
+  var net = tot.revenus - chargesG;
+
+  // Le taux moyen ne compte que les logements retenus (D-210).
+  var comptes = lignes.filter(compteDansOccupation);
+  var occ = comptes.reduce(function (a, l) { return { nuits: a.nuits + l.nuits, jours: a.jours + l.jours }; }, { nuits: 0, jours: 0 });
+  var tauxMoyen = occ.jours ? Math.round(occ.nuits / occ.jours * 100) : 0;
+  var auto = lignes.filter(function (l) { return !compteDansOccupation(l) && !(state.statOcc || {})[l.p.id]; });
+  var retires = lignes.filter(function (l) { return (state.statOcc || {})[l.p.id] === 'out'; });
+  var manuel = Object.keys(state.statOcc || {}).length > 0;
+
+  // Six mois qui finissent au mois affiché, ou les douze mois de l'année.
   var suite = [];
-  for (var i = 5; i >= 0; i--) suite.push(moisPlus(mois, -i));
+  if (annuel) suite = per.mois.slice();
+  else for (var i = 5; i >= 0; i--) suite.push(moisPlus(per.cle, -i));
   var series = suite.map(function (m) {
     var l = statsMois(m);
-    return {
-      mois: m,
-      revenus: l.reduce(function (n, x) { return n + x.revenus; }, 0),
-      depenses: l.reduce(function (n, x) { return n + x.depenses; }, 0)
-    };
+    var rev = l.reduce(function (n, x) { return n + x.revenus; }, 0);
+    var chg = l.reduce(function (n, x) { return n + x.chargesGlobales; }, 0);
+    return { mois: m, revenus: rev, charges: chg, net: rev - chg, avenir: m > CURRENT_MONTH };
   });
-  // L'échelle tient compte des deux barres : un mois sans revenu peut avoir
-  // des dépenses de ménage, et elles doivent rester visibles.
-  var maxi = Math.max.apply(null, series.map(function (s) { return s.revenus; })
-    .concat(series.map(function (s) { return s.depenses; })).concat([1]));
+
+  var choixPeriode = annuel
+    ? '<label class="lab" for="st-annee">Année</label>' +
+      '<select class="inp" id="st-annee" data-fid="st-annee" data-ch="stat-year">' + anneesDispo().map(function (a) {
+        return '<option value="' + a + '"' + (a === per.cle ? ' selected' : '') + '>' + a + '</option>';
+      }).join('') + '</select>'
+    : '<label class="lab" for="st-mois">Mois</label>' +
+      '<select class="inp" id="st-mois" data-fid="st-mois" data-ch="stat-month">' + moisDispo().map(function (m) {
+        return '<option value="' + m + '"' + (m === per.cle ? ' selected' : '') + '>' + esc(moisLabel(m)) + '</option>';
+      }).join('') + '</select>';
 
   return ownerShell('stats',
     '<div class="page-head">' +
       '<div><h1 class="page-title">Statistiques</h1>' +
-      '<p class="page-sub">Occupation, revenus et coût du ménage, logement par logement.</p></div>' +
-      '<div style="min-width:200px">' +
-        '<label class="lab" for="st-mois">Mois</label>' +
-        '<select class="inp" id="st-mois" data-fid="st-mois" data-ch="stat-month">' + moisDispo().map(function (m) {
-          return '<option value="' + m + '"' + (m === mois ? ' selected' : '') + '>' + esc(moisLabel(m)) + '</option>';
-        }).join('') + '</select>' +
+      '<p class="page-sub">Occupation, chiffre d’affaires, charges et bénéfice, logement par logement.</p></div>' +
+      '<div class="stat-periode">' +
+        '<div class="seg" role="group" aria-label="Période">' +
+          '<button type="button" aria-pressed="' + !annuel + '"' + act('stat-mode', { m: 'mois' }) + '>Mensuel</button>' +
+          '<button type="button" aria-pressed="' + annuel + '"' + act('stat-mode', { m: 'annee' }) + '>Annuel</button>' +
+        '</div>' +
+        '<div style="min-width:190px">' + choixPeriode + '</div>' +
       '</div>' +
     '</div>' +
 
     '<div class="cols" style="margin-top:22px;gap:12px">' +
       '<div class="kpi" style="min-width:190px"><div class="v num">' + tauxMoyen + ' %</div>' +
-        '<div class="l">taux d’occupation · ' + tot.nuits + ' nuits sur ' + tot.jours + '</div></div>' +
+        '<div class="l">taux d’occupation · ' + occ.nuits + ' nuits sur ' + occ.jours +
+          (comptes.length < lignes.length ? ' · ' + comptes.length + ' logement' + (comptes.length > 1 ? 's' : '') + ' sur ' + lignes.length : '') +
+        '</div></div>' +
       '<div class="kpi" style="min-width:190px"><div class="v num" style="color:' + C.vert + '">' + tot.revenus + ' €</div>' +
-        '<div class="l">revenus des séjours</div></div>' +
-      '<div class="kpi" style="min-width:190px"><div class="v num" style="color:' + C.terracotta + '">' + tot.depenses + ' €</div>' +
-        '<div class="l">dépenses de ménage</div></div>' +
-      '<div class="kpi" style="min-width:190px"><div class="v num">' + net + ' €</div>' +
-        '<div class="l">net après ménage · ' + tot.sejours + ' séjours</div></div>' +
+        '<div class="l">chiffre d’affaires · ' + tot.sejours + ' séjour' + (tot.sejours > 1 ? 's' : '') + '</div></div>' +
+      '<div class="kpi" style="min-width:190px"><div class="v num" style="color:' + C.terracotta + '">' + chargesG + ' €</div>' +
+        '<div class="l">charges globales · prestataires ' + tot.menage + ' €, charges et factures ' + tot.charges + ' €</div></div>' +
+      '<div class="kpi" style="min-width:190px"><div class="v num" style="color:' + (net < 0 ? C.terracotta : C.ink) + '">' +
+        (net < 0 ? '− ' + Math.abs(net) : net) + ' €</div>' +
+        '<div class="l">bénéfice net · après toutes les charges</div></div>' +
     '</div>' +
 
-    carteFactures(mois) +
+    /* Les logements comptés dans le taux d'occupation (D-210). */
+    '<div class="chiprow" style="margin-top:14px">' +
+      '<span class="perm-label">Comptés dans le taux d’occupation :</span>' +
+      lignes.map(function (l) {
+        var on = compteDansOccupation(l);
+        return '<button type="button" class="perm-chip" aria-pressed="' + on + '" style="--accent:' + l.p.color + '"' +
+          ' title="' + (on ? 'Toucher pour ne pas le compter' : 'Toucher pour le compter') + '"' +
+          act('stat-occ', { pid: l.p.id }) + '>' +
+          '<span class="dot" style="background:' + (on ? l.p.color : 'rgba(36,30,26,.2)') + '"></span>' +
+          esc(l.p.short) + ' <span class="num" style="color:var(--muted2)">' + l.taux + ' %</span></button>';
+      }).join('') +
+      (manuel ? '<button type="button" class="btn btn--xs" style="background:transparent;color:var(--muted)"' +
+        act('stat-occ-auto') + '>Revenir au choix automatique</button>' : '') +
+    '</div>' +
+    (auto.length || retires.length
+      ? '<p class="sec-note" style="margin-top:6px">' +
+          (auto.length ? esc(auto.map(function (l) { return l.p.short; }).join(', ')) +
+            (auto.length > 1 ? ' ne sont pas comptés' : ' n’est pas compté') +
+            ' : aucune nuit sur la période, le logement est peut-être fermé. ' : '') +
+          (retires.length ? esc(retires.map(function (l) { return l.p.short; }).join(', ')) +
+            (retires.length > 1 ? ' retirés' : ' retiré') + ' à la main. ' : '') +
+          'Touche un nom pour le compter ou non. Ce choix ne change que le taux : chiffre d’affaires, charges et bénéfice comptent tous les logements.</p>'
+      : '') +
+
+    carteFactures(per) +
 
     (tot.estimes ? '<p class="sec-note" style="margin-top:12px">⚠︎ ' + tot.estimes + ' séjour(s) sans montant réel : ' +
       'le revenu est calculé au prix par nuit du logement. Corrigez-le sur la fiche de la réservation, ' +
       'ou attendez la connexion Beds24 qui apportera les montants exacts.</p>' : '') +
+    (annuel && per.cle === CURRENT_MONTH.slice(0, 4)
+      ? '<p class="sec-note" style="margin-top:8px">Année en cours : les mois à venir comptent déjà les séjours réservés ' +
+        'et les charges récurrentes prévues jusqu’en décembre.</p>'
+      : '') +
 
     /* L'ENCADRÉ « SÉJOURS OCCUPANT LES MÊMES NUITS » A ÉTÉ RETIRÉ DE L'ÉCRAN
-       (session 31, D-167), à la demande du propriétaire. Il avait servi : le
-       taux d'occupation au-dessus de 100 % venait de là (D-136). La fonction
-       `bandeauChevauchements()` reste écrite juste au-dessus — elle n'est plus
+       (session 31, D-167), à la demande du propriétaire. La fonction
+       `bandeauChevauchements()` reste écrite plus haut — elle n'est plus
        appelée nulle part, et rien n'est perdu si le sujet revient. */
 
-    '<h2 class="sec-title" style="margin-top:26px">Par logement</h2>' +
+    '<h2 class="sec-title" style="margin-top:26px">Par logement · ' + esc(per.label) + '</h2>' +
     '<div class="card" style="padding:0;overflow:hidden">' +
       '<div class="table-scroll">' +
-        '<div class="thead thead--fiches" style="min-width:920px"><span style="flex:1.8">Logement</span>' +
-          '<span style="width:150px">Occupation</span><span style="width:90px;text-align:right">Nuits</span>' +
-          '<span style="width:90px;text-align:right">Séjours</span><span style="width:100px;text-align:right">Revenus</span>' +
-          '<span style="width:100px;text-align:right">Prix / nuit</span><span style="width:100px;text-align:right">Ménage</span>' +
+        '<div class="thead thead--fiches" style="min-width:1010px"><span style="flex:1.8">Logement</span>' +
+          '<span style="width:140px">Occupation</span><span style="width:64px;text-align:right">Nuits</span>' +
+          '<span style="width:70px;text-align:right">Séjours</span><span style="width:96px;text-align:right">CA</span>' +
+          '<span style="width:86px;text-align:right">Prix / nuit</span><span style="width:104px;text-align:right">Prestataires</span>' +
+          '<span style="width:96px;text-align:right">Charges</span>' +
           '<span style="width:100px;text-align:right">Net</span></div>' +
         lignes.map(function (l) {
           var ouvert = state.statBien === l.p.id;
-          return '<button type="button" class="trow trow--link trow--statbien" style="min-width:920px;width:100%"' +
+          return '<button type="button" class="trow trow--link trow--statbien" style="min-width:1010px;width:100%"' +
               ' aria-expanded="' + ouvert + '" aria-label="Détail de ' + esc(l.p.name) + '"' +
               act('stat-bien', { pid: l.p.id }) + '>' +
             '<span class="ts-nom" style="flex:1.8;display:flex;align-items:center;gap:9px;min-width:0">' +
@@ -9834,47 +10648,32 @@ function viewOwnerStats() {
               '<span style="min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' +
                 esc(l.p.name) + '</span>' +
               '<span style="color:var(--muted2);flex:none">' + (ouvert ? '▾' : '▸') + '</span></span>' +
-            '<span class="ts-jauge" style="width:150px;display:flex;align-items:center;gap:9px">' +
+            '<span class="ts-jauge" style="width:140px;display:flex;align-items:center;gap:9px">' +
               '<span class="jauge"><span style="width:' + l.taux + '%;background:' + l.p.color + '"></span></span>' +
               '<span class="num" style="font-weight:700;width:44px;text-align:right">' + l.taux + ' %</span></span>' +
-            '<span class="num" data-l="Nuits" style="width:90px;text-align:right">' + l.nuits + '</span>' +
-            '<span class="num" data-l="Séjours" style="width:90px;text-align:right">' + l.sejours + '</span>' +
-            '<span class="num" data-l="Revenus" style="width:100px;text-align:right;font-weight:600">' + l.revenus + ' €</span>' +
-            '<span class="num" data-l="Prix / nuit" style="width:100px;text-align:right;color:var(--muted3)">' + l.adr + ' €</span>' +
-            '<span class="num" data-l="Ménage" style="width:100px;text-align:right;color:var(--terra-d)">' + (l.depenses ? '− ' + l.depenses + ' €' : '—') + '</span>' +
-            '<span class="num" data-l="Net" style="width:100px;text-align:right;font-weight:700">' + l.net + ' €</span>' +
+            '<span class="num" data-l="Nuits" style="width:64px;text-align:right">' + l.nuits + '</span>' +
+            '<span class="num" data-l="Séjours" style="width:70px;text-align:right">' + l.sejours + '</span>' +
+            '<span class="num" data-l="CA" style="width:96px;text-align:right;font-weight:600">' + l.revenus + ' €</span>' +
+            '<span class="num" data-l="Prix / nuit" style="width:86px;text-align:right;color:var(--muted3)">' + l.adr + ' €</span>' +
+            '<span class="num" data-l="Prestataires" style="width:104px;text-align:right;color:var(--terra-d)">' + (l.menage ? '− ' + l.menage + ' €' : '—') + '</span>' +
+            '<span class="num" data-l="Charges" style="width:96px;text-align:right;color:var(--terra-d)">' + (l.charges ? '− ' + l.charges + ' €' : '—') + '</span>' +
+            '<span class="num" data-l="Net" style="width:100px;text-align:right;font-weight:700' + (l.net < 0 ? ';color:var(--terra-d)' : '') + '">' +
+              (l.net < 0 ? '− ' + Math.abs(l.net) : l.net) + ' €</span>' +
             '</button>' +
-            (ouvert ? detailStatBien(l, mois) : '');
+            (ouvert ? detailStatBien(l, per) : '');
         }).join('') +
       '</div>' +
     '</div>' +
-    '<p class="sec-note" style="margin-top:10px">Clique sur un logement pour voir d’où viennent ' +
-      'ses réservations — Airbnb, Booking.com ou direct.</p>' +
+    '<p class="sec-note" style="margin-top:10px">« Prestataires » : ménage et autres missions terminées et payées. ' +
+      '« Charges » : eau, électricité, crédit… et factures, saisies sur la page de chaque logement. ' +
+      'Clique sur un logement pour voir d’où viennent ses réservations — Airbnb, Booking.com ou direct.</p>' +
 
-    '<h2 class="sec-title" style="margin-top:26px">Six derniers mois</h2>' +
-    '<div class="card" style="padding:22px">' +
-      '<div class="hist">' + series.map(function (s) {
-        var h = Math.round(s.revenus / maxi * 100);
-        var hd = Math.round(s.depenses / maxi * 100);
-        return '<div class="hist-col' + (s.mois === mois ? ' hist-col--on' : '') + '">' +
-          '<div class="hist-v num">' + s.revenus + ' €</div>' +
-          '<div class="hist-bars">' +
-            '<span class="hist-bar" style="height:' + h + '%"></span>' +
-            '<span class="hist-bar hist-bar--dep" style="height:' + hd + '%"></span>' +
-          '</div>' +
-          '<div class="hist-l num">' + esc(MOIS[parseInt(s.mois.slice(5, 7), 10) - 1]) + '</div>' +
-          '</div>';
-      }).join('') + '</div>' +
-      '<div class="chiprow" style="margin-top:14px;gap:16px">' +
-        '<span style="display:flex;align-items:center;gap:7px;font:600 12px Figtree,sans-serif;color:var(--muted3)">' +
-          '<span style="width:14px;height:8px;border-radius:9px;background:' + C.vert + '"></span>Revenus</span>' +
-        '<span style="display:flex;align-items:center;gap:7px;font:600 12px Figtree,sans-serif;color:var(--muted3)">' +
-          '<span style="width:14px;height:8px;border-radius:9px;background:' + C.terracotta + '"></span>Ménage</span>' +
-      '</div>' +
-    '</div>' +
+    '<h2 class="sec-title" style="margin-top:26px">' + (annuel ? 'Les douze mois de ' + esc(per.label) : 'Six derniers mois') + '</h2>' +
+    '<div class="card" style="padding:22px">' + histStats(series, annuel ? CURRENT_MONTH : per.cle) + '</div>' +
 
     '<p class="sec-note" style="margin-top:14px">Les revenus sont répartis nuit par nuit : un séjour à cheval sur deux mois ' +
-      'compte dans les deux. Les dépenses de ménage viennent des missions terminées du mois.</p>');
+      'compte dans les deux. Les missions payées comptent pour le mois où elles ont été faites, les charges pour le mois ' +
+      'auquel elles s’appliquent.</p>');
 }
 
 /* ==========================================================================
@@ -10146,13 +10945,15 @@ function blocFacturesBien(pid) {
 }
 
 /** La carte d'accès, en tête de « Statistiques ». */
-function carteFactures(mois) {
-  var du = (state.factures || []).filter(function (f) { return f && String(f.date || '').slice(0, 7) === mois; });
+function carteFactures(per) {
+  // Un mois, ou une période des statistiques (session 47, D-209).
+  if (typeof per === 'string') per = periodeMois(per);
+  var du = (state.factures || []).filter(function (f) { return f && per.mois.indexOf(String(f.date || '').slice(0, 7)) >= 0; });
   var total = du.reduce(function (n, f) { return n + (Number(f.montant) || 0); }, 0);
   return '<div class="card" style="margin-top:16px;padding:16px 20px;display:flex;gap:14px;align-items:center;flex-wrap:wrap;' +
       'border-left:4px solid var(--terra)">' +
     '<div class="grow" style="min-width:200px"><div style="font:700 15px Figtree,sans-serif">🧾 Factures</div>' +
-      '<div class="sec-note" style="margin-top:2px">' + du.length + ' en ' + esc(moisLabel(mois)) + ' · ' +
+      '<div class="sec-note" style="margin-top:2px">' + du.length + ' en ' + esc(per.label) + ' · ' +
         esc(montantFacture(total)) + ' · comptées dans les frais de chaque logement</div></div>' +
     '<button type="button" class="btn btn--xs" style="background:var(--terra);color:#fff"' + act('facture-nouvelle') + '>+ Ajouter</button>' +
     '<button type="button" class="btn btn--xs" style="background:var(--cream);color:var(--ink-soft)"' +
@@ -11017,9 +11818,14 @@ function viewOwnerAgents() {
         '<button type="button" class="btn btn--xs" style="background:var(--cream);color:var(--ink-soft)"' +
           act('toggle-reglages', { ag: a.id }) + '>' +
           (reglages ? 'Fermer les réglages' : '⚙ Réglages et accès') + '</button>' +
+        // D-218 : son écran, tel qu'il le voit.
+        '<button type="button" class="btn btn--xs" style="background:var(--blue-bg);color:var(--blue-t)"' +
+          act('apercu-presta', { ag: a.id }) + '>' +
+          (apercuPresta === a.id ? 'Fermer l’aperçu' : '👁 Voir son application') + '</button>' +
         (reglages ? '' : '<span class="sec-note" style="margin-left:auto">' +
           (cles ? 'Calendriers confiés' : 'Logements, prestations et compte') + ' — repliés</span>') +
       '</div>' +
+      (apercuPresta === a.id ? blocApercuPresta(a) : '') +
 
       /* --- Réglages : tout ce qui ne se touche qu'à l'embauche ------------ */
       (!reglages ? '' :
@@ -11161,6 +11967,7 @@ function viewOwnerAgents() {
 
     '<div class="stack" style="gap:14px;margin-top:22px">' +
       (cards || '<p class="empty">Aucun prestataire. Ajoutez le premier ci-dessus.</p>') + '</div>' +
+    ligneSansPresta() +
     blocAdministrateurs());
 }
 
@@ -11191,7 +11998,9 @@ function blocAdministrateurs() {
     return '<div class="card" style="margin-top:22px;padding:20px 22px">' +
       '<h2 style="font:700 16px Figtree,sans-serif;margin:0">Administrateurs</h2>' +
       '<p class="sec-note" style="margin-top:4px">Tu es connecté en <strong>administrateur</strong> : ' +
-        'tu vois et gères tout, comme le propriétaire. Seul lui peut nommer ou retirer un administrateur.</p>' +
+        (droitsAdmin() ? 'le propriétaire a choisi ce que tu vois — ' + esc(resumeDroits(droitsAdmin())) + ' '
+          : 'tu vois et gères tout, comme le propriétaire. ') +
+        'Seul lui peut nommer ou retirer un administrateur, et choisir ce que chacun voit.</p>' +
       '</div>';
   }
 
@@ -11199,16 +12008,25 @@ function blocAdministrateurs() {
     '<h2 style="font:700 16px Figtree,sans-serif;margin:0">Administrateurs</h2>' +
     '<p class="sec-note" style="margin-top:4px">Une personne qui t’aide à gérer : elle voit et modifie ' +
       '<strong>tout</strong>, comme toi — logements, calendrier, missions, stocks, messages, ' +
-      'prestataires, statistiques et paie. Elle se connecte avec son propre compte.</p>' +
+      'prestataires, statistiques et paie. Elle se connecte avec son propre compte. ' +
+      'Avec « Choisir ce qu’il voit », tu peux limiter son écran à certains logements et certaines rubriques.</p>' +
 
     (liste.length
       ? '<div style="margin-top:12px">' + liste.map(function (c) {
-          return '<div style="display:flex;align-items:center;gap:10px;padding:10px 0;border-top:1px solid rgba(36,30,26,.07);flex-wrap:wrap">' +
+          var ouvert = adminDroitsOuvert === c.uid;
+          return '<div style="padding:10px 0;border-top:1px solid rgba(36,30,26,.07)">' +
+            '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">' +
             '<span class="grow" style="font:600 14px Figtree,sans-serif;min-width:0;overflow-wrap:anywhere">' +
               esc(c.nom || c.email) + (c.nom ? ' <span style="color:var(--muted);font-weight:500">· ' + esc(c.email) + '</span>' : '') +
+              '<span class="sec-note" style="display:block;font-weight:500">' + esc(resumeDroits((state.adminDroits || {})[c.uid])) + '</span>' +
             '</span>' +
+            /* D-215 : ce qu'il voit. */
+            '<button type="button" class="btn btn--xs" style="background:var(--cream);color:var(--ink-soft)"' +
+              act('admin-droits', { uid: c.uid }) + '>' + (ouvert ? 'Fermer' : 'Choisir ce qu’il voit') + '</button>' +
             '<button type="button" class="btn btn--xs" style="background:var(--terra-bg);color:var(--terra-dd)"' +
               (state.adminEnCours ? ' disabled' : '') + act('admin-retirer', { uid: c.uid }) + '>Retirer l’accès</button>' +
+            '</div>' +
+            (ouvert ? panneauDroitsAdmin(c) : '') +
             '</div>';
         }).join('') + '</div>'
       : '<p class="empty" style="padding:12px 0 0">Aucun administrateur pour le moment.</p>') +
@@ -12288,7 +13106,7 @@ function formNewResa(pid) {
   var r = state.nr;
   var premier = state.services[0];
   var bien = pid || r.pid || (state.props[0] ? state.props[0].id : '');
-  return '<div class="pop" style="margin-top:14px;padding:16px;background:var(--sand);border-radius:16px">' +
+  return '<div class="pop" id="nr-form" style="margin-top:14px;padding:16px;background:var(--sand);border-radius:16px">' +
     '<div class="cols" style="gap:12px">' +
       (pid ? '' :
         '<div style="flex:1;min-width:min(100%,180px)"><label class="lab" for="nr-pid">Logement</label>' +
@@ -14381,6 +15199,41 @@ function editRooms(pid, fn) {
   save();
 }
 
+/* Cocher ou décocher un logement ou une rubrique d'un administrateur (D-215).
+   `cle` à null = « tout ». Tout coché revient à « tout » (`null`), pour qu'un
+   logement créé plus tard lui soit visible comme aux autres. Rien coché est
+   refusé : un administrateur qui ne voit aucun logement, c'est un accès à
+   retirer, et le bouton existe. */
+function basculerDroitAdmin(uid, quoi, cle) {
+  if (typeof DB !== 'undefined' && DB.estAdmin && DB.estAdmin()) return;
+  if (!uid) return;
+  if (!state.adminDroits || typeof state.adminDroits !== 'object') state.adminDroits = { _maj: 0 };
+  var d = state.adminDroits[uid] ? clone(state.adminDroits[uid]) : { biens: null, rubriques: null };
+  var tous = quoi === 'biens'
+    ? (state.props || []).map(function (p) { return p.id; })
+    : OWNER_NAV.filter(function (n) { return n.key !== 'dash'; }).map(function (n) { return n.key; });
+  if (cle === null) {
+    d[quoi] = null;
+  } else {
+    var l = Array.isArray(d[quoi]) ? d[quoi].filter(function (x) { return tous.indexOf(x) >= 0; }) : tous.slice();
+    var i = l.indexOf(cle);
+    if (i >= 0) l.splice(i, 1); else l.push(cle);
+    if (!l.length) {
+      state.adminMsg = { ok: false, texte: quoi === 'biens'
+        ? 'Il doit voir au moins un logement. Pour lui fermer tout accès, utilise « Retirer l’accès ».'
+        : 'Il doit garder au moins une rubrique en plus de l’accueil.' };
+      render();
+      return;
+    }
+    d[quoi] = tous.every(function (x) { return l.indexOf(x) >= 0; }) ? null : l;
+  }
+  state.adminMsg = null;
+  if (!Array.isArray(d.biens) && !Array.isArray(d.rubriques)) delete state.adminDroits[uid];
+  else state.adminDroits[uid] = { biens: Array.isArray(d.biens) ? d.biens : null, rubriques: Array.isArray(d.rubriques) ? d.rubriques : null };
+  state.adminDroits._maj = Date.now();
+  save(); render();
+}
+
 var actions = {
   /* Navigation ---------------------------------------------------------- */
   nav: function (el) { menuProprioOuvert = false; go(el.dataset.path); },
@@ -15744,6 +16597,27 @@ var actions = {
   },
 
   /* Réservations manuelles ------------------------------------------------ */
+  /* Choisir les dates d'une réservation en touchant le calendrier (D-217).
+     Premier toucher : l'arrivée. Second, sur la même ligne et plus tard : le
+     départ, et le formulaire s'ouvre rempli. Toucher un jour antérieur, ou
+     une autre ligne, recommence la sélection à ce jour-là. */
+  'cal-jour': function (el) {
+    var pid = el.dataset.pid, d = el.dataset.d;
+    if (!pid || !d) return;
+    if (calSel && calSel.pid === pid && d === calSel.start) { calSel = null; render(); return; }
+    if (!calSel || calSel.pid !== pid || d < calSel.start) { calSel = { pid: pid, start: d }; render(); return; }
+    var debut = calSel.start;
+    calSel = null;
+    state.nr = { plat: 'Direct', guest: '', guests: 2, start: debut, end: d, montant: '', pid: pid };
+    state.showNewResa = true;
+    save(); render();
+    var f = document.getElementById('nr-form');
+    if (f && f.scrollIntoView) f.scrollIntoView({ block: 'center' });
+    var champ = document.getElementById('nr-guest');
+    if (champ) champ.focus();
+  },
+  'cal-sel-annuler': function () { calSel = null; render(); },
+
   'toggle-new-resa': function () {
     state.showNewResa = !state.showNewResa;
     // Ouvert depuis le calendrier, le formulaire part du premier logement
@@ -15886,6 +16760,111 @@ var actions = {
   'stat-bien': function (el) {
     var pid = el.dataset.pid;
     state.statBien = state.statBien === pid ? null : pid;
+    save(); render();
+  },
+
+  /* Vue mensuelle ou annuelle (session 47, D-209). En passant à l'année, on
+     prend celle du mois qu'on regardait : c'est la suite naturelle. */
+  'stat-mode': function (el) {
+    var m = el.dataset.m === 'annee' ? 'annee' : 'mois';
+    if (m === 'annee' && state.statMode !== 'annee') state.statYear = (state.statMonth || CURRENT_MONTH).slice(0, 4);
+    state.statMode = m;
+    save(); render();
+  },
+
+  /* Compter ou non un logement dans le taux d'occupation (session 47, D-210). */
+  'stat-occ': function (el) {
+    var pid = el.dataset.pid;
+    var l = statsPeriode(periodeStats()).filter(function (x) { return x.p.id === pid; })[0];
+    if (!l) return;
+    if (!state.statOcc || typeof state.statOcc !== 'object') state.statOcc = {};
+    var compte = compteDansOccupation(l);
+    // Revenir au choix automatique quand il donne déjà ce qu'on demande.
+    if ((l.nuits > 0) === !compte) delete state.statOcc[pid];
+    else state.statOcc[pid] = compte ? 'out' : 'in';
+    save(); render();
+  },
+  'stat-occ-auto': function () { state.statOcc = {}; save(); render(); },
+
+  /* L'aperçu de l'application d'un prestataire (D-218). */
+  'apercu-presta': function (el) {
+    apercuPresta = apercuPresta === el.dataset.ag ? null : el.dataset.ag;
+    render();
+  },
+  'apercu-onglet': function (el) { apercuOnglet = el.dataset.o || 'missions'; render(); },
+
+  /* Ce que voit un administrateur (D-215). Le propriétaire seul : l'écran
+     ne propose pas ces boutons à un administrateur. */
+  'admin-droits': function (el) {
+    adminDroitsOuvert = adminDroitsOuvert === el.dataset.uid ? null : el.dataset.uid;
+    render();
+  },
+  'admin-bien': function (el) { basculerDroitAdmin(el.dataset.uid, 'biens', el.dataset.pid); },
+  'admin-rub': function (el) { basculerDroitAdmin(el.dataset.uid, 'rubriques', el.dataset.k); },
+  'admin-biens-tous': function (el) { basculerDroitAdmin(el.dataset.uid, 'biens', null); },
+  'admin-rubs-tous': function (el) { basculerDroitAdmin(el.dataset.uid, 'rubriques', null); },
+
+  /* Un logement qu'on ne confie à personne, et l'inverse (D-214). */
+  'sans-presta': function (el) {
+    if (!state.sansPresta || typeof state.sansPresta !== 'object') state.sansPresta = { _maj: 0 };
+    state.sansPresta[el.dataset.pid] = true;
+    state.sansPresta._maj = Date.now();
+    save(); render();
+  },
+  'avec-presta': function (el) {
+    if (!state.sansPresta || typeof state.sansPresta !== 'object') state.sansPresta = { _maj: 0 };
+    delete state.sansPresta[el.dataset.pid];
+    state.sansPresta._maj = Date.now();
+    save(); render();
+  },
+
+  /* LA LISTE DE TÂCHES PAR LOGEMENT (session 47, D-213). */
+  'todo-bien': function (el) {
+    var n = biensVisibles().filter(function (p) { return !p.gone; }).length;
+    if (n < 2) return;
+    var d = parseInt(el.dataset.d, 10) || 1;
+    todoIdx = ((todoIdx + d) % n + n) % n;
+    todoSaisie = '';
+    render();
+  },
+  'todo-aller': function (el) { todoIdx = parseInt(el.dataset.i, 10) || 0; todoSaisie = ''; render(); },
+  'todo-add': function (el) {
+    var txt = String(todoSaisie || '').trim();
+    var pid = el.dataset.pid;
+    if (!txt || !pid) return;
+    if (!state.todos || typeof state.todos !== 'object' || Array.isArray(state.todos)) state.todos = {};
+    var l = todosDe(pid);
+    l.push({ id: 't_' + jeton(10), t: txt.slice(0, 200), fait: false, at: new Date().toISOString() });
+    state.todos[pid] = l;
+    state.todos._maj = Date.now();
+    todoSaisie = '';
+    save(); render();
+    var champ = document.querySelector('[data-fid="todo-new"]');
+    if (champ) champ.focus();
+  },
+  'todo-fait': function (el) {
+    var x = todosDe(el.dataset.pid).filter(function (y) { return y.id === el.dataset.id; })[0];
+    if (!x) return;
+    x.fait = !x.fait;
+    state.todos._maj = Date.now();
+    save(); render();
+  },
+  'todo-del': function (el) {
+    var pid = el.dataset.pid;
+    state.todos[pid] = todosDe(pid).filter(function (y) { return y.id !== el.dataset.id; });
+    state.todos._maj = Date.now();
+    save(); render();
+  },
+  'todo-effacer': function (el) {
+    var pid = el.dataset.pid;
+    state.todos[pid] = todosDe(pid).filter(function (y) { return !y.fait; });
+    state.todos._maj = Date.now();
+    save(); render();
+  },
+  'mission-tarif-base': function (el) {
+    var m = mission(el.dataset.id);
+    if (!m || m.gone) return;
+    m.price = (state.tariffs[m.prop] || {})[m.type] || 0;
     save(); render();
   },
 
@@ -17236,6 +18215,8 @@ var inputs = {
     var m = mission(el.dataset.id);
     if (m) { m.note = el.value; save(); }
   },
+  // La tâche en cours d'écriture : une saisie, pas une donnée (règle 7).
+  'todo-new': function (el) { todoSaisie = el.value; },
 
   /* Prestations : le nom est commun à tous les biens, la durée non. */
   'svc-label': function (el) {
@@ -17504,6 +18485,15 @@ var changes = {
   'owner-month': function (el) { state.ownerMonth = el.value; save(); render(); },
   'avis-filter': function (el) { state.avisFilter[el.dataset.f] = el.value; save(); render(); },
   'stat-month': function (el) { state.statMonth = el.value; save(); render(); },
+  'stat-year': function (el) { state.statYear = el.value; save(); render(); },
+  /* Le tarif d'une mission, corrigé à la main (session 47, D-211). */
+  'mission-price': function (el) {
+    var m = mission(el.dataset.id);
+    if (!m || m.gone) return;
+    var v = parseInt(el.value, 10);
+    m.price = isNaN(v) || v < 0 ? 0 : v;
+    save(); render();
+  },
   'am-quand': function (el) {
     if (!state.am) return;
     state.am.quand = el.value;
@@ -17647,7 +18637,8 @@ function rendreVraiment() {
   lastKey = key;
 
   var view = VIEWS[route.name] || viewLogin;
-  document.getElementById('app').innerHTML = view();
+  // Un administrateur limité à certains logements (D-215) : voir `rendreSelonDroits`.
+  document.getElementById('app').innerHTML = rendreSelonDroits(view);
 
   if (same) {
     var pane2 = document.querySelector('.presta-body');
@@ -17675,6 +18666,9 @@ function rendreVraiment() {
 document.addEventListener('click', function (e) {
   var el = e.target.closest('[data-a]');
   if (!el) return;
+  /* L'aperçu de l'application d'un prestataire est en lecture seule (D-218) :
+     un clic y prendrait une mission à sa place. */
+  if (el.closest('.apercu-tel')) { e.preventDefault(); return; }
   var fn = actions[el.dataset.a];
   if (!fn) return;
   e.preventDefault();
@@ -17691,14 +18685,14 @@ document.addEventListener('click', function (e) {
 
 document.addEventListener('input', function (e) {
   var el = e.target.closest('[data-in]');
-  if (!el) return;
+  if (!el || el.closest('.apercu-tel')) return;
   var fn = inputs[el.dataset.in];
   if (fn) fn(el);
 });
 
 document.addEventListener('change', function (e) {
   var el = e.target.closest('[data-ch]');
-  if (!el) return;
+  if (!el || el.closest('.apercu-tel')) return;
   var fn = changes[el.dataset.ch];
   if (fn) fn(el);
 });
@@ -17724,6 +18718,38 @@ document.addEventListener('keydown', function (e) {
   if (el.dataset.in === 'login-email' || el.dataset.in === 'login-pwd') actions.login();
   if (el.dataset.in === 'inv-pwd' || el.dataset.in === 'inv-pwd2') actions['inv-creer']();
 });
+
+/* Entrée = ajouter la tâche (session 47, D-213). Écouteur à part : celui du
+   dessus ne sert que tant que personne n'est connecté. */
+document.addEventListener('keydown', function (e) {
+  if (e.key !== 'Enter') return;
+  var el = e.target.closest('[data-in="todo-new"]');
+  if (!el) return;
+  e.preventDefault();
+  var bouton = document.querySelector('[data-a="todo-add"]');
+  if (bouton) actions['todo-add'](bouton);
+});
+
+/* FAIRE GLISSER DU DOIGT (session 47, D-213) : sur un élément qui porte
+   `data-swipe`, un geste horizontal franc appelle cette action avec
+   `d = 1` (vers la gauche : le suivant) ou `d = -1` (le précédent). Un geste
+   surtout vertical est un défilement de la page : on le laisse passer. */
+var glisse = null;
+document.addEventListener('touchstart', function (e) {
+  var el = e.target.closest('[data-swipe]');
+  glisse = el && e.touches.length === 1 && !e.target.closest('input, textarea, select')
+    ? { el: el, x: e.touches[0].clientX, y: e.touches[0].clientY } : null;
+}, { passive: true });
+document.addEventListener('touchend', function (e) {
+  if (!glisse) return;
+  var g = glisse; glisse = null;
+  var tch = e.changedTouches && e.changedTouches[0];
+  if (!tch) return;
+  var dx = tch.clientX - g.x, dy = tch.clientY - g.y;
+  if (Math.abs(dx) < 50 || Math.abs(dy) > Math.abs(dx) * 0.7) return;
+  var fn = actions[g.el.dataset.swipe];
+  if (fn) fn({ dataset: { d: dx < 0 ? '1' : '-1' } });
+}, { passive: true });
 
 window.addEventListener('hashchange', render);
 
