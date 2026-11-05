@@ -1259,7 +1259,11 @@ var DB = (function () {
        qu'on ne confie à aucun prestataire (D-214) et ce que chaque
        administrateur voit (D-215). Les trois portent `_maj` : voir
        `REGLAGES_DATES` plus bas. */
-    'todos', 'sansPresta', 'adminDroits'];
+    'todos', 'sansPresta', 'adminDroits',
+    /* Session 48 : les prestations retirées d'un seul logement (D-224) et le
+       message tout prêt du voyageur écrit à sa façon (D-225). Horodatés eux
+       aussi (`REGLAGES_DATES`) : on peut les vider, et le vide doit voyager. */
+    'servicesRetires', 'messagesVoyageur'];
 
   /* Deux clés ne doivent JAMAIS être remplacées par une liste vide : sans
      prestation ni article, l'application n'a plus rien à afficher et
@@ -1330,7 +1334,7 @@ var DB = (function () {
      trois-là sont relues juste avant chaque envoi : l'appareil resté ouvert
      depuis ce matin apprend la tâche ajoutée ailleurs avant de renvoyer sa
      copie, au lieu de l'effacer. */
-  var REGLAGES_DATES = { todos: 1, sansPresta: 1, adminDroits: 1 };
+  var REGLAGES_DATES = { todos: 1, sansPresta: 1, adminDroits: 1, servicesRetires: 1, messagesVoyageur: 1 };
   function majDe(v) { return v && typeof v === 'object' && typeof v._maj === 'number' ? v._maj : 0; }
 
   function fusionnerOublis(local, distant) {

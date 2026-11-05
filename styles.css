@@ -1483,6 +1483,57 @@ textarea.inp { min-height: 90px; resize: vertical; line-height: 1.5; }
   .mcal-barre { padding: 0 5px; font-size: 10.5px; }
 }
 
+/* Session 48 (D-219) — le même calendrier dans l'onglet « Réservations » d'un
+   logement et sur l'écran de la remise des clés. Un peu plus d'air entre le
+   numéro du jour et les barres, des barres plus hautes, le nom lisible. */
+.mcal--nu { padding: 0; box-shadow: none; background: transparent; }
+/* Le numéro du jour en HAUT de sa case. Une case-bouton centre son contenu
+   verticalement : le numéro tombait au milieu de la semaine, sous les barres. */
+.mcal-jour { display: flex; flex-direction: column; justify-content: flex-start; align-items: flex-start; }
+.mcal-sem { grid-template-rows: 28px repeat(var(--couloirs), 26px); }
+.mcal-barre { height: 24px; border-radius: 12px; font-size: 12px; box-shadow: 0 0 0 1.5px #fff; }
+.mcal-barre .mcal-arr { flex: none; font-weight: 800; opacity: .85; margin-right: 1px; }
+.mcal-barre .mcal-nom { flex: 1 1 auto; min-width: 0; }
+.mcal-barre .mcal-nb { flex: none; font-weight: 600; opacity: .85; font-size: 10.5px; }
+.mcal-barre--fini { opacity: .55; }
+.mcal-barre--sel { box-shadow: 0 0 0 2px #fff, 0 0 0 4px var(--ink); z-index: 2; }
+.mcal-jour--passe .num { color: var(--muted2); }
+.mcal-nav { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; padding: 0 4px; }
+.mcal-nav-btn {
+  width: 40px; height: 40px; border-radius: 999px; flex: none;
+  background: var(--cream); color: var(--ink-soft);
+  font: 700 20px/1 Figtree, sans-serif;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.mcal-nav-btn:hover { background: var(--fill5); }
+.mcal-nav-titre { font: 700 18px Figtree, sans-serif; margin: 0; flex: 1; min-width: 0; text-align: center; }
+.mcal-nav-resume { display: block; font: 600 12px Figtree, sans-serif; color: var(--muted); margin-top: 2px; }
+.mcal-nav-auj { background: var(--cream); color: var(--ink-soft); }
+@media (max-width: 480px) {
+  .mcal-sem { grid-template-rows: 26px repeat(var(--couloirs), 24px); }
+  .mcal-barre { height: 22px; font-size: 10.5px; padding: 0 5px; gap: 3px; }
+  .mcal-barre .mcal-arr { display: none; }
+}
+
+/* La liste des réservations d'un logement (D-219) : l'à-venir d'abord. */
+.resa-groupe {
+  display: block; width: 100%; text-align: left;
+  font: 700 11px Figtree, sans-serif; letter-spacing: .06em; text-transform: uppercase;
+  color: var(--muted); margin: 18px 0 4px;
+}
+.resa-groupe--btn { min-height: 40px; color: var(--ink-soft); cursor: pointer; }
+.resa-ligne {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 0; border-top: 1px solid rgba(36,30,26,.07);
+}
+.resa-ligne--passee { opacity: .7; }
+.resa-ligne-trait { width: 4px; align-self: stretch; border-radius: 4px; flex: none; }
+.resa-ligne-corps { flex: 1; min-width: 0; text-align: left; display: block; cursor: pointer; }
+.resa-ligne-corps:hover .resa-ligne-nom { text-decoration: underline; }
+.resa-ligne-haut { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+.resa-ligne-nom { font: 600 14.5px Figtree, sans-serif; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.resa-ligne-dates { display: block; font: 500 12.5px Figtree, sans-serif; color: var(--muted); margin-top: 3px; }
+
 /* Remise des clés (écran prestataire) ------------------------------------- */
 
 .kd-title { font: 700 17px Figtree, sans-serif; margin: 8px 0 0; }
@@ -1525,6 +1576,136 @@ textarea.inp { min-height: 90px; resize: vertical; line-height: 1.5; }
 .kd-stays { margin-top: 14px; }
 .kd-stay { padding: 12px 0; border-top: 1px solid rgba(36,30,26,.07); }
 .kd-stay-name { font: 700 15px Figtree, sans-serif; }
+a.kd-flag { display: block; text-decoration: none; }
+
+/* Le message tout prêt du voyageur, à sa façon (session 48, D-225) -------- */
+.msg-texte { min-height: 220px; font: 500 14px/1.5 Figtree, sans-serif; resize: vertical; }
+.msg-mot {
+  min-height: 34px; padding: 0 10px; border-radius: 999px;
+  background: var(--blue-bg); color: var(--blue-t); font: 600 12.5px Figtree, sans-serif; cursor: pointer;
+}
+.msg-mot:hover { background: #d6e4ef; }
+.msg-apercu {
+  white-space: pre-wrap; word-break: break-word;
+  background: var(--sand); border: 1px solid rgba(36,30,26,.08); border-radius: 16px;
+  padding: 14px 16px; font: 500 14px/1.5 Figtree, sans-serif; color: var(--ink-soft);
+  min-height: 220px;
+}
+
+/* Les prestations retirées d'un logement (session 48, D-224) --------------- */
+.svc-retirees { margin-top: 18px; padding-top: 14px; border-top: 1px solid rgba(36,30,26,.08); }
+.svc-retiree { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 6px 0; font: 500 13.5px Figtree, sans-serif; color: var(--muted3); }
+
+/* Les missions passées à clore (session 48, D-221) ------------------------ */
+.passees { padding: 0; border-radius: 22px; overflow: hidden; border: 1.5px solid var(--amber-bg); }
+.passees-tete {
+  display: flex; align-items: center; gap: 12px; width: 100%; text-align: left;
+  padding: 14px 16px; min-height: 64px; background: var(--amber-bg2); cursor: pointer;
+}
+.passees-ico { font-size: 20px; flex: none; }
+.passees-titre { display: block; font: 700 15px/1.3 Figtree, sans-serif; color: var(--ink); }
+.passees-sous { display: block; font: 500 12.5px/1.4 Figtree, sans-serif; color: var(--amber-t); margin-top: 2px; }
+.passees-nb {
+  flex: none; min-width: 28px; height: 28px; padding: 0 8px; border-radius: 14px;
+  background: var(--amber); color: #fff; font: 800 13px Figtree, sans-serif;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.passees-fl { flex: none; color: var(--amber-t); font-size: 14px; }
+.passees-liste { padding: 4px 14px 0; }
+.passee { display: flex; align-items: center; gap: 10px; padding: 10px 0 10px 10px; border-left: 4px solid var(--accent); }
+.passee + .passee { border-top: 1px solid rgba(36,30,26,.07); }
+.passee-corps { text-align: left; min-width: 0; cursor: pointer; }
+.passee-nom { display: block; font: 700 14.5px Figtree, sans-serif; }
+.passee-meta { display: block; font: 500 12px Figtree, sans-serif; color: var(--muted); margin-top: 2px; }
+.passee-btn { flex: none; background: var(--green-bg); color: var(--green-t); min-height: 40px; }
+.passees-toutes { display: flex; width: calc(100% - 28px); margin: 12px 14px 0; justify-content: center; background: var(--green); color: #fff; }
+.passees > .sec-note { padding: 0 14px 14px; }
+
+/* La vue du mois d'une prestataire (session 48, D-222) -------------------- */
+.pm { padding: 14px 8px 12px; border-radius: 22px; }
+.pm-dows { display: grid; grid-template-columns: repeat(7, 1fr); }
+.pm-dows span { text-align: center; font: 700 10.5px Figtree, sans-serif; color: var(--muted2); padding-bottom: 6px; }
+.pm-grille { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 3px; }
+.pm-jour {
+  display: flex; flex-direction: column; align-items: stretch; justify-content: flex-start; gap: 2px;
+  min-height: 64px; padding: 3px 2px 4px; border-radius: 10px; background: var(--sand);
+  text-align: left; cursor: pointer; min-width: 0; overflow: hidden;
+}
+.pm-jour--hors { opacity: .4; }
+.pm-jour--passe .pm-num { color: var(--muted2); }
+.pm-jour--auj { box-shadow: inset 0 0 0 2px var(--terra); }
+.pm-jour--sel { background: var(--blue-bg); box-shadow: inset 0 0 0 2px var(--blue); }
+.pm-num { font: 700 11.5px Figtree, sans-serif; color: var(--ink-soft); padding: 0 3px; }
+.pm-pas {
+  display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font: 700 9.5px/1 Figtree, sans-serif; padding: 3px 3px; border-radius: 5px;
+}
+.pm-pas--moi { background: var(--accent); color: #fff; }
+.pm-pas--libre { background: #fff; color: var(--accent); border: 1.3px dashed var(--accent); padding: 2px 2px; }
+.pm-pas--fait { background: var(--fill); color: var(--muted3); }
+.pm-plus { font: 700 9.5px Figtree, sans-serif; color: var(--muted); padding: 0 3px; }
+.pm-leg { display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; margin-top: 12px; }
+.pm-leg .pm-pas { display: inline-block; font-size: 11px; padding: 4px 8px; }
+.pm-leg .pm-pas--libre { padding: 3px 7px; }
+@media (min-width: 700px) {
+  .pm-jour { min-height: 84px; padding: 5px 4px; }
+  .pm-pas { font-size: 11px; padding: 4px 5px; }
+}
+
+/* La remise des clés, redessinée (session 48, D-220) ----------------------- */
+.seg--plein { display: flex; width: 100%; }
+.seg--plein > button { flex: 1; min-height: 44px; font-size: 14px; }
+
+.kc-jour { display: flex; flex-direction: column; gap: 8px; }
+.kc-jour-titre {
+  display: flex; align-items: center; gap: 8px;
+  font: 700 14px Figtree, sans-serif; color: var(--ink-soft); margin: 4px 4px 0;
+}
+.kc-jour-nb {
+  margin-left: auto; min-width: 24px; height: 24px; padding: 0 7px; border-radius: 12px;
+  background: var(--fill); color: var(--muted3); font: 700 12px Figtree, sans-serif;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.kc-liste { border-radius: 20px; overflow: hidden; }
+.kc-row {
+  display: flex; align-items: center; gap: 12px;
+  padding: 12px 14px; border-left: 4px solid var(--accent, var(--terra));
+}
+.kc-row + .kc-row { border-top: 1px solid rgba(36,30,26,.07); }
+.kc-heure { flex: none; width: 46px; font: 800 15px Figtree, sans-serif; color: var(--ink); }
+.kc-top { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.kc-sens {
+  flex: none; padding: 3px 8px; border-radius: 999px;
+  font: 700 11px Figtree, sans-serif; white-space: nowrap;
+}
+.kc-sens--arr { background: var(--green-bg); color: var(--green-t); }
+.kc-sens--dep { background: var(--amber-bg); color: var(--amber-t); }
+.kc-guest { font: 700 15px/1.25 Figtree, sans-serif; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kc-meta { display: flex; align-items: center; gap: 6px; font: 500 12.5px/1.45 Figtree, sans-serif; color: var(--muted); margin-top: 3px; }
+.kc-meta .dot { width: 8px; height: 8px; flex: none; }
+.kc-note { font: 600 12px Figtree, sans-serif; color: var(--blue-t); margin-top: 4px; }
+.kc-note--ok { color: var(--green-t); }
+.kc-tel {
+  flex: none; width: 44px; height: 44px; border-radius: 999px;
+  background: var(--blue-bg); display: inline-flex; align-items: center; justify-content: center;
+  font-size: 18px; text-decoration: none;
+}
+.kc-biens { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 2px; -webkit-overflow-scrolling: touch; }
+.kc-biens::-webkit-scrollbar { display: none; }
+.kc-biens .perm-chip { flex: none; }
+.kc-detail { padding: 16px 18px; border-radius: 20px; }
+.kc-detail-grille { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 12px; }
+.kc-detail-grille .k { font: 700 11px Figtree, sans-serif; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); }
+.kc-detail-grille .v { font: 700 14.5px Figtree, sans-serif; margin-top: 3px; }
+.kc-detail-grille .s { font: 500 12.5px Figtree, sans-serif; color: var(--muted); margin-top: 1px; }
+.kc-appeler { display: flex; margin-top: 12px; background: var(--blue-bg); color: var(--blue-t); text-decoration: none; justify-content: center; }
+.kc-sejour {
+  display: flex; align-items: center; gap: 12px; width: 100%; text-align: left;
+  padding: 12px 14px; min-height: 56px; cursor: pointer;
+}
+.kc-sejour + .kc-sejour { border-top: 1px solid rgba(36,30,26,.07); }
+.kc-sejour--sel { background: var(--sand); }
+.kc-sejour-trait { width: 4px; align-self: stretch; border-radius: 4px; flex: none; }
 
 /* Planning tous logements (rubrique Calendrier) ---------------------------- */
 

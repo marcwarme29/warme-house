@@ -49,7 +49,7 @@ function isoDate(d) {
 /* La version de l'application, affichée dans les bandeaux d'erreur et sous le
    compte connecté (session 46) : trois fois, un écran resté sur l'ancienne
    version a fait chercher un défaut déjà corrigé. À changer à chaque envoi. */
-var VERSION_APP = '47.0';
+var VERSION_APP = '48.0';
 
 var TODAY = isoDate(new Date());
 var TODAY_LABEL = new Date().toLocaleDateString('fr-FR',
@@ -243,7 +243,9 @@ var INFO_FIELDS = [
   { k: 'wifiNom', label: 'Wi-Fi — nom du réseau' },
   { k: 'wifi', label: 'Wi-Fi — mot de passe' },
   { k: 'parking', label: 'Stationnement' },
-  { k: 'linge', label: 'Linge fourni' },
+  /* « Linge fourni » retiré de la fiche à la demande de Marc (session 48,
+     D-223). La valeur déjà saisie n'est pas effacée — elle reste dans
+     `info.linge` —, elle n'est simplement plus demandée ni affichée. */
   { k: 'checkin', label: 'Heure d’arrivée' },
   { k: 'checkout', label: 'Heure de départ' },
   /* Sert de base au montant d'un séjour quand la plateforme ne le donne pas
@@ -680,6 +682,15 @@ function initialState() {
     todos: { _maj: 0 },
     sansPresta: { _maj: 0 },
     adminDroits: { _maj: 0 },
+    /* Session 48 — deux réglages partagés de plus, horodatés comme les trois
+       ci-dessus (on peut les vider : « remettre » une prestation, revenir au
+       message d'origine) :
+       · `servicesRetires` (D-224) : les prestations retirées d'UN logement,
+         `{ _maj, <logement>: [clés] }` — elles restent dans les autres ;
+       · `messagesVoyageur` (D-225) : le message tout prêt écrit à sa façon,
+         `{ _maj, bien: '', sejour: '' }` — vide = le texte d'origine. */
+    servicesRetires: { _maj: 0 },
+    messagesVoyageur: { _maj: 0, bien: '', sejour: '' },
     factures: [],                     // D-206 : les factures (table et casier « factures », script 20)
     factureEd: null,                  // le formulaire d'une facture, ou null
     facturesFiltre: { periode: '', pid: '' },   // D-206 : toutes, sinon une facture d'octobre « disparaît » en novembre
@@ -1337,10 +1348,13 @@ function upgrade() {
      PAS les entrées d'un logement inconnu : sur un appareil neuf, les
      logements peuvent arriver après les réglages, et nettoyer ici effacerait
      dans le cahier ce qui n'est qu'en retard (règle 3). */
-  ['todos', 'sansPresta', 'adminDroits'].forEach(function (k) {
+  // Session 48 (D-224, D-225) : deux de plus, même traitement (règle 9).
+  ['todos', 'sansPresta', 'adminDroits', 'servicesRetires', 'messagesVoyageur'].forEach(function (k) {
     if (!state[k] || typeof state[k] !== 'object' || Array.isArray(state[k])) state[k] = { _maj: 0 };
     if (typeof state[k]._maj !== 'number') state[k]._maj = 0;
   });
+  if (typeof state.messagesVoyageur.bien !== 'string') state.messagesVoyageur.bien = '';
+  if (typeof state.messagesVoyageur.sejour !== 'string') state.messagesVoyageur.sejour = '';
   /* Session 46 (D-206) — les factures. Celles d'un logement supprimé restent :
      elles appartiennent à la comptabilité, pas au logement. */
   if (!Array.isArray(state.factures)) state.factures = [];
@@ -1523,6 +1537,39 @@ function nomPreneur(m) {
 function service(key) {
   return state.services.find(function (s) { return s.key === key; }) ||
     { key: key, label: 'Prestation supprimée', duration: '', gone: true };
+}
+/* LES PRESTATIONS D'UN SEUL LOGEMENT (session 48, D-224)
+
+   Marc a demandé : *« dans Prestations et tarifs, on est d'accord que je
+   peux supprimer des éléments sans que ça change sur les autres
+   appartements ? »* — et ce n'était PAS le cas : « Supprimer » retirait la
+   prestation de tous les logements à la fois (le message le disait, mais
+   après coup). Désormais le geste de la fiche d'un logement ne vaut que pour
+   lui : la prestation est « retirée de ce logement » et reste ailleurs. La
+   suppression pour tous existe toujours, plus discrète, sous la liste des
+   prestations retirées.
+
+   Où ça vit : `state.servicesRetires[<logement>]`, une liste de clés, dans
+   les réglages partagés et horodatés (règle 14, règle 27). La première
+   prestation ne se retire pas : c'est elle que portent les ménages créés
+   tout seuls à chaque départ (`creerMissionDepart`). */
+function servicesRetiresDe(pid) {
+  var l = state.servicesRetires && state.servicesRetires[pid];
+  return Array.isArray(l) ? l : [];
+}
+function serviceRetire(pid, key) { return servicesRetiresDe(pid).indexOf(key) >= 0; }
+function servicesDuBien(pid) {
+  return state.services.filter(function (s) { return !pid || !serviceRetire(pid, s.key); });
+}
+function basculerServiceRetire(pid, key, retirer) {
+  if (!pid || !key) return;
+  if (!state.servicesRetires || typeof state.servicesRetires !== 'object' || Array.isArray(state.servicesRetires)) {
+    state.servicesRetires = { _maj: 0 };
+  }
+  var l = servicesRetiresDe(pid).filter(function (x) { return x !== key; });
+  if (retirer) l.push(key);
+  if (l.length) state.servicesRetires[pid] = l; else delete state.servicesRetires[pid];
+  state.servicesRetires._maj = Date.now();
 }
 function mission(id) { return state.missions.find(function (m) { return m.id === id; }); }
 function rooms(pid) { return state.checklists[pid] || []; }
@@ -3742,6 +3789,11 @@ function keyEvents(agentId) {
   allowedProps(agentId).forEach(function (pid) {
     var inf = state.info[pid] || {};
     resasOf(pid).forEach(function (r) {
+      /* UN SÉJOUR ANNULÉ N'A PLUS DE CLÉS À REMETTRE (session 48). Il restait
+         dans la liste avec sa remise des clés et son retour, comme si de rien
+         n'était : la personne se serait déplacée pour accueillir quelqu'un
+         qui ne viendra pas. */
+      if (!r || r.statut === 'annule') return;
       // Le logement peut être prêt en avance : c'est l'heure réelle qui compte.
       var rd = r.start === TODAY ? readyInfo(pid) : null;
       // Mais si le voyageur a annoncé son heure d'arrivée depuis son livret,
@@ -3960,17 +4012,86 @@ function boutonContact(rid) {
     act('contact-vcf', { rid: rid }) + '>📇 Enregistrer le contact</button>';
 }
 
+/* LE MESSAGE TOUT PRÊT, ÉCRIT À SA FAÇON (session 48, D-225)
+
+   Demandé le 5 novembre : *« je voudrais pouvoir personnaliser quelque part
+   le message tout prêt pour le lien au voyageur vers le livret »*. Les textes
+   étaient écrits en dur dans le code. Ils deviennent des MODÈLES que Marc
+   modifie dans « Biens & connexions », avec des mots entre accolades que
+   l'application remplace : {logement}, {lien}, et pour un séjour précis
+   {voyageur}, {arrivée}, {départ}, {heure d’arrivée}, {heure de départ}.
+
+   Deux modèles, parce qu'il y a deux sortes de messages :
+     · `bien` — le lien d'un logement, collé dans les messages automatiques
+       d'Airbnb et de Booking (on ne connaît ni le nom ni les dates) ;
+     · `sejour` — le lien personnel d'une réservation (on connaît tout).
+   Un modèle vide veut dire « le texte d'origine ». Le lien n'est jamais
+   perdu : s'il manque {lien}, il est ajouté à la fin (un message sans lien
+   ne sert à rien, et l'erreur ne se verrait qu'une fois envoyé). */
+var MODELE_MSG = {
+  bien: 'Bonjour,\n\n' +
+    'Voici votre livret d’accueil pour {logement} :\n{lien}\n\n' +
+    'Indiquez vos dates d’arrivée et de départ : vous y retrouverez l’adresse, ' +
+    'les horaires, le code d’accès et le Wi-Fi pendant votre séjour, ainsi que ' +
+    'nos conseils sur place.\n\n' +
+    'À très bientôt !',
+  sejour: 'Bonjour {voyageur},\n\n' +
+    'Voici votre livret d’accueil personnel pour {logement} :\n{lien}\n\n' +
+    'Vous y trouverez l’adresse, les horaires, le code d’accès et le Wi-Fi ' +
+    'pendant votre séjour, ainsi que nos conseils sur place.\n\n' +
+    'Arrivée le {arrivée} à partir de {heure d’arrivée} · départ le {départ} avant {heure de départ}.\n\n' +
+    'À très bientôt !'
+};
+
+/** Les mots qu'on peut glisser dans chaque modèle, dans l'ordre où on les propose. */
+var MOTS_MSG = {
+  bien: ['{logement}', '{lien}'],
+  sejour: ['{voyageur}', '{logement}', '{lien}', '{arrivée}', '{départ}', '{heure d’arrivée}', '{heure de départ}']
+};
+
+function modeleMsg(k) {
+  var v = state.messagesVoyageur && state.messagesVoyageur[k];
+  return typeof v === 'string' && v.trim() ? v : MODELE_MSG[k];
+}
+
+/** « {Heure d'arrivée} » → « heure_d_arrivee » : accents, majuscules et
+    apostrophes ne comptent pas, pour qu'une faute de frappe sans gravité
+    ne laisse pas le mot tel quel dans le message envoyé. */
+function cleMotMsg(t) {
+  var s = String(t || '').toLowerCase();
+  if (s.normalize) s = s.normalize('NFD').replace(/[̀-ͯ]/g, '');
+  return s.replace(/[’'`\s-]+/g, '_').replace(/^_+|_+$/g, '');
+}
+
+function remplirModele(modele, valeurs) {
+  var alias = {
+    voyageur: 'voyageur', prenom: 'voyageur', nom: 'voyageur', client: 'voyageur',
+    logement: 'logement', maison: 'logement', appartement: 'logement',
+    lien: 'lien', arrivee: 'arrivee', depart: 'depart',
+    heure_d_arrivee: 'heure_arrivee', heure_arrivee: 'heure_arrivee',
+    heure_de_depart: 'heure_depart', heure_depart: 'heure_depart'
+  };
+  var aLien = false;
+  var txt = String(modele || '').replace(/\{([^{}]{1,40})\}/g, function (tout, mot) {
+    var k = alias[cleMotMsg(mot)];
+    if (!k || valeurs[k] === undefined) return tout;   // mot inconnu : laissé visible, pour qu'il se remarque
+    if (k === 'lien') aLien = true;
+    return valeurs[k];
+  });
+  // « Bonjour {voyageur}, » sans nom connu donnerait « Bonjour , ».
+  txt = txt.replace(/[  ]+([,.])/g, '$1');
+  if (!aLien && valeurs.lien) txt = txt.replace(/\s+$/, '') + '\n\n' + valeurs.lien;
+  return txt;
+}
+
 /** Le message tout prêt à envoyer au voyageur avec son lien personnel. */
 function texteSejour(pid, r) {
   var p = prop(pid), inf = state.info[pid] || {};
-  return 'Bonjour ' + r.guest + ',\n\n' +
-    'Voici votre livret d’accueil personnel pour ' + p.name + ' :\n' +
-    lienSejour(r.id) + '\n\n' +
-    'Vous y trouverez l’adresse, les horaires, le code d’accès et le Wi-Fi ' +
-    'pendant votre séjour, ainsi que nos conseils sur place.\n\n' +
-    'Arrivée le ' + fmtDate(r.start) + ' à partir de ' + (inf.checkin || '16:00') + ' · ' +
-    'départ le ' + fmtDate(r.end) + ' avant ' + (inf.checkout || '11:00') + '.\n\n' +
-    'À très bientôt !';
+  return remplirModele(modeleMsg('sejour'), {
+    voyageur: r.guest || '', logement: p.name, lien: lienSejour(r.id),
+    arrivee: fmtDate(r.start), depart: fmtDate(r.end),
+    heure_arrivee: inf.checkin || '16:00', heure_depart: inf.checkout || '11:00'
+  });
 }
 
 /* Copie dans le presse-papiers, avec repli quand le navigateur refuse
@@ -5226,7 +5347,10 @@ function prestaShell(head, body, foot, opts) {
 
 function tabBar() {
   var cles = isCles(state.me);
-  var dispoCount = cles ? keyEventsOn(state.me, TODAY).length : dispoForMe().length;
+  /* Le badge ne compte que ce qui est encore à venir (session 48) : les
+     missions passées jamais prises ont leur encadré à part (D-221). */
+  var dispoCount = cles ? keyEventsOn(state.me, TODAY).length
+    : dispoForMe().filter(function (m) { return m.date >= TODAY; }).length;
   // Une annulation qui n'est vue que si on pense à ouvrir l'onglet n'est pas
   // un message : elle se signale sur la barre du bas (session 22).
   var annulCount = cles ? 0 : annulationsPourMoi().length;
@@ -5284,7 +5408,8 @@ function dispoForMe() {
 }
 
 function viewPrestaMissions() {
-  var list = dispoForMe().map(decorate);
+  var list = dispoForMe().map(decorate)
+    .sort(function (a, b) { return a.raw.date < b.raw.date ? -1 : a.raw.date > b.raw.date ? 1 : 0; });
 
   // On distingue les deux raisons de ne pas voir une mission : ce n'est pas
   // ton logement, ou ce n'est pas ton métier. La seconde est nouvelle (D-53).
@@ -5299,11 +5424,21 @@ function viewPrestaMissions() {
   // vide qui ressemble à une panne.
   var sansLogement = !allowedProps(state.me).length;
 
+  /* Les missions dont la date est passée et que personne n'a prises
+     (session 48, D-221) : elles se rangent à part, repliées, au lieu de
+     passer devant celles de la semaine. Chacune peut être déclarée faite. */
+  var retard = list.filter(function (m) { return m.enRetard; }).map(function (m) { return m.raw; })
+    .sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : 0; });
+  list = list.filter(function (m) { return !m.enRetard; });
+
   var body = '<div class="stack">' + (list.length
     ? list.map(missionCard).join('')
     : '<p class="empty">' + (sansLogement
         ? 'Aucun logement ne t’a encore été attribué.<br>Le propriétaire doit cocher tes logements ; les missions apparaîtront ensuite ici.'
-        : 'Aucune mission disponible pour le moment.') + '</p>') +
+        : 'Aucune mission à venir pour le moment.') + '</p>') +
+    carteMissionsPassees(retard,
+      retard.length > 1 ? retard.length + ' missions passées que personne n’a prises' : 'Une mission passée que personne n’a prise',
+      'Si tu les as faites quand même, dis-le ici : elles entreront dans tes gains.', false) +
     '<p class="center sec-note" style="padding-top:8px">Une mission apparaît dès qu\'un check-out est détecté sur l\'iCal.' +
       (horsBien ? '<br>' + horsBien + ' mission(s) concernent des logements qui ne te sont pas attribués.' : '') +
       (horsMetier ? '<br>' + horsMetier + ' mission(s) concernent des prestations que tu ne fais pas.' : '') +
@@ -5382,13 +5517,151 @@ function carteAnnulation(m) {
     '</article>';
 }
 
+/* LES MISSIONS PASSÉES QUI N'ONT JAMAIS ÉTÉ CLOSES (session 48, D-221)
+
+   Elles se mêlaient aux missions à venir, en tête de liste puisque les plus
+   anciennes, et poussaient le travail de la semaine hors de l'écran. Elles
+   se rangent désormais dans un encadré à part, replié, qui dit combien il y
+   en a et propose de les marquer comme faites — une à une ou toutes. */
+var passeesOuvertes = false;
+var prestaVue = 'liste';          // 'liste' | 'mois' — position d'affichage (règle 7)
+var prestaMois = null;
+var prestaJour = null;
+
+function carteMissionsPassees(passees, titre, texte, toutes) {
+  if (!passees.length) return '';
+  var total = passees.reduce(function (n, m) { return n + (m.price || 0); }, 0);
+  return '<article class="card passees">' +
+    '<button type="button" class="passees-tete"' + act('passees-ouvrir') + ' aria-expanded="' + passeesOuvertes + '">' +
+      '<span class="passees-ico" aria-hidden="true">⏱</span>' +
+      '<span class="grow" style="min-width:0">' +
+        '<span class="passees-titre">' + esc(titre) + '</span>' +
+        '<span class="passees-sous">' + esc(texte) + '</span>' +
+      '</span>' +
+      '<span class="passees-nb num">' + passees.length + '</span>' +
+      '<span class="passees-fl" aria-hidden="true">' + (passeesOuvertes ? '▾' : '▸') + '</span>' +
+    '</button>' +
+    (passeesOuvertes
+      ? '<div class="passees-liste">' + passees.map(function (m) {
+          var p = prop(m.prop);
+          return '<div class="passee" style="--accent:' + p.color + '">' +
+            '<button type="button" class="grow passee-corps"' + act('open-mission', { id: m.id }) + '>' +
+              '<span class="passee-nom">' + esc(p.name) + '</span>' +
+              '<span class="passee-meta num">' + esc(fmtDate(m.date)) + ' · ' + esc(service(m.type).label) +
+                ' · ' + (m.price || 0) + ' €' + (m.status === 'encours' ? ' · commencée' : '') + '</span>' +
+            '</button>' +
+            '<button type="button" class="btn btn--xs passee-btn"' + act('faite-apres-coup', { id: m.id }) + '>✓ Faite</button>' +
+          '</div>';
+        }).join('') + '</div>' +
+        (toutes && passees.length > 1
+          ? '<button type="button" class="btn btn--sm passees-toutes"' + act('faites-apres-coup') + '>' +
+              '✓ Marquer les ' + passees.length + ' comme faites · ' + total + ' €</button>'
+          : '') +
+        '<p class="sec-note" style="margin:10px 2px 0">« Faite » la range dans tes gains, sans checklist ni ' +
+          'photos : le propriétaire verra qu’elle a été close après coup. Si tu ne l’as pas faite, ' +
+          'préviens-le plutôt.</p>'
+      : '') +
+  '</article>';
+}
+
+/* LA VUE DU MOIS POUR UNE PRESTATAIRE (session 48, D-222)
+
+   Demandée en même temps : *« est-ce qu'on pourrait pas ajouter une vue
+   mensuelle ? »*. Une grille du lundi au dimanche ; chaque jour porte ses
+   missions en petites pastilles à la couleur du logement — pleines pour les
+   siennes, en pointillés pour celles qu'elle peut encore prendre, cochées
+   pour les terminées. Toucher un jour en montre le détail en dessous. */
+function moisMissionsPresta() {
+  var mois = prestaMois || CURRENT_MONTH;
+  var premier = mois + '-01', nj = nbJoursMois(mois);
+  var dernier = mois + '-' + String(nj).padStart(2, '0');
+  var lead = (new Date(Date.parse(premier + 'T00:00:00Z')).getUTCDay() + 6) % 7;
+  var lundi = jourPlus(premier, -lead);
+
+  var visibles = state.missions.filter(function (m) {
+    if (m.status === 'annulee') return false;
+    if (m.taker === state.me) return true;
+    return m.status === 'dispo' && mayTakeMission(state.me, m);
+  });
+  var parJour = {};
+  visibles.forEach(function (m) { (parJour[m.date] = parJour[m.date] || []).push(m); });
+
+  var nbMiennes = visibles.filter(function (m) { return m.taker === state.me && m.date >= premier && m.date <= dernier; }).length;
+  var nbLibres = visibles.filter(function (m) { return m.status === 'dispo' && m.date >= premier && m.date <= dernier; }).length;
+  var gainMois = visibles.filter(function (m) {
+    return m.taker === state.me && m.date >= premier && m.date <= dernier;
+  }).reduce(function (n, m) { return n + (m.price || 0); }, 0);
+
+  var cases = '';
+  var jours = [];
+  for (var lu = lundi; lu <= dernier; lu = jourPlus(lu, 7)) {
+    for (var i = 0; i < 7; i++) jours.push(jourPlus(lu, i));
+  }
+  jours.forEach(function (d) {
+    var hors = moisDe(d) !== mois;
+    var l = parJour[d] || [];
+    var pastilles = l.slice(0, 3).map(function (m) {
+      var p = prop(m.prop);
+      var cls = m.taker === state.me ? (m.status === 'termine' ? 'pm-pas pm-pas--fait' : 'pm-pas pm-pas--moi') : 'pm-pas pm-pas--libre';
+      return '<span class="' + cls + '" style="--accent:' + p.color + '">' +
+        (m.status === 'termine' ? '✓ ' : '') + esc(p.short || p.name) + '</span>';
+    }).join('') + (l.length > 3 ? '<span class="pm-plus num">+' + (l.length - 3) + '</span>' : '');
+    cases += '<button type="button" class="pm-jour' + (hors ? ' pm-jour--hors' : '') + (d === TODAY ? ' pm-jour--auj' : '') +
+      (d === prestaJour ? ' pm-jour--sel' : '') + (d < TODAY ? ' pm-jour--passe' : '') + '"' +
+      act('presta-jour', { d: d }) + ' aria-label="' + esc(fmtDateLongue(d) + ' : ' + l.length + ' mission(s)') + '">' +
+      '<span class="pm-num num">' + parseInt(d.slice(8), 10) + '</span>' + pastilles + '</button>';
+  });
+
+  var jourSel = prestaJour && moisDe(prestaJour) === mois ? prestaJour : null;
+  var duJour = jourSel ? (parJour[jourSel] || []) : [];
+
+  return '<article class="card pm">' +
+    navMois(mois, act('presta-mois-pas', { n: -1 }), act('presta-mois-pas', { n: 1 }), act('presta-mois-auj'),
+      nbMiennes + ' à moi · ' + nbLibres + ' à prendre' + (gainMois ? ' · ' + gainMois + ' €' : '')) +
+    '<div class="pm-dows">' + ['L', 'M', 'M', 'J', 'V', 'S', 'D'].map(function (x) { return '<span>' + x + '</span>'; }).join('') + '</div>' +
+    '<div class="pm-grille">' + cases + '</div>' +
+    '<div class="pm-leg">' +
+      '<span><span class="pm-pas pm-pas--moi" style="--accent:var(--ink-soft)">à moi</span></span>' +
+      '<span><span class="pm-pas pm-pas--libre" style="--accent:var(--ink-soft)">à prendre</span></span>' +
+      '<span><span class="pm-pas pm-pas--fait" style="--accent:var(--ink-soft)">✓ faite</span></span>' +
+    '</div>' +
+  '</article>' +
+  (jourSel
+    ? '<h2 class="kd-title">' + esc(jourLabel(jourSel) === 'Aujourd’hui' || jourLabel(jourSel) === 'Demain'
+        ? jourLabel(jourSel) + ' · ' + fmtDateLongue(jourSel) : fmtDateLongue(jourSel)) + '</h2>' +
+      (duJour.length ? duJour.map(function (m) { return missionCard(decorate(m)); }).join('')
+        : '<p class="empty">Aucune mission ce jour-là.</p>')
+    : '<p class="sec-note center">Touche un jour pour voir ses missions.</p>');
+}
+
 function viewPrestaMes() {
   var annul = annulationsPourMoi().map(carteAnnulation).join('');
-  var mine = state.missions
-    .filter(function (m) {
-      return m.taker === state.me && m.status !== 'termine' && m.status !== 'annulee';
-    })
+  var toutesMiennes = state.missions.filter(function (m) {
+    return m.taker === state.me && m.status !== 'termine' && m.status !== 'annulee';
+  });
+  /* Les passées à clore sortent de la liste principale (D-221). Une mission
+     commencée aujourd'hui, elle, reste en haut : c'est le travail du jour. */
+  var passees = toutesMiennes.filter(peutCloreApresCoup)
+    .sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : 0; });
+  var mine = toutesMiennes.filter(function (m) { return !peutCloreApresCoup(m); })
+    .sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : 0; })
     .map(decorate);
+
+  var vues = '<div class="seg seg--plein">' +
+    '<button type="button" aria-pressed="' + (prestaVue !== 'mois') + '"' + act('presta-vue', { v: 'liste' }) + '>Liste</button>' +
+    '<button type="button" aria-pressed="' + (prestaVue === 'mois') + '"' + act('presta-vue', { v: 'mois' }) + '>Mois</button>' +
+  '</div>';
+
+  if (prestaVue === 'mois') {
+    return prestaShell(
+      prestaHeader(mine.length + ' mission(s) à venir', 'Mes missions'),
+      '<div class="stack">' + vues + annul + moisMissionsPresta() + '</div>'
+    );
+  }
+
+  var aClore = carteMissionsPassees(passees,
+    passees.length > 1 ? passees.length + ' missions passées à clore' : 'Une mission passée à clore',
+    'Leur date est dépassée. Si tu les as faites, marque-les comme faites.', true);
 
   var cards = mine.length ? mine.map(function (m) {
     return '<article class="card card--lift pop">' +
@@ -5405,9 +5678,17 @@ function viewPrestaMes() {
       '<button type="button" class="btn btn--sm ' + m.ctaCls + '" style="width:100%;margin-top:12px"' +
         (m.ctaAction ? act(m.ctaAction, { id: m.id }) : '') + '>' + esc(m.ctaLabel) + '</button>' +
       '</article>';
-  }).join('') : '<p class="empty">Aucune mission acceptée pour le moment.<br>Va voir les missions disponibles.</p>';
+  }).join('') : '<p class="empty">' + (passees.length
+      ? 'Rien à venir pour le moment.'
+      : 'Aucune mission acceptée pour le moment.') + '<br>Va voir les missions disponibles.</p>';
 
-  var hist = ledger().filter(function (r) { return r.agent === state.me; }).slice(0, 6);
+  /* Les plus récentes d'abord (session 48). `ledger()` suit l'ordre de la
+     liste des missions, pas celui des dates : « Historique » montrait donc
+     les six premières enregistrées, souvent les plus vieilles. */
+  var dateDe = function (r) { var mm = mission(r.mid); return mm ? mm.date : ''; };
+  var hist = ledger().filter(function (r) { return r.agent === state.me; })
+    .sort(function (a, b) { var x = dateDe(a), y = dateDe(b); return x < y ? 1 : x > y ? -1 : 0; })
+    .slice(0, 6);
   var history = '<div style="margin-top:10px">' +
     '<h2 class="sec-title" style="margin:0 4px 9px">Historique</h2>' +
     '<div class="card card--flush"><div class="list">' +
@@ -5423,8 +5704,8 @@ function viewPrestaMes() {
     '</div></div></div>';
 
   return prestaShell(
-    prestaHeader(mine.length + ' mission(s) acceptée(s)', 'Mes missions'),
-    '<div class="stack">' + annul + cards + history + '</div>'
+    prestaHeader(mine.length + ' mission(s) à venir', 'Mes missions'),
+    '<div class="stack">' + vues + annul + cards + aClore + history + '</div>'
   );
 }
 
@@ -5590,7 +5871,7 @@ function viewPrestaDetail() {
       '<div class="card">' +
         '<h2 style="font:700 14px Figtree,sans-serif;margin:0 0 8px">Le logement</h2>' +
         [['Capacité', inf.capacity], ['Surface', inf.surface], ['Stationnement', inf.parking],
-         ['Linge', inf.linge], ['Départ voyageur', inf.checkout], ['Arrivée suivante', inf.checkin],
+         ['Départ voyageur', inf.checkout], ['Arrivée suivante', inf.checkin],
          ['Consigne', state.notes[m.prop]]]
           .filter(function (r) { return r[1]; })
           .map(function (r) {
@@ -5599,8 +5880,15 @@ function viewPrestaDetail() {
       '</div>' +
     '</div>';
 
+  /* Une mission dont la date est passée peut se déclarer faite d'ici aussi
+     (session 48, D-221), à côté de la checklist. */
+  var apresCoup = peutCloreApresCoup(m)
+    ? '<button type="button" class="btn btn--sm btn--quiet" style="width:100%;margin-top:8px"' +
+        act('faite-apres-coup', { id: m.id }) + '>✓ Je l’ai faite — marquer comme faite</button>'
+    : '';
   var foot = '<div class="presta-foot">' +
     '<button type="button" class="btn ' + btn.cls + '"' + (btn.action ? act(btn.action, { id: m.id }) : '') + '>' + esc(btn.label) + '</button>' +
+    apresCoup +
     '<div class="note num">' + esc(btn.note) + '</div>' +
     '</div>';
 
@@ -5850,15 +6138,26 @@ function viewPrestaGains() {
   var current = monthTotal(me, CURRENT_MONTH);
   var currentCount = monthRows(me, CURRENT_MONTH).length;
 
-  var months = MONTHS.filter(function (m) { return m.key !== CURRENT_MONTH; }).map(function (m) {
+  /* « À VENIR » POUR UNE DATE DÉJÀ PASSÉE (session 48). Le mois d'octobre
+     affichait « Versement prévu le 5 novembre · À venir » le 5 novembre, et
+     septembre « prévu le 5 octobre · À venir » un mois après : l'étiquette
+     mentait (règle 5). Le versement non coché après sa date est « en
+     attente ». Et les mois sans aucune mission ne s'affichent plus : quatre
+     lignes à 0 € n'apprennent rien et poussent le reste hors de l'écran. */
+  var months = MONTHS.filter(function (m) {
+    return m.key !== CURRENT_MONTH && monthRows(me, m.key).length;
+  }).map(function (m) {
     var rows = monthRows(me, m.key);
     var open = state.openGainMonth === m.key;
     var paye = isPaid(me, m.key);
+    var dateVersement = moisPlus(m.key, 1) + '-05';
+    var etat = paye ? 'Payé' : dateVersement < TODAY ? 'En attente' : dateVersement === TODAY ? 'Aujourd’hui' : 'À venir';
     return '<article class="card" style="border-radius:22px;padding:6px 18px 10px">' +
       '<button type="button" class="gain-month"' + act('toggle-gain', { m: m.key }) + '>' +
         '<div class="grow"><div style="font:700 16px Figtree,sans-serif">' + esc(m.label) + '</div>' +
-        '<div class="num" style="font:500 12px Figtree,sans-serif;color:var(--muted);margin-top:2px">' + rows.length + ' missions · ' + esc(m.payNote) + '</div></div>' +
-        '<span class="badge ' + (paye ? 'badge--green' : 'badge--amber') + '" style="font-size:11.5px;padding:4px 9px">' + (paye ? 'Payé' : 'À venir') + '</span>' +
+        '<div class="num" style="font:500 12px Figtree,sans-serif;color:var(--muted);margin-top:2px">' + rows.length +
+          (rows.length > 1 ? ' missions · ' : ' mission · ') + esc(paye ? 'versé' : m.payNote) + '</div></div>' +
+        '<span class="badge ' + (paye ? 'badge--green' : 'badge--amber') + '" style="font-size:11.5px;padding:4px 9px">' + etat + '</span>' +
         '<span class="serif num" style="font-size:24px;flex:none">' + rows.reduce(function (n, r) { return n + r.price; }, 0) + ' €</span>' +
       '</button>' +
       (open ? '<div style="border-top:1px solid rgba(36,30,26,.07);padding-top:4px">' +
@@ -5986,90 +6285,179 @@ function keyRow(e) {
       // c'est elle qui fixe le vrai rendez-vous.
       (e.annonce ? '<div class="kd-flag kd-flag--blue">🕐 Heure annoncée par le voyageur : ' + esc(e.hour) + '</div>'
         : e.early ? '<div class="kd-flag kd-flag--green">✨ Logement prêt en avance : clés remises dès ' + esc(e.hour) + '</div>' : '') +
-      (e.resa && e.resa.tel ? '<div class="kd-flag kd-flag--blue">📞 ' + esc(e.resa.tel) + '</div>' : '') +
+      (e.resa && e.resa.tel ? '<a class="kd-flag kd-flag--blue kd-tel" href="tel:' + esc(String(e.resa.tel).replace(/[^\d+]/g, '')) + '">📞 ' +
+        esc(e.resa.tel) + ' · appeler</a>' : '') +
       (e.parti ? '<div class="kd-flag kd-flag--green">✓ Le voyageur a signalé son départ à ' + esc(e.parti) + '</div>' : '') +
     '</div></article>';
 }
 
-/** Le mois d'un logement : grille, puis les séjours avec le nom du voyageur. */
-function clesCalendar(pid) {
-  var p = prop(pid), inf = state.info[pid] || {};
-  var cm = state.calMonth;
-  var cy = parseInt(cm.split('-')[0], 10), cmo = parseInt(cm.split('-')[1], 10);
-  var first = new Date(Date.UTC(cy, cmo - 1, 1));
-  var daysIn = new Date(Date.UTC(cy, cmo, 0)).getUTCDate();
-  var lead = (first.getUTCDay() + 6) % 7;
-  var resas = resasOf(pid);
+/* L'ÉCRAN DE LA REMISE DES CLÉS, REDESSINÉ (session 48, D-220)
 
-  var cells = '';
-  for (var i = 0; i < lead; i++) cells += '<div class="cal-cell empty"></div>';
-  for (var d = 1; d <= daysIn; d++) {
-    var iso = cy + '-' + String(cmo).padStart(2, '0') + '-' + String(d).padStart(2, '0');
-    var r = resas.find(function (x) { return iso >= x.start && iso <= x.end; });
-    var cls = 'cal-cell' + (iso === TODAY ? ' today' : r ? ' busy' : '');
-    var bar = r
-      ? '<span class="cal-bar" style="background:' + p.color +
-        ';margin-left:' + (r.start === iso ? '45%' : '0') + ';margin-right:' + (r.end === iso ? '45%' : '0') + '"></span>'
-      : '';
-    cells += '<div class="' + cls + '"><span class="d num">' + d + '</span>' + bar + '</div>';
+   Demandé le 5 novembre : *« j'aimerais un calendrier mensuel où on voit
+   mieux les réservations, là c'est pas bien clair »*. Trois défauts réunis :
+   « À venir » empilait dix grandes cartes identiques — date, adresse et
+   badge répétés à chaque ligne —, le calendrier arrivait tout en bas, après
+   elles, et ce calendrier n'était qu'un trait de couleur sans un nom.
+
+   Désormais l'écran a deux vues, au choix en haut :
+     · « Programme » : aujourd'hui en grandes cartes (c'est là qu'on agit),
+       puis les quinze jours suivants regroupés PAR JOUR, une ligne courte par
+       mouvement — l'heure, arrivée ou départ, qui, quel logement ;
+     · « Mois » : le calendrier lisible des séjours (D-219), un logement à la
+       fois, mois par mois ; toucher une barre en montre le détail.
+   Vue, logement, mois et séjour choisis sont des positions d'affichage
+   (règle 7) : rien de tout cela n'est enregistré. */
+var clesVue = 'programme';
+var clesBien = null;
+var clesMois = null;
+var clesSel = null;
+
+/** Un mouvement en une ligne : l'heure, le sens, le voyageur, le logement. */
+function keyRowCompact(e) {
+  var p = prop(e.pid), arr = e.kind === 'arrivee';
+  return '<div class="kc-row" style="--accent:' + p.color + '">' +
+    '<div class="kc-heure num">' + esc(e.hour) + '</div>' +
+    '<div class="grow" style="min-width:0">' +
+      '<div class="kc-top">' +
+        '<span class="kc-sens ' + (arr ? 'kc-sens--arr' : 'kc-sens--dep') + '">' + (arr ? '→ Arrivée' : '← Départ') + '</span>' +
+        '<span class="kc-guest">' + esc(e.guest) + '</span>' +
+      '</div>' +
+      '<div class="kc-meta num"><span class="dot" style="background:' + p.color + '"></span>' + esc(p.name) +
+        (arr && parseInt(e.guests, 10) > 0 ? ' · ' + e.guests + (e.guests > 1 ? ' voyageurs' : ' voyageur') : '') +
+        (arr ? ' · ' + e.nights + (e.nights > 1 ? ' nuits' : ' nuit') : '') + '</div>' +
+      (e.annonce ? '<div class="kc-note">🕐 Heure annoncée par le voyageur</div>' : '') +
+      (e.parti ? '<div class="kc-note kc-note--ok">✓ Parti à ' + esc(e.parti) + '</div>' : '') +
+    '</div>' +
+    (e.resa && e.resa.tel ? '<a class="kc-tel" href="tel:' + esc(String(e.resa.tel).replace(/[^\d+]/g, '')) + '"' +
+      ' aria-label="Appeler ' + esc(e.guest) + '">📞</a>' : '') +
+  '</div>';
+}
+
+/** Les quinze prochains jours, regroupés par jour. */
+function programmeCles(next) {
+  if (!next.length) return '<p class="empty">Rien de prévu sur les logements qui te sont confiés.</p>';
+  var jours = [];
+  next.forEach(function (e) {
+    var j = jours[jours.length - 1];
+    if (!j || j.date !== e.date) { j = { date: e.date, evts: [] }; jours.push(j); }
+    j.evts.push(e);
+  });
+  return jours.map(function (j) {
+    var d = new Date(Date.parse(j.date + 'T00:00:00Z'));
+    var longue = JOURS[d.getUTCDay()] + ' ' + d.getUTCDate() + ' ' + MOIS_LONGS[d.getUTCMonth()];
+    var titre = jourLabel(j.date) === 'Demain' ? 'Demain · ' + longue : longue.charAt(0).toUpperCase() + longue.slice(1);
+    return '<section class="kc-jour">' +
+      '<h3 class="kc-jour-titre">' + esc(titre) +
+        '<span class="kc-jour-nb num">' + j.evts.length + '</span></h3>' +
+      '<div class="card card--flush kc-liste">' + j.evts.map(keyRowCompact).join('') + '</div>' +
+    '</section>';
+  }).join('');
+}
+
+/** Le détail d'un séjour touché dans le calendrier. */
+function detailSejourCles(pid, r) {
+  var inf = state.info[pid] || {};
+  var n = parseInt(r.guests, 10);
+  return '<article class="card kc-detail pop" style="border-left:4px solid ' + platCouleurs(r.plat).color + '">' +
+    '<div style="display:flex;align-items:center;gap:10px">' +
+      '<div class="grow" style="font:700 17px Figtree,sans-serif">' + esc(r.guest) + '</div>' +
+      '<button type="button" class="x-btn" aria-label="Fermer"' + act('cles-sejour', { rid: r.id }) + '>×</button>' +
+    '</div>' +
+    '<div class="kc-detail-grille">' +
+      '<div><div class="k">→ Arrivée</div><div class="v num">' + esc(fmtDateLongue(r.start)) + '</div>' +
+        '<div class="s num">' + esc(r.arriveePrevue ? r.arriveePrevue + ' (annoncée)' : 'à partir de ' + (inf.checkin || '16:00')) + '</div></div>' +
+      '<div><div class="k">← Départ</div><div class="v num">' + esc(fmtDateLongue(r.end)) + '</div>' +
+        '<div class="s num">' + esc(departAt(pid, r) ? 'parti à ' + departAt(pid, r) : 'avant ' + (inf.checkout || '11:00')) + '</div></div>' +
+    '</div>' +
+    '<div class="kd-meta num" style="margin-top:10px">' + nights(r.start, r.end) + ' nuit' + (nights(r.start, r.end) > 1 ? 's' : '') +
+      (n > 0 ? ' · ' + n + (n > 1 ? ' voyageurs' : ' voyageur') : ' · nombre de voyageurs inconnu') + '</div>' +
+    (r.tel ? '<a class="btn btn--sm kc-appeler" href="tel:' + esc(String(r.tel).replace(/[^\d+]/g, '')) + '">📞 Appeler ' +
+      esc(r.tel) + '</a>' : '') +
+  '</article>';
+}
+
+/** La vue « Mois » : un logement à la fois, mois par mois. */
+function moisCles(pids) {
+  if (!pids.length) {
+    return '<p class="empty">Aucun logement ne t’est confié pour le moment. ' +
+      'Le propriétaire peut te les attribuer depuis sa rubrique « Prestataires ».</p>';
   }
+  if (!clesBien || pids.indexOf(clesBien) < 0) clesBien = pids[0];
+  var mois = clesMois || CURRENT_MONTH;
+  var pid = clesBien, p = prop(pid);
+  var resas = resasOf(pid).filter(function (r) { return r && r.statut !== 'annule'; });
+  var sel = clesSel ? resas.filter(function (r) { return r.id === clesSel; })[0] : null;
 
-  // Les séjours qui touchent le mois affiché, dans l'ordre.
-  var debut = cy + '-' + String(cmo).padStart(2, '0') + '-01';
-  var fin = cy + '-' + String(cmo).padStart(2, '0') + '-' + String(daysIn).padStart(2, '0');
-  var dumois = resas.filter(function (x) { return x.end >= debut && x.start <= fin; })
+  var premier = mois + '-01', dernier = mois + '-' + String(nbJoursMois(mois)).padStart(2, '0');
+  var dumois = resas.filter(function (r) { return r.end >= premier && r.start <= dernier; })
     .slice().sort(function (a, b) { return a.start < b.start ? -1 : 1; });
+  var inf = state.info[pid] || {};
 
-  return '<article class="card" style="border-radius:22px">' +
-    '<div class="kd-head">' +
-      '<span class="dot" style="background:' + p.color + '"></span>' +
-      '<span class="kd-prop">' + esc(p.name) + '</span>' +
-    '</div>' +
-    '<div class="kd-addr" style="margin-top:2px">' + esc(p.address + ', ' + p.city) + '</div>' +
-    '<div class="cal cal--mini">' +
-      ['L', 'M', 'M', 'J', 'V', 'S', 'D'].map(function (x) { return '<div class="cal-dow">' + x + '</div>'; }).join('') +
-      cells +
-    '</div>' +
-    '<div class="kd-stays">' + (dumois.length ? dumois.map(function (r) {
-      return '<div class="kd-stay">' +
-        '<div class="kd-stay-name">' + esc(r.guest) + '</div>' +
-        '<div class="kd-meta num">' + fmtDate(r.start) + ' → ' + fmtDate(r.end) + ' · ' +
-          nights(r.start, r.end) + ' nuits · ' + r.guests + (r.guests > 1 ? ' voyageurs' : ' voyageur') + '</div>' +
-        '<div class="kd-meta num">Arrivée ' + esc(inf.checkin || '16:00') + ' · départ ' + esc(inf.checkout || '11:00') +
-          (departAt(pid, r) ? ' · parti à ' + esc(departAt(pid, r)) : '') + '</div>' +
-        '</div>';
-    }).join('') : '<p class="empty" style="padding:14px 0">Aucun séjour ce mois-ci.</p>') + '</div>' +
-    '</article>';
+  return (pids.length > 1
+      ? '<div class="kc-biens">' + pids.map(function (x) {
+          var px = prop(x);
+          return '<button type="button" class="perm-chip" aria-pressed="' + (x === pid) + '" style="--accent:' + px.color + '"' +
+            act('cles-bien', { pid: x }) + '><span class="dot" style="background:' + px.color + '"></span>' + esc(px.name) + '</button>';
+        }).join('') + '</div>'
+      : '') +
+    '<article class="card" style="padding:14px 8px 12px;border-radius:22px">' +
+      '<div class="kd-addr" style="padding:0 8px 8px;text-align:center">' + esc(p.name + ' · ' + p.address + ', ' + p.city) + '</div>' +
+      navMois(mois, act('cles-mois-pas', { n: -1 }), act('cles-mois-pas', { n: 1 }), act('cles-mois-auj'), resumeMois(resas, mois, false)) +
+      moisBien(pid, mois, resas, {
+        sansCarte: true, sansTitre: true, lecture: true, menage: false, occupation: false, selRid: clesSel,
+        barreAct: function (r) { return act('cles-sejour', { rid: r.id }); }
+      }) +
+      '<p class="sec-note" style="margin:10px 8px 0">Chaque barre est un séjour : elle commence l’après-midi de ' +
+        'l’arrivée (→) et finit le matin du départ. Touche-la pour voir le détail.</p>' +
+    '</article>' +
+    (sel ? detailSejourCles(pid, sel) : '') +
+    '<h2 class="kd-title">Séjours du mois</h2>' +
+    (dumois.length ? '<div class="card card--flush kc-liste">' + dumois.map(function (r) {
+      return '<button type="button" class="kc-sejour' + (r.id === clesSel ? ' kc-sejour--sel' : '') + '"' +
+        act('cles-sejour', { rid: r.id }) + '>' +
+        '<span class="kc-sejour-trait" style="background:' + platCouleurs(r.plat).color + '"></span>' +
+        '<span class="grow" style="min-width:0">' +
+          '<span class="kc-guest" style="display:block">' + esc(r.guest) + '</span>' +
+          '<span class="kc-meta num" style="display:block">→ ' + esc(fmtDate(r.start)) + ' ' + esc(r.arriveePrevue || inf.checkin || '16:00') +
+            '  ·  ← ' + esc(fmtDate(r.end)) + ' ' + esc(inf.checkout || '11:00') + '</span>' +
+        '</span>' +
+        (r.end < TODAY ? '<span class="badge badge--soft">Passé</span>' : '') +
+      '</button>';
+    }).join('') + '</div>' : '<p class="empty" style="padding:14px 0">Aucun séjour ce mois-ci.</p>');
 }
 
 function viewPrestaCles() {
   var pids = allowedProps(state.me).filter(function (pid) { return !prop(pid).gone; });
   var auj = keyEventsOn(state.me, TODAY);
-  var next = keyEventsNext(state.me).slice(0, 10);
+  var limite = jourPlus(TODAY, 15);
+  var toutes = keyEventsNext(state.me);
+  var next = toutes.filter(function (e) { return e.date <= limite; });
+  var plusLoin = toutes.length - next.length;
 
-  var body = '<div class="stack" style="gap:14px">' +
-    '<h2 class="kd-title">Aujourd’hui · ' + esc(TODAY_LABEL) + '</h2>' +
-    (auj.length ? auj.map(keyRow).join('')
-      : '<p class="empty">Aucune remise de clés aujourd’hui.</p>') +
+  var vues = '<div class="seg seg--plein" role="tablist">' +
+    '<button type="button" aria-pressed="' + (clesVue !== 'mois') + '"' + act('cles-vue', { v: 'programme' }) + '>Programme</button>' +
+    '<button type="button" aria-pressed="' + (clesVue === 'mois') + '"' + act('cles-vue', { v: 'mois' }) + '>Mois</button>' +
+  '</div>';
 
-    '<h2 class="kd-title">À venir</h2>' +
-    (next.length ? next.map(keyRow).join('')
-      : '<p class="empty">Rien de prévu sur les logements qui te sont confiés.</p>') +
+  var corps = clesVue === 'mois'
+    ? moisCles(pids)
+    : '<h2 class="kd-title">Aujourd’hui · ' + esc(TODAY_LABEL) + '</h2>' +
+      (auj.length ? auj.map(keyRow).join('')
+        : '<p class="empty">Aucune remise de clés aujourd’hui.</p>') +
+      '<h2 class="kd-title">Les 15 prochains jours</h2>' +
+      programmeCles(next) +
+      (plusLoin ? '<p class="sec-note center">Et ' + plusLoin + ' mouvement' + (plusLoin > 1 ? 's' : '') +
+        ' plus loin — <button type="button" style="color:var(--terra);font-weight:700"' +
+        act('cles-vue', { v: 'mois' }) + '>voir le mois</button>.</p>' : '');
 
-    '<h2 class="kd-title">Calendrier des logements</h2>' +
-    '<div class="seg">' + moisCalendrier().map(function (m) {
-      return '<button type="button" aria-pressed="' + (state.calMonth === m[0]) + '"' +
-        act('cal-month', { m: m[0] }) + '>' + m[1] + '</button>';
-    }).join('') + '</div>' +
-    (pids.length ? pids.map(clesCalendar).join('')
-      : '<p class="empty">Aucun logement ne t’est confié pour le moment. ' +
-        'Le propriétaire peut te les attribuer depuis sa rubrique « Prestataires ».</p>') +
-
+  var body = '<div class="stack" style="gap:14px">' + vues + corps +
     '<p class="sec-note center" style="padding-top:6px">Tu vois les arrivées et les départs des logements ' +
       'qui te sont confiés. Le ménage, les stocks et les gains ne te concernent pas.</p>' +
     '</div>';
 
-  return prestaShell(prestaHeader(auj.length + ' remise(s) de clés aujourd’hui', 'Calendrier'), body);
+  return prestaShell(prestaHeader(auj.length
+    ? auj.length + ' mouvement' + (auj.length > 1 ? 's' : '') + ' de clés aujourd’hui'
+    : 'Rien aujourd’hui', 'Calendrier'), body);
 }
 
 /* Encadré de diagnostic, sur le profil du prestataire (session 13).
@@ -7739,7 +8127,7 @@ function viewOwnerMissions() {
             return '<option value="' + p.id + '"' + (state.nm.prop === p.id ? ' selected' : '') + '>' + esc(p.name) + '</option>';
           }).join('') + '</select></div>' +
         '<div style="flex:1.4;min-width:180px"><label class="lab" for="nm-type">Type de prestation</label>' +
-          '<select class="inp" id="nm-type" data-fid="nm-type" data-ch="nm-type">' + state.services.map(function (s) {
+          '<select class="inp" id="nm-type" data-fid="nm-type" data-ch="nm-type">' + servicesDuBien(state.nm.prop).map(function (s) {
             return '<option value="' + esc(s.key) + '"' + (state.nm.type === s.key ? ' selected' : '') + '>' + esc(s.label) + '</option>';
           }).join('') + '</select></div>' +
         '<div style="flex:1;min-width:150px"><label class="lab" for="nm-date">Date</label>' +
@@ -8359,8 +8747,16 @@ function viewOwnerMission() {
         : carteAvancementEnCours(m, d))
     : !repComplet && closeALaMain(m) && nbPhotosRecues(m)
     ? carteAvancementEnCours(m, d)
+    : !repComplet && rep && rep.apresCoup && nbPhotosRecues(m)
+    ? carteAvancementEnCours(m, d)
     : !repComplet
-    ? '<div class="card"><p class="empty">' + (closeALaMain(m)
+    ? '<div class="card"><p class="empty">' + (rep && rep.apresCoup
+        /* Close après coup par la prestataire (session 48, D-221) : elle n'a
+           rien coché, on ne fait pas croire le contraire (règle 5). */
+        ? 'Pas de checklist ni de photos : ' + esc(ag ? ag.name : 'la prestataire') + ' a marqué cette ' +
+          'mission comme faite après coup' + (rep.closeLe ? ', le ' + esc(fmtDate(rep.closeLe)) : '') +
+          ', sa date étant passée. À toi de la valider si c’est bien le cas.'
+        : closeALaMain(m)
         ? 'Pas de checklist ni de photos : tu as marqué cette mission comme faite à la main. Le ' +
           'ménage n\'est pas passé par l\'application, il n\'y a donc rien à revoir.'
         : 'Le détail de cette mission n\'a pas été conservé : elle a été terminée avant la mise ' +
@@ -8405,6 +8801,14 @@ function viewOwnerMission() {
           }).join('') + '</div>' +
           '</div>';
       }).join('');
+
+  /* Close après coup, mais avec quelques étapes faites (D-221) : on le dit
+     au-dessus de la checklist, pour que les « non validé » se lisent bien. */
+  if (fini && repComplet && rep.apresCoup) {
+    checklist = '<div class="alert alert--amber"><div class="det">⏱ ' + esc(ag ? ag.name : 'La prestataire') +
+      ' a marqué cette mission comme faite après coup' + (rep.closeLe ? ', le ' + esc(fmtDate(rep.closeLe)) : '') +
+      ' : seules les étapes ci-dessous ont été faites dans l’application.</div></div>' + checklist;
+  }
 
   /* Colonne de droite : qui a fait la mission, et les deux décisions. */
   var recap = !fini ? '' : '<div class="card" style="padding:20px">' +
@@ -9080,8 +9484,24 @@ function viewOwnerCalBien() {
     '<div class="chiprow" style="margin-top:10px;gap:14px">' + legendeMenage() + '</div>');
 }
 
-/** Un mois du calendrier d'un logement : semaines du lundi au dimanche. */
-function moisBien(pid, mois, resas) {
+/** Un mois du calendrier d'un logement : semaines du lundi au dimanche.
+
+    SESSION 48 (D-219) — le même dessin sert désormais à trois écrans : le
+    calendrier d'un logement mois par mois (son premier usage, D-195),
+    l'onglet « Réservations » de la fiche d'un logement, et l'écran de la
+    remise des clés. Les deux derniers montraient une grille de cases
+    traversée d'un trait de couleur de six pixels, sans aucun nom : Marc l'a
+    jugée « pas claire », et elle ne l'était pas — on ne savait ni qui, ni où
+    commençait un séjour. `opts` (facultatif) adapte le dessin :
+      · `lecture` : les jours ne se touchent pas (pas de réservation à créer) ;
+      · `barreAct(r)` : ce que fait le toucher d'une barre (par défaut, ouvrir
+        la réservation côté propriétaire) ;
+      · `selRid` : la barre mise en avant ;
+      · `menage` : la pastille du ménage (par défaut oui) ;
+      · `occupation` : le pourcentage occupé dans l'en-tête (par défaut oui) ;
+      · `sansCarte` : rendu sans la carte autour, pour l'insérer ailleurs. */
+function moisBien(pid, mois, resas, opts) {
+  opts = opts || {};
   var premier = mois + '-01';
   var nj = nbJoursMois(mois);
   var lead = (new Date(Date.parse(premier + 'T00:00:00Z')).getUTCDay() + 6) % 7;
@@ -9093,15 +9513,15 @@ function moisBien(pid, mois, resas) {
 
   var semaines = '';
   for (var lu = lundi; lu <= dernier; lu = jourPlus(lu, 7)) {
-    semaines += semaineBien(lu, mois, resas, pid);
+    semaines += semaineBien(lu, mois, resas, pid, opts);
   }
 
-  return '<section class="card mcal" id="mcal-' + esc(mois) + '">' +
-    '<div class="mcal-head">' +
+  return '<section class="' + (opts.sansCarte ? 'mcal mcal--nu' : 'card mcal') + '" id="mcal-' + esc(mois) + '">' +
+    (opts.sansTitre ? '' : '<div class="mcal-head">' +
       '<h2 class="mcal-titre">' + esc(nom.charAt(0).toUpperCase() + nom.slice(1)) + ' ' + mois.slice(0, 4) + '</h2>' +
       '<span class="mcal-resume num">' + dansLeMois + ' séjour' + (dansLeMois > 1 ? 's' : '') +
-        ' · ' + Math.round(occ / nj * 100) + ' % occupé</span>' +
-    '</div>' +
+        (opts.occupation === false ? '' : ' · ' + Math.round(occ / nj * 100) + ' % occupé') + '</span>' +
+    '</div>') +
     '<div class="mcal-dows">' + ['Lun', 'Mar', 'Mer', 'Jeu', 'Ven', 'Sam', 'Dim'].map(function (x) {
       return '<span>' + x + '</span>';
     }).join('') + '</div>' +
@@ -9110,24 +9530,36 @@ function moisBien(pid, mois, resas) {
 }
 
 /** Une semaine : la ligne des jours, puis les séjours rangés en couloirs. */
-function semaineBien(lundi, mois, resas, pid) {
+function semaineBien(lundi, mois, resas, pid, opts) {
+  opts = opts || {};
   var dim = jourPlus(lundi, 6);
   var cases = '';
   for (var i = 0; i < 7; i++) {
     var iso = jourPlus(lundi, i);
     var hors = moisDe(iso) !== mois;
-    var choisie = calSel && calSel.pid === pid && calSel.start === iso;
-    /* Chaque jour se touche pour choisir une arrivée puis un départ (D-217). */
-    cases += '<button type="button" class="mcal-jour' + (hors ? ' mcal-jour--hors' : '') + (i >= 5 ? ' mcal-jour--we' : '') +
-      (iso === TODAY ? ' mcal-jour--auj' : '') + (choisie ? ' mcal-jour--sel' : '') + '" style="grid-column:' + (i + 1) + '"' +
-      ' aria-label="' + esc(fmtDateLongue(iso) + (calSel && calSel.pid === pid ? ' : départ' : ' : arrivée')) + '"' +
-      act('cal-jour', { pid: pid, d: iso }) + '>' +
-      '<span class="num">' + parseInt(iso.slice(8), 10) + '</span></button>';
+    var choisie = !opts.lecture && calSel && calSel.pid === pid && calSel.start === iso;
+    var clsJour = 'mcal-jour' + (hors ? ' mcal-jour--hors' : '') + (i >= 5 ? ' mcal-jour--we' : '') +
+      (iso < TODAY && !hors ? ' mcal-jour--passe' : '') +
+      (iso === TODAY ? ' mcal-jour--auj' : '') + (choisie ? ' mcal-jour--sel' : '');
+    /* Chaque jour se touche pour choisir une arrivée puis un départ (D-217) —
+       sauf en lecture seule (remise des clés), où un jour n'est qu'un jour. */
+    cases += opts.lecture
+      ? '<div class="' + clsJour + '" style="grid-column:' + (i + 1) + '"><span class="num">' +
+          parseInt(iso.slice(8), 10) + '</span></div>'
+      : '<button type="button" class="' + clsJour + '" style="grid-column:' + (i + 1) + '"' +
+          ' aria-label="' + esc(fmtDateLongue(iso) + (calSel && calSel.pid === pid ? ' : départ' : ' : arrivée')) + '"' +
+          act('cal-jour', { pid: pid, d: iso }) + '>' +
+          '<span class="num">' + parseInt(iso.slice(8), 10) + '</span></button>';
   }
 
   /* Les morceaux de séjour qui touchent cette semaine. Colonnes 1 à 7 ;
      `g` / `d` disent si la barre continue avant ou après la semaine. */
-  var morceaux = resas.filter(function (r) { return r.start <= dim && r.end >= lundi && r.end > r.start; })
+  /* Un séjour annulé ne se dessine pas (session 48) : une barre pleine sur
+     des dates libres fait croire le logement occupé. Il reste dans la liste
+     des réservations, marqué « Annulée ». */
+  var morceaux = resas.filter(function (r) {
+    return r && r.statut !== 'annule' && r.start <= dim && r.end >= lundi && r.end > r.start;
+  })
     .map(function (r) {
       var c0 = r.start < lundi ? 0 : nights(lundi, r.start);
       var c1 = r.end > dim ? 6 : nights(lundi, r.end);
@@ -9154,15 +9586,24 @@ function semaineBien(lundi, mois, resas, pid) {
        matin), en fraction de la largeur couverte par la barre. */
     var mg = m.g ? '0px' : 'calc(100% / ' + span + ' / 2)';
     var md = m.d ? '0px' : 'calc(100% / ' + span + ' / 2)';
-    return '<button type="button" class="mcal-barre' + (m.g ? ' mcal-barre--g' : '') + (m.d ? ' mcal-barre--d' : '') + '"' +
+    var sel = opts.selRid && opts.selRid === m.r.id;
+    /* Un séjour déjà terminé s'efface un peu (D-219) : l'œil va d'abord à ce
+       qui vient. Il reste lisible et se touche comme les autres. */
+    var fini = m.r.end < TODAY;
+    var nb = parseInt(m.r.guests, 10) > 0 ? parseInt(m.r.guests, 10) : 0;
+    return '<button type="button" class="mcal-barre' + (m.g ? ' mcal-barre--g' : '') + (m.d ? ' mcal-barre--d' : '') +
+      (fini ? ' mcal-barre--fini' : '') + (sel ? ' mcal-barre--sel' : '') + '"' +
       ' style="grid-column:' + (m.c0 + 1) + ' / ' + (m.c1 + 2) + ';grid-row:' + (m.l + 2) +
       ';margin-left:' + mg + ';margin-right:' + md + ';background:' + pl.color + '"' +
       ' title="' + esc(m.r.guest + ' · ' + fmtDate(m.r.start) + ' → ' + fmtDate(m.r.end) + ' · ' + m.r.plat +
-        (etatMenageCal(pid, m.r) ? ' · ménage : ' + etatMenageCal(pid, m.r).label : '')) + '"' +
-      act('open-resa', { rid: m.r.id }) + '>' +
-      '<span>' + esc(m.r.guest) + '</span>' +
+        (opts.menage !== false && etatMenageCal(pid, m.r) ? ' · ménage : ' + etatMenageCal(pid, m.r).label : '')) + '"' +
+      (opts.barreAct ? opts.barreAct(m.r) : act('open-resa', { rid: m.r.id })) + '>' +
+      // Le début d'un séjour porte une flèche d'arrivée : on voit où il commence.
+      (m.g ? '' : '<span class="mcal-arr" aria-hidden="true">→</span>') +
+      '<span class="mcal-nom">' + esc(m.r.guest) + '</span>' +
+      (nb && span >= 4 ? '<span class="mcal-nb num">' + nb + ' pers.</span>' : '') +
       // La pastille du ménage, sur le morceau qui porte le départ (D-216).
-      (m.d ? '' : signeMenage(pid, m.r)) + '</button>';
+      (m.d || opts.menage === false ? '' : signeMenage(pid, m.r)) + '</button>';
   }).join('');
 
   return '<div class="mcal-sem" style="--couloirs:' + Math.max(1, fins.length) + '">' + cases + barres + '</div>';
@@ -9391,6 +9832,9 @@ function viewOwnerResa() {
               act('copier-lien', { url: lienSejour(r.id) }) + '>Copier le lien</button>' +
             '<button type="button" class="btn btn--xs" style="background:var(--cream);color:var(--ink-soft)"' +
               act('copier-message-sejour', { rid: r.id }) + '>Copier le message tout prêt</button>' +
+            // Le texte de ce message se modifie dans « Biens & connexions » (D-225).
+            '<button type="button" class="btn btn--xs" style="background:transparent;color:var(--muted)"' +
+              act('msg-modifier', { k: 'sejour' }) + '>✏️ Modifier le texte</button>' +
             /* Le même message, directement dans WhatsApp quand on a le numéro
                (session 44, D-199) : le lien personnel, sans copier-coller. */
             (numeroWhatsApp(r.tel)
@@ -12533,6 +12977,7 @@ function viewOwnerBiens() {
     '<div class="grid-cards" style="margin-top:22px">' +
       (cards || '<p class="empty">Aucun bien. Ajoutez le premier ci-dessus.</p>') + '</div>' +
     carteLiensParLogement() +
+    carteMessagesVoyageur() +
     /* LA CARTE DU LIEN GÉNÉRAL A ÉTÉ RETIRÉE (session 31, D-167) : « chaque
        appartement a maintenant son propre lien ». Le lien `#/bienvenue`
        continue de fonctionner — il est encore proposé au voyageur qui ouvre un
@@ -12561,6 +13006,10 @@ function viewOwnerBiens() {
    personnel, lui, n'a pas ce défaut — c'est pourquoi on le recommande dès
    qu'on écrit à quelqu'un en particulier. */
 function texteBienvenue() {
+  // Le modèle de Marc, s'il en a écrit un (D-225) ; sinon le texte d'origine.
+  if (state.messagesVoyageur && String(state.messagesVoyageur.bien || '').trim()) {
+    return remplirModele(modeleMsg('bien'), { logement: 'votre logement', lien: lienVoyageur('bienvenue') });
+  }
   return 'Bonjour,\n\n' +
     'Voici votre livret d’accueil :\n' +
     lienVoyageur('bienvenue') + '\n\n' +
@@ -12682,14 +13131,70 @@ function lienBien(pid) {
 }
 
 function texteBienvenueBien(pid) {
-  var p = prop(pid);
-  return 'Bonjour,\n\n' +
-    'Voici votre livret d’accueil pour ' + p.name + ' :\n' +
-    lienBien(pid) + '\n\n' +
-    'Indiquez vos dates d’arrivée et de départ : vous y retrouverez l’adresse, ' +
-    'les horaires, le code d’accès et le Wi-Fi pendant votre séjour, ainsi que ' +
-    'nos conseils sur place.\n\n' +
-    'À très bientôt !';
+  // Le texte d'origine est désormais le modèle par défaut (D-225), mot pour mot.
+  return remplirModele(modeleMsg('bien'), { logement: prop(pid).name, lien: lienBien(pid) });
+}
+
+/* L'éditeur des deux messages tout prêts (D-225), sur « Biens & connexions ».
+   Chaque texte s'écrit dans sa case, avec en dessous ce que recevra
+   vraiment le voyageur — calculé sur un vrai logement et un vrai séjour
+   quand il y en a, pour qu'on voie le résultat et non la recette. */
+var msgOnglet = 'bien';
+
+function exempleMsg(k) {
+  var biens = state.props.filter(function (p) { return !p.gone; });
+  var p = biens[0];
+  if (k === 'bien') return p ? texteBienvenueBien(p.id) : remplirModele(modeleMsg('bien'), { logement: 'votre logement', lien: lienVoyageur('bienvenue') });
+  var ex = null;
+  biens.some(function (b) {
+    var r = resasOf(b.id).filter(function (x) { return x && x.statut !== 'annule' && x.end >= TODAY; })[0];
+    if (r) { ex = { pid: b.id, r: r }; return true; }
+    return false;
+  });
+  if (ex) return texteSejour(ex.pid, ex.r);
+  return remplirModele(modeleMsg('sejour'), { voyageur: 'Marie', logement: p ? p.name : 'Appartement cosy',
+    lien: lienVoyageur('sejour/…'), arrivee: '12 déc.', depart: '15 déc.', heure_arrivee: '16:00', heure_depart: '11:00' });
+}
+
+function carteMessagesVoyageur() {
+  var k = msgOnglet === 'sejour' ? 'sejour' : 'bien';
+  var perso = !!String((state.messagesVoyageur || {})[k] || '').trim();
+  var valeur = modeleMsg(k);
+  var sansLien = !/\{\s*lien\s*\}/i.test(valeur);
+  return '<div class="card" id="carte-messages" style="margin-top:16px;padding:22px">' +
+    '<h2 style="font:700 16px Figtree,sans-serif;margin:0 0 4px">✏️ Le message tout prêt, à ta façon</h2>' +
+    '<p class="sec-note" style="margin:0 0 14px">C’est le texte copié par les boutons « Message tout prêt ». ' +
+      'Écris-le comme tu veux : les mots entre accolades sont remplacés tout seuls par le bon logement, ' +
+      'le bon lien, le nom et les dates du voyageur. Touche un mot pour l’ajouter là où se trouve ton curseur.</p>' +
+    '<div class="seg" style="margin-bottom:12px">' +
+      '<button type="button" aria-pressed="' + (k === 'bien') + '"' + act('msg-onglet', { k: 'bien' }) + '>Lien d’un logement</button>' +
+      '<button type="button" aria-pressed="' + (k === 'sejour') + '"' + act('msg-onglet', { k: 'sejour' }) + '>Lien personnel d’un séjour</button>' +
+    '</div>' +
+    '<p class="sec-note" style="margin:0 0 10px">' + (k === 'bien'
+      ? 'Pour les <strong>messages automatiques d’Airbnb et de Booking</strong> : on ne connaît pas encore le nom ni les dates du voyageur.'
+      : 'Pour écrire à <strong>un voyageur précis</strong>, depuis sa réservation (copier, ou WhatsApp) : on connaît son nom et ses dates.') + '</p>' +
+    '<div class="cols" style="gap:16px;align-items:flex-start">' +
+      '<div style="flex:1;min-width:min(100%,300px)">' +
+        '<label class="lab" for="msg-' + k + '">Ton texte' + (perso ? ' (personnalisé)' : ' (texte d’origine)') + '</label>' +
+        '<textarea class="inp msg-texte" id="msg-' + k + '" rows="11" data-fid="msg-' + k + '" data-in="msg-voyageur" data-k="' + k + '">' +
+          esc(valeur) + '</textarea>' +
+        '<div class="chiprow" style="margin-top:8px;gap:6px">' + MOTS_MSG[k].map(function (m) {
+          return '<button type="button" class="msg-mot"' + act('msg-mot', { k: k, t: m }) + '>' + esc(m) + '</button>';
+        }).join('') + '</div>' +
+        '<p class="sec-note msg-sans-lien" id="msg-sans-lien-' + k + '" style="margin:8px 0 0;color:var(--amber-t)' + (sansLien ? '' : ';display:none') + '">' +
+          'Ton texte ne contient pas {lien} : le lien sera ajouté tout seul à la fin.</p>' +
+        (perso ? '<button type="button" class="btn btn--xs" style="margin-top:10px;background:var(--cream);color:var(--ink-soft)"' +
+          act('msg-defaut', { k: k }) + '>Remettre le texte d’origine</button>' : '') +
+      '</div>' +
+      '<div style="flex:1;min-width:min(100%,300px)">' +
+        '<div class="lab">Ce que recevra le voyageur</div>' +
+        '<div class="msg-apercu" id="msg-apercu-' + k + '">' + esc(exempleMsg(k)) + '</div>' +
+        '<p class="sec-note" style="margin:8px 0 0">Exemple calculé sur ' + (k === 'bien'
+          ? 'ton premier logement.' : 'ta prochaine réservation.') + ' Enregistré au fil de la frappe, ' +
+          'sur tous tes appareils.</p>' +
+      '</div>' +
+    '</div>' +
+  '</div>';
 }
 
 function carteLienBien(pid, b) {
@@ -12709,6 +13214,8 @@ function carteLienBien(pid, b) {
         act('copier-message-bien', { pid: pid }) + '>Copier le message tout prêt</button>' +
       '<button type="button" class="btn btn--xs" style="background:var(--cream);color:var(--ink-soft)"' +
         act('nav', { path: '#/bienvenue/' + pid }) + '>👁 Voir ce que le voyageur voit</button>' +
+      '<button type="button" class="btn btn--xs" style="background:transparent;color:var(--muted)"' +
+        act('msg-modifier', { k: 'bien' }) + '>✏️ Modifier le texte du message</button>' +
     '</div>' +
     '<p class="sec-note" style="margin-top:12px">Le voyageur donne ses <strong>deux dates</strong>, ' +
       'celles de sa réservation. Quelqu’un qui connaîtrait ces dates ' +
@@ -12876,17 +13383,20 @@ function bienInfos(pid, b) {
     photoBienBloc(pid, b) +
   '</div>';
 
+  var ici = servicesDuBien(pid);
+  var retirees = state.services.filter(function (s) { return serviceRetire(pid, s.key); });
   var presta = '<div class="card" style="flex:1;min-width:min(100%,320px);padding:22px">' +
     '<h2 style="font:700 16px Figtree,sans-serif;margin:0">Prestations et tarifs</h2>' +
-    '<p class="sec-note" style="margin-top:4px">Le <strong>nom</strong> est commun à tous les biens. ' +
-      'La <strong>durée</strong> et le <strong>tarif</strong> sont propres à ce logement : ' +
-      'un studio et une villa ne demandent pas le même temps.</p>' +
-    '<div style="margin-top:14px">' + (state.services.length ? state.services.map(function (s, si) {
+    '<p class="sec-note" style="margin-top:4px">La <strong>durée</strong>, le <strong>tarif</strong> et la ' +
+      '<strong>liste</strong> des prestations sont propres à ce logement : retirer une prestation ici ' +
+      'ne change rien aux autres. Seul le <strong>nom</strong> est le même partout.</p>' +
+    '<div style="margin-top:14px">' + (ici.length ? ici.map(function (s) {
       var nid = 'sv-n-' + s.key, did = 'sv-d-' + pid + '-' + s.key;
+      var auto = state.services[0] && state.services[0].key === s.key;
       return '<div class="svc-row">' +
         '<div class="svc-fields">' +
           '<div style="flex:2;min-width:150px">' +
-            '<label class="lab" for="' + nid + '">Nom (commun)</label>' +
+            '<label class="lab" for="' + nid + '">Nom (le même partout)</label>' +
             '<input class="inp" id="' + nid + '" type="text" value="' + esc(s.label) + '" data-fid="' + nid + '" data-in="svc-label" data-k="' + esc(s.key) + '">' +
           '</div>' +
           '<div style="flex:1;min-width:110px">' +
@@ -12901,14 +13411,31 @@ function bienInfos(pid, b) {
             '<span class="val num" style="min-width:56px">' + (state.tariffs[pid] && state.tariffs[pid][s.key] || 0) + ' €</span>' +
             '<button type="button" aria-label="Monter le tarif"' + act('tariff', { pid: pid, t: s.key, d: 5 }) + '>+</button>' +
           '</div>' +
-          '<button type="button" class="btn-danger-xs"' + act('remove-service', { k: s.key, i: si }) + '>Supprimer</button>' +
+          (auto
+            ? '<span class="sec-note" style="margin:0;max-width:150px" title="Les ménages créés tout seuls à chaque départ portent cette prestation">' +
+                'Créée à chaque départ</span>'
+            : '<button type="button" class="btn-danger-xs"' + act('retirer-service', { pid: pid, k: s.key }) + '>Retirer d’ici</button>') +
         '</div>' +
       '</div>';
     }).join('') : '<p class="empty">Aucune prestation. Ajoutez la première ci-dessous.</p>') + '</div>' +
     '<div style="display:flex;gap:10px;margin-top:14px;flex-wrap:wrap">' +
       '<input class="inp" style="flex:1;min-width:180px" type="text" placeholder="Ex. Nettoyage des vitres" value="' + esc(state.newService) + '" data-fid="new-service" data-in="new-service">' +
-      '<button type="button" class="btn btn--dark btn--sm"' + act('add-service') + '>Ajouter</button>' +
+      '<button type="button" class="btn btn--dark btn--sm"' + act('add-service', { pid: pid }) + '>Ajouter à ce logement</button>' +
     '</div>' +
+    (retirees.length
+      ? '<div class="svc-retirees">' +
+          '<div class="lab" style="margin:0 0 6px">Retirées de ce logement</div>' +
+          retirees.map(function (s) {
+            return '<div class="svc-retiree">' +
+              '<span class="grow">' + esc(s.label) + '</span>' +
+              '<button type="button" class="btn btn--xs" style="background:var(--cream);color:var(--ink-soft)"' +
+                act('remettre-service', { pid: pid, k: s.key }) + '>Remettre</button>' +
+              '<button type="button" class="btn btn--xs" style="background:transparent;color:var(--terra-d)"' +
+                act('remove-service', { k: s.key }) + '>Supprimer de tous les logements</button>' +
+            '</div>';
+          }).join('') +
+        '</div>'
+      : '') +
   '</div>';
 
   var danger = '<div class="card danger-zone">' +
@@ -13008,46 +13535,95 @@ function moisTitre(n) {
   return m.charAt(0).toUpperCase() + m.slice(1);
 }
 
-function bienCalendar(pid) {
-  var cm = state.calMonth;
-  var cy = parseInt(cm.split('-')[0], 10), cmo = parseInt(cm.split('-')[1], 10);
-  var first = new Date(Date.UTC(cy, cmo - 1, 1));
-  var daysIn = new Date(Date.UTC(cy, cmo, 0)).getUTCDate();
-  var lead = (first.getUTCDay() + 6) % 7;
-  var resas = resasOf(pid) || [];
+/* L'ONGLET « RÉSERVATIONS » D'UN LOGEMENT, REDESSINÉ (session 48, D-219)
 
-  var cells = '';
-  for (var i = 0; i < lead; i++) cells += '<div class="cal-cell empty"></div>';
-  for (var d = 1; d <= daysIn; d++) {
-    var iso = cy + '-' + String(cmo).padStart(2, '0') + '-' + String(d).padStart(2, '0');
-    var r = resas.find(function (x) { return iso >= x.start && iso <= x.end; });
-    var isToday = iso === TODAY;
-    var cls = 'cal-cell' + (isToday ? ' today' : r ? ' busy' : '');
-    var bar = r
-      ? '<span class="cal-bar" style="background:' + platCouleurs(r.plat).color +
-        ';margin-left:' + (r.start === iso ? '45%' : '0') + ';margin-right:' + (r.end === iso ? '45%' : '0') + '"></span>'
-      : '';
-    cells += '<div class="' + cls + '"><span class="d num">' + d + '</span>' + bar + '</div>';
-  }
+   Demandé le 5 novembre : *« change le calendrier mensuel pour quelque chose
+   de plus lisible »*. L'ancien était une grille de cases traversée d'un trait
+   de six pixels, sans un nom : impossible de dire qui était là, ni où un
+   séjour s'arrêtait et où le suivant commençait. Il prend désormais le dessin
+   du calendrier mois par mois (D-195), déjà jugé clair : une barre par
+   séjour, de l'après-midi de l'arrivée au matin du départ, avec le nom du
+   voyageur écrit dedans. On change de mois avec ‹ › au lieu de trois
+   boutons figés, et la liste de droite met l'à-venir en premier — les
+   séjours passés se replient au lieu de pousser l'utile hors de l'écran.
+
+   Le mois affiché et l'ouverture des séjours passés sont des positions
+   d'affichage (règle 7) : le mois repart du mois en cours à chaque
+   ouverture (D-208), le repli n'est pas enregistré. */
+var resasPasseesOuvertes = {};
+
+/** La barre de navigation d'un mois : ‹ Novembre 2026 › — et « Aujourd'hui »
+    quand on s'est éloigné du mois en cours. Les trois gestes sont passés
+    déjà écrits (`act(…)`), pour servir au propriétaire comme au prestataire. */
+function navMois(mois, actPrec, actSuiv, actAuj, resume) {
+  var nom = MOIS_LONGS[parseInt(mois.slice(5, 7), 10) - 1];
+  return '<div class="mcal-nav">' +
+    '<button type="button" class="mcal-nav-btn" aria-label="Mois précédent"' + actPrec + '>‹</button>' +
+    '<div class="mcal-nav-titre">' + esc(nom.charAt(0).toUpperCase() + nom.slice(1)) + ' ' + mois.slice(0, 4) +
+      (resume ? '<span class="mcal-nav-resume num">' + esc(resume) + '</span>' : '') + '</div>' +
+    '<button type="button" class="mcal-nav-btn" aria-label="Mois suivant"' + actSuiv + '>›</button>' +
+    (mois !== CURRENT_MONTH && actAuj
+      ? '<button type="button" class="btn btn--xs mcal-nav-auj"' + actAuj + '>Aujourd’hui</button>' : '') +
+  '</div>';
+}
+
+/** « 3 séjours · 23 % occupé » pour un mois donné. */
+function resumeMois(resas, mois, avecOccupation) {
+  var premier = mois + '-01', nj = nbJoursMois(mois);
+  var dernier = mois + '-' + String(nj).padStart(2, '0');
+  var n = resas.filter(function (r) { return r.end > premier && r.start <= dernier; }).length;
+  return n + ' séjour' + (n > 1 ? 's' : '') +
+    (avecOccupation ? ' · ' + Math.round(nuitsOccupeesFenetre(resas, premier, nj) / nj * 100) + ' % occupé' : '');
+}
+
+function ligneResaBien(pid, r) {
+  var pl = PLATS[r.plat] || PLATS['Direct'];
+  var ri = resasOf(pid).indexOf(r);
+  var enCours = r.start <= TODAY && r.end >= TODAY;
+  return '<div class="resa-ligne' + (r.end < TODAY ? ' resa-ligne--passee' : '') + '">' +
+    '<span class="resa-ligne-trait" style="background:' + pl.color + '"></span>' +
+    '<button type="button" class="resa-ligne-corps"' + act('open-resa', { rid: r.id }) +
+      ' aria-label="Ouvrir la réservation de ' + esc(r.guest) + '">' +
+      '<span class="resa-ligne-haut">' +
+        '<span class="resa-ligne-nom">' + esc(r.guest) + '</span>' +
+        (r.statut === 'annule' ? '<span class="badge badge--terra">Annulée</span>'
+          : enCours ? '<span class="badge badge--green">Sur place</span>' : '') +
+        '<span class="badge" style="background:' + pl.bg + ';color:' + pl.fg + '">' + esc(r.plat) + '</span>' +
+      '</span>' +
+      '<span class="resa-ligne-dates num">' + esc(fmtDate(r.start)) + ' → ' + esc(fmtDate(r.end)) + ' · ' +
+        nights(r.start, r.end) + ' nuit' + (nights(r.start, r.end) > 1 ? 's' : '') +
+        (parseInt(r.guests, 10) > 0 ? ' · ' + r.guests + ' voyageur' + (r.guests > 1 ? 's' : '') : '') +
+        (departAt(pid, r) ? ' · départ signalé ' + esc(departAt(pid, r)) : '') + '</span>' +
+      (avisDone(pid, r, 'sejour') ? '<span style="display:block;margin-top:4px">' + starsRead(avisDone(pid, r, 'sejour').stars) + '</span>' : '') +
+    '</button>' +
+    '<button type="button" aria-label="Supprimer la réservation de ' + esc(r.guest) + '" class="x-btn"' +
+      act('remove-resa', { pid: pid, ri: ri }) + '>×</button>' +
+  '</div>';
+}
+
+function bienCalendar(pid) {
+  var cm = state.calMonth || CURRENT_MONTH;
+  var resas = resasOf(pid) || [];
+  var aVenir = resas.filter(function (r) { return r.end >= TODAY; });
+  var passees = resas.filter(function (r) { return r.end < TODAY; }).slice().reverse();
+  var ouvertes = !!resasPasseesOuvertes[pid];
 
   return '<div class="cols" style="margin-top:22px">' +
-    '<div class="card" style="flex:1.4;min-width:min(100%,380px);padding:20px 22px">' +
-      '<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">' +
-        '<h2 style="font:700 18px Figtree,sans-serif;flex:1;margin:0">' + moisTitre(cmo) + ' ' + cy + '</h2>' +
-        '<button type="button" class="btn btn--xs" style="background:var(--cream);color:var(--ink-soft)"' +
-          act('nav', { path: '#/admin/calendrier/' + pid }) + '>Voir mois par mois</button>' +
-        '<div class="seg">' + moisCalendrier().map(function (m) {
-          return '<button type="button" aria-pressed="' + (cm === m[0]) + '"' + act('cal-month', { m: m[0] }) + '>' + m[1] + '</button>';
-        }).join('') + '</div>' +
-      '</div>' +
-      '<div class="cal">' +
-        ['Lun', 'Mar', 'Mer', 'Jeu', 'Ven', 'Sam', 'Dim'].map(function (x) { return '<div class="cal-dow">' + x + '</div>'; }).join('') +
-        cells +
-      '</div>' +
-      '<div class="chiprow" style="margin-top:16px;gap:16px">' + Object.keys(PLATS).map(function (k) {
-        return '<span style="display:flex;align-items:center;gap:7px;font:500 12px Figtree,sans-serif;color:var(--muted3)">' +
-          '<span style="width:14px;height:6px;border-radius:9px;background:' + PLATS[k].color + '"></span>' + k + '</span>';
+    '<div class="card" style="flex:2.2;min-width:min(100%,460px);padding:18px 16px 14px">' +
+      navMois(cm, act('cal-mois-pas', { n: -1 }), act('cal-mois-pas', { n: 1 }), act('cal-mois-auj'),
+        resumeMois(resas, cm, true)) +
+      bandeauSelectionCal() +
+      moisBien(pid, cm, resas, { sansCarte: true, sansTitre: true }) +
+      '<div style="display:flex;justify-content:flex-end;margin-top:6px">' +
+        '<button type="button" class="btn btn--xs" style="background:transparent;color:var(--muted)"' +
+          act('nav', { path: '#/admin/calendrier/' + pid }) + '>Voir 12 mois d’un coup →</button></div>' +
+      '<p class="sec-note" style="margin:10px 4px 0">Touche une barre pour ouvrir la réservation, ou deux jours ' +
+        'libres (l’arrivée, puis le départ) pour en ajouter une.</p>' +
+      '<div class="chiprow" style="margin-top:12px;gap:14px;padding:0 4px">' + Object.keys(PLATS).map(function (k) {
+        return '<span style="display:flex;align-items:center;gap:7px;font:600 12px Figtree,sans-serif;color:var(--muted3)">' +
+          '<span style="width:16px;height:8px;border-radius:9px;background:' + PLATS[k].color + '"></span>' + k + '</span>';
       }).join('') + '</div>' +
+      '<div class="chiprow" style="margin-top:8px;gap:14px;padding:0 4px">' + legendeMenage() + '</div>' +
     '</div>' +
     '<div class="card" style="flex:1;min-width:min(100%,300px);padding:20px 22px">' +
       '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">' +
@@ -13055,21 +13631,15 @@ function bienCalendar(pid) {
         '<button type="button" class="btn btn--xs" style="' + (state.showNewResa ? 'background:var(--cream);color:var(--ink-soft)' : 'background:var(--terra);color:#fff') + '"' +
           act('toggle-new-resa') + '>' + (state.showNewResa ? 'Fermer' : '+ Ajouter') + '</button>' +
       '</div>' +
-      (state.showNewResa ? formNewResa(pid) : '') +
-      '<div style="margin-top:10px">' + (resas.length ? resas.map(function (r, ri) {
-        var pl = PLATS[r.plat] || PLATS['Direct'];
-        return '<div style="padding:12px 0;border-top:1px solid rgba(36,30,26,.07)">' +
-          '<div style="display:flex;align-items:center;gap:9px">' +
-            '<span style="font:600 14.5px Figtree,sans-serif;flex:1;min-width:0">' + esc(r.guest) + '</span>' +
-            '<span class="badge" style="background:' + pl.bg + ';color:' + pl.fg + '">' + esc(r.plat) + '</span>' +
-            '<button type="button" aria-label="Supprimer la réservation de ' + esc(r.guest) + '" class="x-btn"' +
-              act('remove-resa', { pid: pid, ri: ri }) + '>×</button></div>' +
-          '<div class="num" style="font:500 12.5px Figtree,sans-serif;color:var(--muted);margin-top:3px">' +
-            fmtDate(r.start) + ' → ' + fmtDate(r.end) + ' · ' + nights(r.start, r.end) + ' nuits · ' + r.guests + ' voyageurs' +
-            (departAt(pid, r) ? ' · départ signalé ' + departAt(pid, r) : '') + '</div>' +
-          (avisDone(pid, r, 'sejour') ? '<div style="margin-top:6px">' + starsRead(avisDone(pid, r, 'sejour').stars) + '</div>' : '') +
-          '</div>';
-      }).join('') : '<p class="empty">Aucune réservation sur ce bien.</p>') + '</div>' +
+      (state.showNewResa ? formNewResa(pid) + avertissementNouvelleResa() : '') +
+      '<div class="resa-groupe">En cours et à venir · ' + aVenir.length + '</div>' +
+      (aVenir.length ? aVenir.map(function (r) { return ligneResaBien(pid, r); }).join('')
+        : '<p class="empty" style="padding:12px 0">Aucun séjour à venir sur ce logement.</p>') +
+      (passees.length
+        ? '<button type="button" class="resa-groupe resa-groupe--btn"' + act('resas-passees', { pid: pid }) + '>' +
+            (ouvertes ? '▾' : '▸') + ' Séjours passés · ' + passees.length + '</button>' +
+          (ouvertes ? passees.map(function (r) { return ligneResaBien(pid, r); }).join('') : '')
+        : '') +
     '</div></div>' + avisSejour(pid);
 }
 
@@ -15193,6 +15763,95 @@ function finish(id) {
   go('#/app/missions/' + id + '/fin');
 }
 
+/* MARQUER UNE MISSION PASSÉE COMME FAITE, APRÈS COUP (session 48, D-221)
+
+   Demandé le 5 novembre, en regardant l'application de Doriane : *« elle a
+   plein de missions dans le passé non terminées, ça encombre sa visibilité ;
+   est-ce qu'elle peut les terminer même a posteriori, ou les marquer comme
+   terminées même s'il n'y a pas les photos — seulement si la date est
+   dépassée ? »*
+
+   Le propriétaire savait déjà le faire de son côté (D-157). La prestataire,
+   elle, n'avait qu'un chemin : rouvrir la checklist, et une checklist demande
+   des photos qu'on ne peut plus prendre une semaine après. D'où des missions
+   « acceptées » pour toujours, en tête de sa liste.
+
+   Trois garde-fous, et ils sont tous là pour ne rien inventer :
+     · **seulement une date dépassée** — aujourd'hui, la checklist reste le
+       seul chemin, c'est elle qui fait la preuve du travail ;
+     · **seulement une mission à elle, ou libre** sur un logement qu'elle a le
+       droit de prendre — jamais celle de quelqu'un d'autre ;
+     · le compte rendu **dit** qu'elle a été close après coup (`apresCoup`) et
+       ne fabrique pas de checklist : pas d'étape cochée qui ne l'a pas été,
+       pas de relevé de stock (on n'écrase pas l'inventaire avec un comptage
+       qui n'a pas eu lieu). Les photos déjà prises, s'il y en a, restent.
+
+   La mission entre dans ses gains comme une mission terminée — c'est le but
+   — et le propriétaire la voit « à valider » comme les autres : c'est là
+   qu'il garde la main.
+
+   Le cahier partagé : `envoyerAvancement()` fait le reste, y compris pour
+   une mission encore libre dans le cahier — `DB.majMission` la prend d'abord
+   par `prendre_mission` (D-182), exactement ce que la prestataire déclare. */
+function peutCloreApresCoup(m) {
+  if (!m || m.date >= TODAY) return false;
+  if (m.status === 'termine' || m.status === 'annulee') return false;
+  if (m.status === 'dispo') return !m.taker && mayTakeMission(state.me, m);
+  return m.taker === state.me;
+}
+
+function cloreApresCoup(id) {
+  var m = mission(id);
+  if (!peutCloreApresCoup(m)) return false;
+  var ph = state.photos[id] || {};
+  var faites = Object.keys(ph).filter(function (k) { return ph[k]; });
+  var ancien = state.reports[id] || {};
+
+  /* Le compte rendu : on garde ce qui existait (un signalement fait pendant
+     la mission, D-79), et on n'écrit les pièces que si au moins une étape a
+     réellement été faite — sans quoi le propriétaire lirait « non validé »
+     partout, ce qui serait faux dans l'autre sens. */
+  var rep = Object.assign({}, ancien, {
+    agent: state.me,
+    dateLabel: fmtDate(m.date),
+    price: m.price,
+    photos: photoCount(m),
+    apresCoup: true,
+    closeLe: TODAY,
+    fini: heureDeCloture(m),
+    at: new Date().toISOString()
+  });
+  if (faites.length) {
+    rep.rooms = rooms(m.prop).map(function (r) {
+      return { name: r.name, steps: r.steps.map(function (s) {
+        return { id: s.id, label: s.label, photo: s.photo, done: !!ph[s.id] };
+      }) };
+    });
+  }
+  state.reports[id] = rep;
+  verserProblemes(id);
+
+  m.status = 'termine';
+  m.taker = m.taker || state.me;
+  m.review = null;
+  m.redo = '';
+  if (state.draft && state.draft.id === id) state.draft = null;
+  if (!state.done.some(function (r) { return r && r.mid === id; })) {
+    state.done.push({ mid: id, agent: state.me, month: moisDe(m.date), prop: m.prop, type: m.type,
+      dateLabel: fmtDate(m.date), price: m.price });
+  }
+  return true;
+}
+
+/** Après une ou plusieurs clôtures : enregistrer, dire au cahier, redessiner. */
+function apresClotures(ids) {
+  save();
+  ids.reduce(function (chaine, id) {
+    return chaine.then(function () { return envoyerAvancement(mission(id)); });
+  }, Promise.resolve()).catch(function () { }).then(function () { save(); render(); });
+  render();
+}
+
 function editRooms(pid, fn) {
   var list = rooms(pid).map(function (r) { return { name: r.name, steps: r.steps.slice() }; });
   state.checklists[pid] = fn(list);
@@ -15582,6 +16241,36 @@ var actions = {
 
   /* Le message du lien d'UN logement (session 23, D-132) : à coller dans les
      messages automatiques de l'annonce de ce logement-là. */
+  /* Le message tout prêt, à sa façon (D-225). */
+  'msg-onglet': function (el) { msgOnglet = el.dataset.k === 'sejour' ? 'sejour' : 'bien'; render(); },
+  'msg-mot': function (el) {
+    var k = el.dataset.k === 'sejour' ? 'sejour' : 'bien', t = el.dataset.t || '';
+    var ta = document.getElementById('msg-' + k);
+    var v = ta ? ta.value : modeleMsg(k);
+    var a = ta && typeof ta.selectionStart === 'number' ? ta.selectionStart : v.length;
+    var b = ta && typeof ta.selectionEnd === 'number' ? ta.selectionEnd : v.length;
+    if (!state.messagesVoyageur || typeof state.messagesVoyageur !== 'object') state.messagesVoyageur = { _maj: 0, bien: '', sejour: '' };
+    state.messagesVoyageur[k] = v.slice(0, a) + t + v.slice(b);
+    state.messagesVoyageur._maj = Date.now();
+    save(); render();
+    var ta2 = document.getElementById('msg-' + k);
+    if (ta2) { ta2.focus(); try { ta2.setSelectionRange(a + t.length, a + t.length); } catch (e) { /* rien */ } }
+  },
+  'msg-defaut': function (el) {
+    var k = el.dataset.k === 'sejour' ? 'sejour' : 'bien';
+    if (!confirm('Remettre le texte d’origine ? Ton texte sera remplacé.')) return;
+    state.messagesVoyageur[k] = '';
+    state.messagesVoyageur._maj = Date.now();
+    save(); render();
+  },
+  'msg-modifier': function (el) {
+    msgOnglet = el.dataset.k === 'sejour' ? 'sejour' : 'bien';
+    go('#/admin/biens');
+    setTimeout(function () {
+      var c = document.getElementById('carte-messages');
+      if (c && c.scrollIntoView) c.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    }, 120);
+  },
   'copier-message-bien': function (el) {
     var pid = el.dataset.pid;
     copier(texteBienvenueBien(pid),
@@ -15743,6 +16432,46 @@ var actions = {
         : '⚠️ Refusé à nouveau : ' + ((bilan && bilan.erreur) || DB.erreur() || 'raison inconnue');
       render();
     });
+  },
+  /* Missions passées : les ranger, les déclarer faites (session 48, D-221). */
+  'passees-ouvrir': function () { passeesOuvertes = !passeesOuvertes; render(); },
+  'faite-apres-coup': function (el) {
+    var m = mission(el.dataset.id);
+    if (!peutCloreApresCoup(m)) return;
+    var p = prop(m.prop);
+    if (!confirm('Marquer comme faite : ' + service(m.type).label.toLowerCase() + ' du ' + fmtDate(m.date) +
+      ' — ' + p.name + ' ?\n\n' + (m.price || 0) + ' € entreront dans tes gains. Le propriétaire verra que ' +
+      'tu l’as close après coup, sans checklist ni photos.')) return;
+    if (!cloreApresCoup(m.id)) return;
+    state.mMsg = '✅ Mission du ' + fmtDate(m.date) + ' marquée comme faite. Elle est dans tes gains.';
+    apresClotures([m.id]);
+  },
+  'faites-apres-coup': function () {
+    var l = state.missions.filter(function (m) {
+      return m.taker === state.me && m.status !== 'dispo' && peutCloreApresCoup(m);
+    });
+    if (!l.length) return;
+    var total = l.reduce(function (n, m) { return n + (m.price || 0); }, 0);
+    if (!confirm('Marquer ces ' + l.length + ' missions passées comme faites ?\n\n' + total + ' € entreront ' +
+      'dans tes gains. Le propriétaire verra que tu les as closes après coup, sans checklist ni photos.\n\n' +
+      'Si tu n’en as pas fait une, annule et marque-les une par une.')) return;
+    var ids = l.filter(function (m) { return cloreApresCoup(m.id); }).map(function (m) { return m.id; });
+    state.mMsg = '✅ ' + ids.length + ' missions marquées comme faites. Elles sont dans tes gains.';
+    passeesOuvertes = false;
+    apresClotures(ids);
+  },
+  /* La vue du mois d'une prestataire (D-222) : positions d'affichage. */
+  'presta-vue': function (el) { prestaVue = el.dataset.v === 'mois' ? 'mois' : 'liste'; render(); },
+  'presta-mois-pas': function (el) {
+    prestaMois = moisPlus(prestaMois || CURRENT_MONTH, parseInt(el.dataset.n, 10) || 0);
+    prestaJour = null; render();
+  },
+  'presta-mois-auj': function () { prestaMois = CURRENT_MONTH; prestaJour = null; render(); },
+  'presta-jour': function (el) {
+    prestaJour = prestaJour === el.dataset.d ? null : el.dataset.d;
+    render();
+    var t = prestaJour && document.querySelector('.pm + .kd-title');
+    if (t && t.scrollIntoView) t.scrollIntoView({ block: 'start', behavior: 'smooth' });
   },
   take: function (el) { take(el.dataset.id); },
   start: function (el) { start(el.dataset.id); },
@@ -16168,6 +16897,34 @@ var actions = {
   },
   'bien-tab': function (el) { state.bienTab = el.dataset.t; save(); render(); },
   'cal-month': function (el) { state.calMonth = el.dataset.m; save(); render(); },
+  /* Changer de mois d'un toucher, dans les deux sens (session 48, D-219) :
+     les trois boutons figés ne laissaient voir ni le passé ni au-delà de
+     trois mois. */
+  'cal-mois-pas': function (el) {
+    state.calMonth = moisPlus(state.calMonth || CURRENT_MONTH, parseInt(el.dataset.n, 10) || 0);
+    save(); render();
+  },
+  'cal-mois-auj': function () { state.calMonth = CURRENT_MONTH; save(); render(); },
+  /* L'écran de la remise des clés (D-220) : rien de tout cela n'est
+     enregistré, ce sont des positions d'affichage (règle 7). */
+  'cles-vue': function (el) { clesVue = el.dataset.v === 'mois' ? 'mois' : 'programme'; render(); },
+  'cles-bien': function (el) { clesBien = el.dataset.pid; clesSel = null; render(); },
+  'cles-mois-pas': function (el) {
+    clesMois = moisPlus(clesMois || CURRENT_MONTH, parseInt(el.dataset.n, 10) || 0);
+    clesSel = null; render();
+  },
+  'cles-mois-auj': function () { clesMois = CURRENT_MONTH; clesSel = null; render(); },
+  'cles-sejour': function (el) {
+    clesSel = clesSel === el.dataset.rid ? null : el.dataset.rid;
+    render();
+    // Le détail s'affiche sous le calendrier : on l'amène sous les yeux.
+    var d = clesSel && document.querySelector('.kc-detail');
+    if (d && d.scrollIntoView) d.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  },
+  'resas-passees': function (el) {
+    resasPasseesOuvertes[el.dataset.pid] = !resasPasseesOuvertes[el.dataset.pid];
+    render();
+  },
   'add-room': function (el) {
     var n = (state.newRoom || '').trim();
     if (!n) return;
@@ -16504,7 +17261,7 @@ var actions = {
       state.durations[pid][s.key] = s.duration || '';
     });
     state.checklists[pid] = checklistModele();
-    state.info[pid] = { capacity: '', surface: '', code: '', wifiNom: '', wifi: '', parking: '', linge: '', checkin: '16:00', checkout: '11:00', early: true };
+    state.info[pid] = { capacity: '', surface: '', code: '', wifiNom: '', wifi: '', parking: '', checkin: '16:00', checkout: '11:00', early: true };
     state.notes[pid] = '';
     state.resas[pid] = [];
     state.livret[pid] = livretModele((nb.city || '').trim());
@@ -16572,9 +17329,24 @@ var actions = {
   },
 
   /* Prestations communes -------------------------------------------------- */
-  'add-service': function () {
+  /* Ajouter une prestation DEPUIS LA FICHE D'UN LOGEMENT (session 48, D-224) :
+     elle n'apparaît que dans ce logement. Si une prestation du même nom
+     existe déjà ailleurs, on la « remet » ici au lieu d'en créer une seconde
+     — deux « Nettoyage des vitres » distincts ne se distingueraient plus. */
+  'add-service': function (el) {
     var nom = (state.newService || '').trim();
     if (!nom) return;
+    var pid = el && el.dataset ? el.dataset.pid : '';
+    var deja = state.services.filter(function (s) {
+      return String(s.label || '').trim().toLowerCase() === nom.toLowerCase();
+    })[0];
+    if (deja && pid) {
+      if (serviceRetire(pid, deja.key)) basculerServiceRetire(pid, deja.key, false);
+      state.newService = '';
+      save(); render();
+      return;
+    }
+    if (deja) { alert('Une prestation porte déjà ce nom.'); return; }
     var key = slug(nom, 's');
     state.services.push({ key: key, label: nom, duration: '' });
     state.props.forEach(function (p) {
@@ -16583,15 +17355,51 @@ var actions = {
       state.durations[p.id] = state.durations[p.id] || {};
       state.durations[p.id][key] = '';
     });
+    // Les autres logements ne la reçoivent pas : elle y est « retirée », d'où
+    // elle se remet d'un toucher si on la veut aussi là-bas.
+    if (pid) {
+      state.props.forEach(function (p) { if (p.id !== pid && !p.gone) basculerServiceRetire(p.id, key, true); });
+    }
     state.newService = '';
+    save(); render();
+  },
+  'retirer-service': function (el) {
+    var pid = el.dataset.pid, k = el.dataset.k;
+    if (!pid || !k) return;
+    if (state.services[0] && state.services[0].key === k) return;   // celle des ménages automatiques
+    basculerServiceRetire(pid, k, true);
+    if (state.nm.prop === pid && state.nm.type === k) {
+      var reste = servicesDuBien(pid);
+      if (reste.length) state.nm.type = reste[0].key;
+    }
+    save(); render();
+  },
+  'remettre-service': function (el) {
+    basculerServiceRetire(el.dataset.pid, el.dataset.k, false);
     save(); render();
   },
   'remove-service': function (el) {
     var k = el.dataset.k, s = service(k);
     if (state.services.length <= 1) { alert('Gardez au moins une prestation.'); return; }
-    if (!confirm('Supprimer la prestation « ' + s.label + ' » ?\n\nElle disparaît de tous les biens. ' +
-      'Les missions existantes gardent leur libellé.')) return;
+    if (state.services[0] && state.services[0].key === k) {
+      alert('« ' + s.label + ' » ne peut pas être supprimée : c’est elle que portent les ménages créés tout seuls à chaque départ.');
+      return;
+    }
+    /* « Les missions existantes gardent leur libellé » : c'était faux (règle 5).
+       Une mission ne retient que la clé de sa prestation ; la prestation
+       supprimée, elle s'affiche « Prestation supprimée ». On le dit. */
+    if (!confirm('Supprimer la prestation « ' + s.label + ' » de TOUS les logements ?\n\n' +
+      'Pour la retirer d’un seul logement, utilise plutôt « Retirer d’ici » sur sa fiche. ' +
+      'Les missions déjà créées avec elle s’afficheront « Prestation supprimée ».')) return;
     state.services = state.services.filter(function (x) { return x.key !== k; });
+    if (state.servicesRetires) {
+      Object.keys(state.servicesRetires).forEach(function (p) {
+        if (Array.isArray(state.servicesRetires[p])) {
+          state.servicesRetires[p] = state.servicesRetires[p].filter(function (x) { return x !== k; });
+        }
+      });
+      state.servicesRetires._maj = Date.now();
+    }
     if (state.nm.type === k) state.nm.type = state.services[0].key;
     save(); render();
   },
@@ -18149,6 +18957,20 @@ var inputs = {
   },
   'bien-field': function (el) { setBienField(el); },
   'bien-notes': function (el) { state.notes[el.dataset.pid] = el.value; save(); },
+  /* Le message tout prêt du voyageur (D-225). Pas de redessin à chaque
+     lettre : on met seulement l'aperçu à jour, la case garde son curseur. */
+  'msg-voyageur': function (el) {
+    var k = el.dataset.k === 'sejour' ? 'sejour' : 'bien';
+    if (!state.messagesVoyageur || typeof state.messagesVoyageur !== 'object') state.messagesVoyageur = { _maj: 0, bien: '', sejour: '' };
+    // Revenu mot pour mot au texte d'origine : ce n'est plus une personnalisation.
+    state.messagesVoyageur[k] = el.value.trim() === MODELE_MSG[k].trim() ? '' : el.value;
+    state.messagesVoyageur._maj = Date.now();
+    save();
+    var ap = document.getElementById('msg-apercu-' + k);
+    if (ap) ap.textContent = exempleMsg(k);
+    var sl = document.getElementById('msg-sans-lien-' + k);
+    if (sl) sl.style.display = /\{\s*lien\s*\}/i.test(el.value) ? 'none' : '';
+  },
   'step-draft': function (el) { state.stepDrafts[el.dataset.key] = el.value; },
   'new-room': function (el) { state.newRoom = el.value; },
   'new-feed': function (el) { state.newFeed = el.value; },
@@ -18387,6 +19209,11 @@ var changes = {
   },
   'nm-prop': function (el) {
     state.nm.prop = el.value;
+    // Une prestation retirée de ce logement ne se propose pas (D-224).
+    if (serviceRetire(el.value, state.nm.type)) {
+      var ici = servicesDuBien(el.value);
+      if (ici.length) state.nm.type = ici[0].key;
+    }
     state.nm.price = (state.tariffs[el.value] || {})[state.nm.type] || 0;
     save(); render();
   },
