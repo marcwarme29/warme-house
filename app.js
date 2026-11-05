@@ -49,7 +49,7 @@ function isoDate(d) {
 /* La version de l'application, affichée dans les bandeaux d'erreur et sous le
    compte connecté (session 46) : trois fois, un écran resté sur l'ancienne
    version a fait chercher un défaut déjà corrigé. À changer à chaque envoi. */
-var VERSION_APP = '48.0';
+var VERSION_APP = '48.1';
 
 var TODAY = isoDate(new Date());
 var TODAY_LABEL = new Date().toLocaleDateString('fr-FR',
@@ -294,6 +294,12 @@ var LIVRET_SECTIONS = [
 
    Aucune traduction automatique : elle demanderait un serveur et un service
    payant, et se trompe sur des consignes pratiques.
+   *(Obsolète depuis D-227 : le serveur existe — `api/traduire.js`, chez
+   Vercel, comme le facteur — et DeepL est gratuit jusqu'à 500 000 caractères
+   par mois. Le risque d'erreur sur une consigne pratique, lui, reste vrai :
+   c'est pourquoi une traduction automatique ne remplit que les cases vides et
+   reste CACHÉE aux voyageurs tant que le propriétaire ne l'a pas relue — voir
+   `tx()` ci-dessous et `blocTradAuto()`.)*
    -------------------------------------------------------------------------- */
 
 var LANGS = [{ k: 'fr', label: 'Français', court: 'FR' }, { k: 'en', label: 'English', court: 'EN' }];
@@ -445,12 +451,15 @@ function t(cle) {
 }
 
 /** Un texte écrit par le propriétaire : sa version anglaise si elle existe,
-    sinon le français — mieux vaut du français que du vide. */
+    sinon le français — mieux vaut du français que du vide.
+    Une traduction AUTOMATIQUE pas encore relue (`<champ>EnAuto`, D-227) ne
+    compte pas : le voyageur lit le français tant que le propriétaire n'a pas
+    dit « C'est relu ». */
 function tx(obj, champ) {
   if (!obj) return '';
   if (state.lvLang === 'en') {
     var en = obj[champ + 'En'];
-    if (en && String(en).trim()) return en;
+    if (en && String(en).trim() && !obj[champ + 'EnAuto']) return en;
   }
   return obj[champ] || '';
 }
@@ -13767,15 +13776,18 @@ function bienLivret(pid, b) {
     }).join('') + '</div>' +
     (en ? '<p class="sec-note" style="margin-top:8px">Vous écrivez la <strong>version anglaise</strong>. ' +
       'Tout ce que vous laissez vide restera affiché en français — jamais vide. ' +
-      'Les boutons et les titres de l\'application sont déjà traduits.</p>' : '') +
+      'Les boutons et les titres de l\'application sont déjà traduits.</p>' +
+      blocTradAuto(pid, lv)
+      : rappelTradAuto(lv)) +
 
     '<div style="margin-top:14px"><label class="lab" for="lv-mot-' + pid + '">' +
       (en ? 'Mot d\'accueil — version anglaise' : 'Mot d\'accueil') + '</label>' +
       (en && lv.mot ? '<p class="lv-src">' + esc(lv.mot) + '</p>' : '') +
-      '<textarea class="inp" id="lv-mot-' + pid + '"' +
+      '<textarea class="inp' + (en && lv.motEnAuto ? ' inp--auto' : '') + '" id="lv-mot-' + pid + '"' +
         (en ? ' placeholder="Welcome! Everything you need for your stay is here."' : '') +
         ' data-fid="lv-mot-' + pid + '" data-in="livret-mot" data-pid="' + pid + '" data-f="mot' + suf + '">' +
-        esc(lv['mot' + suf] || '') + '</textarea></div>' +
+        esc(lv['mot' + suf] || '') + '</textarea>' +
+      (en ? marqueAuto(pid, '', -1, 'mot', lv) : '') + '</div>' +
   '</div>';
 
   var onglets = '<div class="seg" style="margin-top:18px">' + LIVRET_SECTIONS.map(function (s) {
@@ -13804,13 +13816,15 @@ function bienLivret(pid, b) {
             /* En anglais, le bloc devient un champ de traduction : le texte
                français reste affiché au-dessus, comme référence. */
             ? '<p class="lv-src">' + esc(x.titre) + '</p>' +
-              '<input class="inp" type="text" placeholder="Titre en anglais" value="' + esc(x.titreEn || '') + '"' +
+              '<input class="inp' + (x.titreEnAuto ? ' inp--auto' : '') + '" type="text" placeholder="Titre en anglais" value="' + esc(x.titreEn || '') + '"' +
                 ' data-fid="lvt-' + xi + '" data-in="livret-trad" data-pid="' + pid + '" data-s="' + esc(sec.k) +
                 '" data-i="' + xi + '" data-f="titreEn">' +
+              marqueAuto(pid, sec.k, xi, 'titre', x) +
               (x.texte ? '<p class="lv-src" style="margin-top:10px">' + esc(x.texte) + '</p>' : '') +
-              '<textarea class="inp" placeholder="Explication en anglais"' +
+              '<textarea class="inp' + (x.texteEnAuto ? ' inp--auto' : '') + '" placeholder="Explication en anglais"' +
                 ' data-fid="lvx-' + xi + '" data-in="livret-trad" data-pid="' + pid + '" data-s="' + esc(sec.k) +
-                '" data-i="' + xi + '" data-f="texteEn">' + esc(x.texteEn || '') + '</textarea>'
+                '" data-i="' + xi + '" data-f="texteEn">' + esc(x.texteEn || '') + '</textarea>' +
+              marqueAuto(pid, sec.k, xi, 'texte', x)
             : '<div style="font:700 15px Figtree,sans-serif">' + esc(x.titre) + '</div>' +
               '<div style="font:500 13.5px/1.55 Figtree,sans-serif;color:var(--muted3);margin-top:5px;white-space:pre-wrap">' + esc(x.texte) + '</div>') +
           (x.adresse ? '<div class="livret-adresse">📍 ' + esc(x.adresse) + '</div>' : '') +
@@ -13846,6 +13860,175 @@ function bienLivret(pid, b) {
   // ce qui existe, on ne réorganise pas le livret.
   return '<div style="margin-top:22px">' + entete + onglets + liste +
     (en ? '' : livretCopie(pid, sec, blocs) + ajout) + '</div>';
+}
+
+/* TRADUIRE LE LIVRET EN ANGLAIS D'UN TOUCHER (D-227)
+
+   Demandé le 5 novembre 2026 : *« il n'y a aucun moyen de traduire le livret
+   en anglais automatiquement ? »*. Le bouton « 🌐 Traduire en anglais » de
+   l'onglet English envoie à DeepL — par `api/traduire.js`, chez Vercel, qui
+   seul connaît la clé — le français de chaque case anglaise ENCORE VIDE, et
+   pose la réponse dans cette case. Trois promesses, et chacune a son code :
+
+     1. **Une traduction déjà écrite n'est jamais remplacée** : on ne choisit
+        que les cases vides au départ (`casesATraduire`), et on revérifie
+        qu'elles le sont toujours au retour (`caseCible`) — le propriétaire a
+        pu taper pendant l'appel.
+     2. **Rien n'atterrit au mauvais endroit** : une case est retrouvée par sa
+        rubrique, sa place ET son texte français ; si le bloc a été déplacé,
+        on cherche dans la rubrique le bloc au même texte ; si le français a
+        changé, la traduction est jetée (elle ne lui correspond plus).
+     3. **Le voyageur ne lit rien qui n'ait été relu** : chaque case remplie
+        porte `<champ>EnAuto` (`titreEnAuto`, `texteEnAuto`, `motEnAuto`), et
+        `tx()` l'ignore — le voyageur lit le français à sa place. Le marqueur
+        tombe quand le propriétaire touche la case à la main, appuie sur
+        « C'est relu » sous la case, ou sur « Tout est relu ».
+
+   Les marqueurs voyagent avec le livret (colonne `properties.livret`, envoyée
+   en entier à chaque fois) : aucun script SQL. Ils sont facultatifs — absent
+   = relu —, comme `titreEn` lui-même : rien à déclarer dans `upgrade()`.
+   L'avancement (`trLivret`) est un état d'écran, hors de `state` (règle 7). */
+var trLivret = null;   // { pid, enCours, ok, rien, remplies, ignorees, caracteres, erreur, code }
+
+function nS(n, un, plusieurs) { return n + ' ' + (n > 1 ? plusieurs : un); }
+
+/** Les cases anglaises vides dont le français existe, dans l'ordre de l'écran :
+    `[{ s, i, champ, source }]` — `s` vide pour le mot d'accueil. */
+function casesATraduire(lv) {
+  var l = [];
+  function voir(obj, s, i, champ) {
+    var fr = String(obj[champ] || '').trim();
+    if (fr && !String(obj[champ + 'En'] || '').trim()) l.push({ s: s, i: i, champ: champ, source: fr });
+  }
+  if (!lv) return l;
+  voir(lv, '', -1, 'mot');
+  LIVRET_SECTIONS.forEach(function (sec) {
+    (lv[sec.k] || []).forEach(function (x, i) {
+      if (!x) return;
+      voir(x, sec.k, i, 'titre');
+      voir(x, sec.k, i, 'texte');
+    });
+  });
+  return l;
+}
+
+/** Les traductions automatiques que le propriétaire n'a pas encore relues. */
+function tradsARelire(lv) {
+  var l = [];
+  if (!lv) return l;
+  if (lv.motEnAuto) l.push({ obj: lv, champ: 'mot' });
+  LIVRET_SECTIONS.forEach(function (sec) {
+    (lv[sec.k] || []).forEach(function (x) {
+      if (!x) return;
+      if (x.titreEnAuto) l.push({ obj: x, champ: 'titre' });
+      if (x.texteEnAuto) l.push({ obj: x, champ: 'texte' });
+    });
+  });
+  return l;
+}
+
+/** Où poser une traduction revenue — `null` si la case n'est plus libre ou
+    si son français a changé pendant l'appel (promesses 1 et 2 ci-dessus). */
+function caseCible(pid, c) {
+  var lv = state.livret[pid];
+  if (!lv) return null;
+  function libre(x) {
+    return !!x && String(x[c.champ] || '').trim() === c.source && !String(x[c.champ + 'En'] || '').trim();
+  }
+  if (!c.s) return libre(lv) ? lv : null;
+  var l = lv[c.s] || [];
+  if (libre(l[c.i])) return l[c.i];
+  return l.filter(libre)[0] || null;
+}
+
+/** Les textes partent par paquets : DeepL n'en prend que 50 par appel, et
+    `api/traduire.js` 30 000 caractères. On reste en dessous. */
+function paquetsTrad(cases) {
+  var paquets = [], cur = [], taille = 0;
+  cases.forEach(function (c) {
+    if (cur.length && (cur.length >= 40 || taille + c.source.length > 20000)) {
+      paquets.push(cur); cur = []; taille = 0;
+    }
+    cur.push(c); taille += c.source.length;
+  });
+  if (cur.length) paquets.push(cur);
+  return paquets;
+}
+
+/** L'encadré du bouton, dans l'onglet English. */
+function blocTradAuto(pid, lv) {
+  var vides = casesATraduire(lv).length;
+  var aRelire = tradsARelire(lv).length;
+  var tr = trLivret && trLivret.pid === pid ? trLivret : null;
+  var enCours = !!(tr && tr.enCours);
+  var h = '<div class="lv-trad">';
+
+  if (vides || enCours) {
+    h += '<button type="button" class="btn btn--primary btn--sm"' + (enCours ? ' disabled' : '') +
+        act('livret-traduire', { pid: pid }) + '>' +
+        (enCours ? 'Traduction en cours…' : '🌐 Traduire en anglais') + '</button>' +
+      '<p class="sec-note" style="margin-top:6px">' +
+        (enCours
+          ? 'Les textes sont chez DeepL ; ils reviennent dans quelques secondes.'
+          : 'Remplit ' + (vides > 1 ? 'les ' + vides + ' cases anglaises encore vides' : 'la case anglaise encore vide') +
+            ' à partir du français (service DeepL). Une traduction déjà écrite n’est jamais remplacée, ' +
+            'et rien n’est montré aux voyageurs avant votre relecture.') + '</p>';
+  } else if (!aRelire) {
+    h += '<p class="sec-note">✓ Chaque texte du livret a sa version anglaise.</p>';
+  }
+
+  if (tr && tr.ok) {
+    h += '<p class="lv-trad-msg lv-trad-msg--ok">✓ ' +
+      (tr.remplies ? nS(tr.remplies, 'case remplie', 'cases remplies') + ' en anglais' : 'Aucune case remplie') +
+      (tr.caracteres ? ' (' + tr.caracteres.toLocaleString('fr-FR') + ' caractères envoyés à DeepL ; ' +
+        'l’offre gratuite en permet 500 000 par mois)' : '') + '.' +
+      (tr.ignorees ? ' ' + (tr.ignorees > 1
+        ? tr.ignorees + ' cases n’ont pas été touchées : elles ont été écrites ou modifiées pendant la traduction.'
+        : '1 case n’a pas été touchée : elle a été écrite ou modifiée pendant la traduction.') : '') + '</p>';
+  }
+  if (tr && tr.erreur) {
+    h += '<p class="lv-trad-msg lv-trad-msg--ko">' + esc(tr.erreur) +
+      (tr.remplies ? ' ' + nS(tr.remplies, 'case avait déjà été remplie', 'cases avaient déjà été remplies') +
+        ' avant l’erreur : elles sont ci-dessous, à relire.' : ' Rien n’a été modifié dans le livret.') + '</p>';
+  }
+
+  if (aRelire) {
+    h += '<div class="lv-trad-relire">' +
+      '<p><strong>' + nS(aRelire, 'traduction automatique à relire', 'traductions automatiques à relire') + '.</strong> ' +
+      'Les voyageurs lisent encore le français à leur place. Corrigez ce qui doit l’être — une case ' +
+      'retouchée à la main compte comme relue —, puis :</p>' +
+      '<button type="button" class="btn btn--sm btn--dark"' + act('livret-relu-tout', { pid: pid }) + '>' +
+        '✓ Tout est relu : montrer aux voyageurs</button>' +
+      '</div>';
+  }
+  return h + '</div>';
+}
+
+/** Dans l'onglet Français : dire qu'il reste de l'anglais à faire, et où. */
+function rappelTradAuto(lv) {
+  var aRelire = tradsARelire(lv).length;
+  var vides = casesATraduire(lv).length;
+  if (aRelire) {
+    return '<p class="sec-note" style="margin-top:8px">🌐 ' +
+      nS(aRelire, 'traduction automatique attend', 'traductions automatiques attendent') +
+      ' votre relecture : touchez « English ».</p>';
+  }
+  if (vides) {
+    return '<p class="sec-note" style="margin-top:8px">🌐 ' +
+      nS(vides, 'texte n’a', 'textes n’ont') + ' pas encore de version anglaise : touchez « English » ' +
+      'pour ' + (vides > 1 ? 'les' : 'le') + ' traduire automatiquement.</p>';
+  }
+  return '';
+}
+
+/** Sous une case remplie automatiquement et pas encore relue. */
+function marqueAuto(pid, s, i, champ, obj) {
+  if (!obj || !obj[champ + 'EnAuto']) return '';
+  return '<div class="lv-auto">' +
+    '<span>🌐 Traduit automatiquement — pas encore montré aux voyageurs.</span>' +
+    '<button type="button" class="btn btn--sm"' + act('livret-relu', { pid: pid, s: s, i: i, f: champ }) + '>' +
+      '✓ C’est relu</button>' +
+    '</div>';
 }
 
 /* MODIFIER UN BLOC DU LIVRET SANS LE REFAIRE (session 43, D-196)
@@ -18172,6 +18355,75 @@ var actions = {
     state.waOuverts[el.dataset.regle + '_' + el.dataset.rid] = TODAY + ' ' + nowHM() + ' (fait)';
     save(); render();
   },
+  /* « 🌐 Traduire en anglais » (D-227). Voir `blocTradAuto()` pour les trois
+     promesses. Les paquets partent l'un après l'autre ; si l'un échoue, ce que
+     les précédents ont rapporté est quand même posé (et dit), le reste non. */
+  'livret-traduire': function (el) {
+    var pid = el.dataset.pid;
+    if (trLivret && trLivret.enCours) return;
+    var cases = casesATraduire(state.livret[pid]);
+    if (!cases.length) { trLivret = { pid: pid, ok: true, remplies: 0 }; render(); return; }
+
+    trLivret = { pid: pid, enCours: true };
+    render();
+
+    var traductions = [], caracteres = 0;
+    var chaine = paquetsTrad(cases).reduce(function (p, paquet) {
+      return p.then(function () {
+        return DB.traduire(paquet.map(function (c) { return c.source; })).then(function (r) {
+          traductions = traductions.concat(r.traductions);
+          caracteres += r.caracteres || 0;
+        });
+      });
+    }, Promise.resolve());
+
+    function poser() {
+      var remplies = 0, ignorees = 0;
+      traductions.forEach(function (t, k) {
+        var c = cases[k];
+        var x = caseCible(pid, c);
+        t = String(t || '').trim();
+        if (!t || !x) { ignorees++; return; }
+        x[c.champ + 'En'] = t;
+        x[c.champ + 'EnAuto'] = true;
+        remplies++;
+      });
+      if (remplies) save();
+      return { remplies: remplies, ignorees: ignorees };
+    }
+
+    chaine.then(function () {
+      var bilan = poser();
+      trLivret = { pid: pid, ok: true, remplies: bilan.remplies, ignorees: bilan.ignorees, caracteres: caracteres };
+      render();
+    }, function (e) {
+      var bilan = poser();
+      trLivret = { pid: pid, erreur: (e && e.message) || 'La traduction a échoué.', code: (e && e.code) || '',
+                   remplies: bilan.remplies };
+      render();
+    });
+  },
+  /* « ✓ C'est relu » sous une case : le voyageur la lira désormais. */
+  'livret-relu': function (el) {
+    var lv = state.livret[el.dataset.pid];
+    if (!lv) return;
+    var obj = el.dataset.s ? (lv[el.dataset.s] || [])[parseInt(el.dataset.i, 10)] : lv;
+    if (obj) { delete obj[el.dataset.f + 'EnAuto']; save(); }
+    render();
+  },
+  'livret-relu-tout': function (el) {
+    var lv = state.livret[el.dataset.pid];
+    var l = tradsARelire(lv);
+    if (!l.length) return;
+    if (!confirm((l.length > 1
+        ? 'Montrer aux voyageurs les ' + l.length + ' traductions automatiques de ce livret ?\n\n' +
+          'Assurez-vous de les avoir relues'
+        : 'Montrer aux voyageurs la traduction automatique de ce livret ?\n\nAssurez-vous de l’avoir relue') +
+      ' : une consigne mal traduite (une clé, un code, un horaire) peut mettre un voyageur dans l’embarras.')) return;
+    l.forEach(function (c) { delete c.obj[c.champ + 'EnAuto']; });
+    if (trLivret && trLivret.pid === el.dataset.pid) trLivret = null;
+    save(); render();
+  },
   'livret-edit-ok': function () {
     var ed = state.lvEdit;
     if (!ed) return;
@@ -19082,7 +19334,12 @@ var inputs = {
   /* Livret d'accueil. */
   'livret-mot': function (el) {
     var lv = state.livret[el.dataset.pid];
-    if (lv) { lv[el.dataset.f || 'mot'] = el.value; save(); }
+    if (!lv) return;
+    var f = el.dataset.f || 'mot';
+    lv[f] = el.value;
+    // Retouchée à la main = relue (D-227) : le voyageur la lira.
+    if (f === 'motEn') delete lv.motEnAuto;
+    save();
   },
   /* Traduction anglaise d'un bloc, saisie sans redessin pour ne pas perdre
      le curseur (même règle que tous les champs texte). */
@@ -19090,7 +19347,12 @@ var inputs = {
     var lv = state.livret[el.dataset.pid];
     if (!lv) return;
     var bloc = (lv[el.dataset.s] || [])[parseInt(el.dataset.i, 10)];
-    if (bloc) { bloc[el.dataset.f] = el.value; save(); }
+    if (!bloc) return;
+    bloc[el.dataset.f] = el.value;
+    // Retouchée à la main = relue (D-227). La pastille sous la case
+    // disparaîtra au prochain dessin — pas de redessin ici, pour le curseur.
+    delete bloc[el.dataset.f + 'Auto'];
+    save();
   },
   'livret-draft': function (el) {
     var k = el.dataset.key;

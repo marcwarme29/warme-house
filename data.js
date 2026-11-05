@@ -3058,6 +3058,73 @@ var DB = (function () {
     });
   }
 
+  /* ----------------------------------------------------------------------
+     8. LE TRADUCTEUR — le livret en anglais (D-227)
+
+     Même porte que le facteur, pour la même raison : la traduction demande
+     une clé secrète (DeepL), qui ne vit que chez Vercel. On frappe à
+     `/api/traduire` avec le jeton de la session ; c'est lui qui vérifie que
+     le demandeur est le propriétaire, et lui seul qui connaît la clé.
+
+     Rien n'est écrit ici dans le livret : on rend les traductions, dans
+     l'ordre des textes donnés, et c'est l'écran (`livret-traduire`) qui
+     décide où elles vont — seulement dans les cases anglaises encore vides.
+
+     `textes` : liste de chaînes non vides (50 au plus par appel).
+     Rend `{ service, caracteres, traductions: [...] }`, ou lève une erreur
+     dont le message est déjà en français — rédigé par `/api/traduire`, sauf
+     les trois cas où il n'a pas pu répondre (pas publié, réseau, page
+     d'erreur), rédigés ici.
+     ---------------------------------------------------------------------- */
+  function traduire(textes) {
+    if (!dispo) return Promise.reject(new Error(derniereErreur || 'Connexion au cahier partagé indisponible.'));
+    if (!profil) return Promise.reject(new Error('Il faut être connecté pour traduire le livret.'));
+    if (profil.role !== 'owner') {
+      return Promise.reject(new Error('Seul le compte du propriétaire peut faire traduire le livret.'));
+    }
+    if (!Array.isArray(textes) || !textes.length) {
+      return Promise.reject(new Error('Il n’y a rien à traduire.'));
+    }
+
+    return jetonDeSession().then(function (jeton) {
+      if (!jeton) throw new Error('La connexion a expiré. Recharger la page et se reconnecter.');
+      return fetch('/api/traduire', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jeton: jeton, textes: textes })
+      }).catch(function () {
+        /* « Load failed » / « Failed to fetch » ne disent rien à personne
+           (règle 5, D-134) : la requête n'est même pas partie. */
+        throw new Error('Impossible de joindre le traducteur : la connexion internet semble coupée. ' +
+          'Réessayer dans un instant.');
+      });
+    }).then(function (r) {
+      return r.text().then(function (corps) {
+        var j = null;
+        try { j = JSON.parse(corps); } catch (e) { j = null; }
+        if (!r.ok) {
+          /* Une page d'erreur n'est pas une réponse (même piège que le
+             facteur) : si `/api/traduire` n'est pas encore en ligne, Vercel
+             rend du HTML avec un 404. */
+          var e2 = new Error(
+            (j && j.erreur) ||
+            (r.status === 404
+              ? 'Le traducteur n’est pas encore en ligne : la publication (git push) n’a pas été faite ' +
+                'depuis l’ajout de cette fonctionnalité.'
+              : 'La traduction a échoué (code ' + r.status + ').')
+          );
+          e2.code = (j && j.code) || '';
+          e2.statut = r.status;
+          throw e2;
+        }
+        if (!j || !Array.isArray(j.traductions) || j.traductions.length !== textes.length) {
+          throw new Error('La réponse du traducteur est illisible : rien n’a été modifié dans le livret.');
+        }
+        return j;
+      });
+    });
+  }
+
   /* ---------------------------------------------------------------------- */
 
   return {
@@ -3170,6 +3237,8 @@ var DB = (function () {
     taire: taire,
     demenager: demenager,
     envoyerMail: envoyerMail,
+    // Le livret en anglais (D-227).
+    traduire: traduire,
     signalerDebutMenage: signalerDebutMenage,
     signalerCommentaire: signalerCommentaire
   };
