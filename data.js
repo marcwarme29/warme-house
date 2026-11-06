@@ -3125,6 +3125,47 @@ var DB = (function () {
     });
   }
 
+  /* ----------------------------------------------------------------------
+     9. BEDS24 — se relier et regarder (D-228)
+
+     Même porte que le traducteur : la clé Beds24 ne vit que chez Vercel.
+     `action` : 'etat' | 'inviter' (avec `extra.code`) | 'sejours'.
+     Rend la réponse de `/api/beds24`, ou lève une erreur dont le message est
+     déjà en français. Rien n'est écrit dans le cahier partagé.
+     ---------------------------------------------------------------------- */
+  function beds24(action, extra) {
+    if (!dispo) return Promise.reject(new Error(derniereErreur || 'Connexion au cahier partagé indisponible.'));
+    if (!profil) return Promise.reject(new Error('Il faut être connecté pour parler à Beds24.'));
+    if (profil.role !== 'owner') {
+      return Promise.reject(new Error('Seul le compte du propriétaire peut parler à Beds24.'));
+    }
+    return jetonDeSession().then(function (jeton) {
+      if (!jeton) throw new Error('La connexion a expiré. Recharger la page et se reconnecter.');
+      return fetch('/api/beds24', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(Object.assign({ jeton: jeton, action: action }, extra || {}))
+      }).catch(function () {
+        throw new Error('Impossible de joindre Beds24 : la connexion internet semble coupée. Réessayer dans un instant.');
+      });
+    }).then(function (r) {
+      return r.text().then(function (corps) {
+        var j = null;
+        try { j = JSON.parse(corps); } catch (e) { j = null; }
+        if (!r.ok) {
+          var e2 = new Error((j && j.erreur) || (r.status === 404
+            ? 'La porte Beds24 n’est pas encore en ligne : la publication (git push) n’a pas été faite ' +
+              'depuis son ajout.'
+            : 'Beds24 n’a pas pu répondre (code ' + r.status + ').'));
+          e2.code = (j && j.code) || '';
+          throw e2;
+        }
+        if (!j) throw new Error('La réponse de Beds24 est illisible.');
+        return j;
+      });
+    });
+  }
+
   /* ---------------------------------------------------------------------- */
 
   return {
@@ -3239,6 +3280,7 @@ var DB = (function () {
     envoyerMail: envoyerMail,
     // Le livret en anglais (D-227).
     traduire: traduire,
+    beds24: beds24,
     signalerDebutMenage: signalerDebutMenage,
     signalerCommentaire: signalerCommentaire
   };

@@ -49,7 +49,7 @@ function isoDate(d) {
 /* La version de l'application, affichée dans les bandeaux d'erreur et sous le
    compte connecté (session 46) : trois fois, un écran resté sur l'ancienne
    version a fait chercher un défaut déjà corrigé. À changer à chaque envoi. */
-var VERSION_APP = '48.2';
+var VERSION_APP = '48.3';
 
 var TODAY = isoDate(new Date());
 var TODAY_LABEL = new Date().toLocaleDateString('fr-FR',
@@ -12994,6 +12994,7 @@ function viewOwnerBiens() {
        programmés le remplace toujours. Seule sa mise en avant disparaît, avec
        la confusion qu'elle entretenait : `carteLienUnique()` reste écrite plus
        bas, simplement plus appelée. */
+    carteBeds24() +
     carteImport() +
     carteConnexions());
 }
@@ -13250,6 +13251,139 @@ function b24Etat(pid) {
    Panneau d'état, honnête sur ce qui marche et ce qui attend le serveur.
    Aucune clé secrète n'est demandée ici : elle n'a rien à faire dans une page
    publique, ni même dans ce navigateur (voir D-42). */
+
+/* BEDS24 RELIÉ À MAISON WARME — PREMIÈRE MARCHE : SE RELIER ET REGARDER (D-228)
+
+   Demandé le 6 novembre : *« commence la mise en place pour mettre [Beds24]
+   sur mon appli »*. Cette carte ne fait que LIRE chez Beds24, par
+   `/api/beds24` (la clé vit chez Vercel, jamais ici — règle 2). On regarde
+   d'abord les vraies réservations de Marc, ensemble ; l'import viendra à la
+   marche suivante (D-152 : pas de traduction écrite contre une
+   documentation).
+
+   Tout ce qui est ici est une position d'affichage, hors de `state` (règle 7)
+   — et surtout la clé permanente rendue par l'échange du code : elle ne doit
+   JAMAIS partir dans `localStorage` ni dans le cahier. Elle s'efface au
+   prochain rechargement, une fois collée chez Vercel. */
+var b24 = { encours: '', msg: '', ok: true, etat: null, sejours: null, cle: '', code: '' };
+
+function b24LogementDe(roomId, propertyId) {
+  var r = String(roomId || ''), p = String(propertyId || '');
+  var trouve = null;
+  (state.props || []).forEach(function (x) {
+    if (x.gone || trouve) return;
+    var inf = state.info[x.id] || {};
+    if (r && String(inf.beds24 || '').trim() === r) trouve = x;
+  });
+  if (!trouve && p) {
+    (state.props || []).forEach(function (x) {
+      if (x.gone || trouve) return;
+      if (String((state.info[x.id] || {}).beds24Prop || '').trim() === p) trouve = x;
+    });
+  }
+  return trouve;
+}
+
+function carteBeds24() {
+  var e = b24.etat, l = b24.sejours;
+  var bouton = function (action, texte, principal) {
+    return '<button type="button" class="btn btn--xs" style="' + (principal ? 'background:var(--terra);color:#fff' : 'background:var(--cream);color:var(--ink-soft)') + '"' +
+      (b24.encours ? ' disabled' : '') + act(action) + '>' + (b24.encours === action ? 'Un instant…' : texte) + '</button>';
+  };
+
+  var blocEtat = !e ? '' : '<div class="b24-bloc">' +
+    '<div style="font:700 14px Figtree,sans-serif;color:var(--green-t)">✅ Beds24 répond : la liaison fonctionne.</div>' +
+    '<div class="sec-note" style="margin:4px 0 8px">Droits accordés : ' + esc((e.droits || []).join(', ') || 'non précisés') + '</div>' +
+    (e.logements || []).map(function (p) {
+      return '<div class="b24-log"><strong>' + esc(p.nom) + '</strong> <span class="num">(propriété ' + esc(p.id) + ')</span>' +
+        (p.chambres || []).map(function (c) {
+          var mw = b24LogementDe(c.id, p.id);
+          return '<div class="b24-ch num">chambre ' + esc(c.id) + ' — ' + esc(c.nom) + ' → ' +
+            (mw && String((state.info[mw.id] || {}).beds24 || '').trim() === String(c.id)
+              ? '<span style="color:var(--green-t)">reliée à « ' + esc(mw.name) + ' »</span>'
+              : '<span style="color:var(--muted)">aucun logement de MAISON WARME ne porte ce numéro</span>') + '</div>';
+        }).join('') + '</div>';
+    }).join('') +
+    '<p class="sec-note" style="margin:8px 0 0">Les numéros se recopient dans la fiche de chaque logement → ' +
+      'onglet « Synchronisation » → encadré Beds24.</p></div>';
+
+  var blocSejours = !l ? '' : '<div class="b24-bloc">' +
+    '<div style="font:700 14px Figtree,sans-serif">' + l.sejours.length + ' réservation(s) chez Beds24, du ' +
+      esc(fmtDateLongue(l.depuis)) + ' au ' + esc(fmtDateLongue(l.jusqua)) + '</div>' +
+    '<p class="sec-note" style="margin:4px 0 10px">Lecture seule : <strong>rien n’est encore importé</strong> dans ' +
+      'MAISON WARME. C’est ce que nous regarderons ensemble avant d’écrire l’import.</p>' +
+    (l.sejours.length ? '<div class="b24-table">' + l.sejours.map(function (x) {
+      var mw = b24LogementDe(x.roomId, x.propertyId);
+      var annule = x.statut === 'cancelled', bloque = x.statut === 'black';
+      return '<div class="b24-ligne' + (annule ? ' b24-ligne--annule' : '') + '">' +
+        '<div class="grow" style="min-width:0">' +
+          '<div style="font:600 14px Figtree,sans-serif">' + esc(bloque ? 'Période bloquée' : ((x.prenom + ' ' + x.nom).trim() || 'Nom non transmis')) +
+            (annule ? ' <span class="badge badge--terra">Annulée</span>' : '') + '</div>' +
+          '<div class="num sec-note" style="margin:2px 0 0">' + esc(fmtDate(x.arrivee)) + ' → ' + esc(fmtDate(x.depart)) +
+            ' · ' + esc(mw ? mw.name : 'chambre ' + x.roomId) +
+            (x.adultes || x.enfants ? ' · ' + x.adultes + ' adulte(s)' + (x.enfants ? ', ' + x.enfants + ' enfant(s)' : '') : '') +
+            (x.canal ? ' · ' + esc(x.canal) : '') + (x.telephone ? ' · 📞' : '') + (x.email ? ' · ✉️' : '') + '</div>' +
+        '</div>' +
+        '<div class="num" style="font:700 14px Figtree,sans-serif;flex:none">' + (x.prix === null ? '—' : esc(Number(x.prix).toFixed(2).replace('.', ',')) + ' €') + '</div>' +
+      '</div>';
+    }).join('') + '</div>' : '<p class="empty" style="padding:8px 0">Beds24 ne connaît aucune réservation sur cette période.</p>') +
+  '</div>';
+
+  var blocCle = !b24.cle ? '' : '<div class="b24-bloc" style="border-color:var(--amber)">' +
+    '<div style="font:700 14px Figtree,sans-serif">🔑 Voici la clé permanente. ⚠️ C’est un mot de passe.</div>' +
+    '<input class="inp num" style="font-size:12px;margin-top:8px" readonly value="' + esc(b24.cle) + '" data-fid="b24-cle">' +
+    '<div style="margin-top:8px">' + bouton('b24-copier-cle', 'Copier la clé', true) + '</div>' +
+    '<ol class="sec-note" style="margin:10px 0 0 18px;padding:0">' +
+      '<li>vercel.com → projet <strong>warme-house</strong> → <strong>Settings → Environment Variables</strong></li>' +
+      '<li><strong>Key</strong> : <code>BEDS24_REFRESH_TOKEN</code> · <strong>Value</strong> : la clé copiée → <strong>Save</strong></li>' +
+      '<li><strong>Deployments → ⋯ → Redeploy</strong>, puis revenir ici et toucher « Vérifier la liaison ».</li>' +
+    '</ol>' +
+    '<p class="sec-note" style="margin:8px 0 0">Elle ne va que chez Vercel : jamais dans un message ni un document. ' +
+      'Elle disparaîtra de cet écran au prochain rechargement — MAISON WARME ne la garde pas.</p></div>';
+
+  return '<div class="card" style="margin-top:22px;padding:22px;border-left:4px solid var(--blue)">' +
+    '<h2 style="font:700 16px Figtree,sans-serif;margin:0 0 4px">🔗 Beds24 → MAISON WARME</h2>' +
+    '<p class="sec-note" style="margin:0 0 12px">Première étape : relier les deux et <strong>regarder</strong> ' +
+      'ce que Beds24 enverrait. Rien n’est importé ni modifié, ni ici, ni chez Beds24.</p>' +
+    '<div style="display:flex;gap:8px;flex-wrap:wrap">' + bouton('b24-etat', 'Vérifier la liaison', true) +
+      bouton('b24-sejours', 'Voir les réservations de Beds24') + '</div>' +
+    (b24.msg ? '<p class="sec-note" role="status" style="margin:10px 0 0;color:' + (b24.ok ? 'var(--green-t)' : 'var(--terra-d)') + '">' +
+      esc(b24.msg) + '</p>' : '') +
+    blocEtat + blocSejours +
+    '<details class="b24-details"' + (b24.cle || (b24.msg && !b24.ok && /clé|relié|invitation/.test(b24.msg)) ? ' open' : '') + '>' +
+      '<summary>Relier une première fois : le code d’invitation</summary>' +
+      '<p class="sec-note" style="margin:8px 0">Chez Beds24 : <strong>Settings → Marketplace → API → Generate invite code</strong>. ' +
+        'Cocher <strong>uniquement en lecture</strong> : bookings, bookings-personal, bookings-financial, properties. ' +
+        'Le code périme vite : le coller ici <strong>aussitôt</strong>.</p>' +
+      '<div style="display:flex;gap:8px;flex-wrap:wrap">' +
+        '<input class="inp" style="flex:1;min-width:200px" type="text" autocomplete="off" placeholder="Coller le code d’invitation" value="' +
+          esc(b24.code) + '" data-fid="b24-code" data-in="b24-code">' +
+        bouton('b24-inviter', 'Échanger le code', true) + '</div>' +
+    '</details>' + blocCle +
+  '</div>';
+}
+
+function b24Appel(action, extra) {
+  if (typeof DB === 'undefined' || !DB.estDispo() || !DB.beds24) {
+    b24.ok = false; b24.msg = 'Le cahier partagé n’est pas joignable : impossible de parler à Beds24 d’ici.'; render(); return;
+  }
+  b24.encours = action; b24.msg = ''; render();
+  DB.beds24(action, extra).then(function (j) {
+    b24.encours = ''; b24.ok = true;
+    if (action === 'etat') { b24.etat = j; b24.msg = ''; }
+    else if (action === 'sejours') { b24.sejours = j; b24.msg = ''; }
+    else if (action === 'inviter') {
+      b24.cle = String(j.refreshToken || ''); b24.code = '';
+      b24.msg = j.dejaPosee
+        ? 'Code accepté. Attention : une clé est déjà posée chez Vercel ; remplace-la par celle-ci seulement si l’ancienne ne marche plus.'
+        : 'Code accepté : copie la clé ci-dessous et colle-la chez Vercel.';
+    }
+    render();
+  }, function (err) {
+    b24.encours = ''; b24.ok = false; b24.msg = (err && err.message) || 'Beds24 n’a pas pu répondre.';
+    render();
+  });
+}
 
 function carteConnexions() {
   var parSource = { manuel: 0, ical: 0, beds24: 0 };
@@ -17090,6 +17224,21 @@ var actions = {
   'cal-mois-auj': function () { state.calMonth = CURRENT_MONTH; save(); render(); },
   /* L'écran de la remise des clés (D-220) : rien de tout cela n'est
      enregistré, ce sont des positions d'affichage (règle 7). */
+  /* Beds24 (D-228) : rien de tout cela n'est enregistré (règle 7). */
+  'b24-etat': function () { b24Appel('etat'); },
+  'b24-sejours': function () { b24Appel('sejours'); },
+  'b24-inviter': function () {
+    if (!String(b24.code || '').trim()) { b24.ok = false; b24.msg = 'Coller d’abord le code d’invitation.'; render(); return; }
+    b24Appel('inviter', { code: String(b24.code).trim() });
+  },
+  'b24-copier-cle': function () {
+    var cle = b24.cle;
+    if (!cle) return;
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(cle).then(function () { b24.ok = true; b24.msg = '✅ Clé copiée. Colle-la chez Vercel (étapes ci-dessous).'; render(); },
+        function () { b24.ok = false; b24.msg = 'Le presse-papiers a été refusé : sélectionne la clé dans la case et copie-la à la main.'; render(); });
+    } else { b24.ok = false; b24.msg = 'Sélectionne la clé dans la case et copie-la à la main.'; render(); }
+  },
   'cles-vue': function (el) { clesVue = el.dataset.v === 'mois' ? 'mois' : 'programme'; render(); },
   'cles-bien': function (el) { clesBien = el.dataset.pid; clesSel = null; render(); },
   'cles-mois-pas': function (el) {
@@ -19209,6 +19358,7 @@ var inputs = {
   },
   'bien-field': function (el) { setBienField(el); },
   'bien-notes': function (el) { state.notes[el.dataset.pid] = el.value; save(); },
+  'b24-code': function (el) { b24.code = el.value; },
   /* Le message tout prêt du voyageur (D-225). Pas de redessin à chaque
      lettre : on met seulement l'aperçu à jour, la case garde son curseur. */
   'msg-voyageur': function (el) {

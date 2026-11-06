@@ -2633,3 +2633,13 @@ button.mcal-jour:hover { background: var(--blue-bg); }
 
 /* Ce que voit un administrateur (session 47, D-215). */
 .droits { margin-top: 8px; padding: 10px 14px; background: var(--sand); border-radius: 14px; }
+
+/* Beds24 → MAISON WARME, première marche (session 48, D-228) -------------- */
+.b24-bloc { margin-top: 14px; padding: 14px 16px; border: 1.5px solid rgba(36,30,26,.08); border-radius: 16px; background: var(--sand); }
+.b24-log { margin-top: 8px; font: 500 13.5px Figtree, sans-serif; }
+.b24-ch { font: 500 12.5px Figtree, sans-serif; color: var(--ink-soft); margin: 3px 0 0 12px; }
+.b24-table { display: flex; flex-direction: column; }
+.b24-ligne { display: flex; align-items: center; gap: 12px; padding: 9px 0; border-top: 1px solid rgba(36,30,26,.07); }
+.b24-ligne--annule { opacity: .6; }
+.b24-details { margin-top: 14px; }
+.b24-details > summary { cursor: pointer; font: 600 13.5px Figtree, sans-serif; color: var(--ink-soft); min-height: 36px; display: flex; align-items: center; }
