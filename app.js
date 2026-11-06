@@ -49,7 +49,7 @@ function isoDate(d) {
 /* La version de l'application, affichée dans les bandeaux d'erreur et sous le
    compte connecté (session 46) : trois fois, un écran resté sur l'ancienne
    version a fait chercher un défaut déjà corrigé. À changer à chaque envoi. */
-var VERSION_APP = '48.4';
+var VERSION_APP = '48.6';
 
 var TODAY = isoDate(new Date());
 var TODAY_LABEL = new Date().toLocaleDateString('fr-FR',
@@ -1665,7 +1665,8 @@ function indicationPrixSejour(pid, r) {
 
 /** Montant d'un séjour : celui saisi, sinon nuits × prix par nuit du logement. */
 function montantResa(pid, r) {
-  if (r.montant !== null && r.montant !== undefined && r.montant !== '') return Math.round(r.montant);
+  // Au centime près depuis la session 48 (D-230) : Beds24 donne 163,20 €, pas 163.
+  if (r.montant !== null && r.montant !== undefined && r.montant !== '') return Math.round(parseFloat(r.montant) * 100) / 100;
   var prix = parseInt((state.info[pid] || {}).prixNuit, 10) || 0;
   return prix * nights(r.start, r.end);
 }
@@ -1743,7 +1744,7 @@ function normaliserResa(brut, source, pid) {
     start: brut.start,
     end: brut.end,
     montant: (brut.montant === '' || brut.montant === undefined || brut.montant === null)
-      ? null : Math.round(parseFloat(brut.montant) || 0),
+      ? null : Math.round((parseFloat(String(brut.montant).replace(',', '.')) || 0) * 100) / 100,   // au centime (D-230)
     statut: brut.statut === 'annule' ? 'annule' : 'confirme',
 
     // Coordonnées du voyageur. `tel4` est ce que la plateforme veut bien
@@ -2176,7 +2177,10 @@ function fusionnerResas(pid, lot, source, plat) {
     if (source === 'ical' && incoming.uid && !creneauOublie(pid, incoming) &&
         !resasOf(pid).some(function (x) { return x.uid === incoming.uid; })) {
       var sansUid = resasOf(pid).filter(function (x) {
-        return !x.uid && x.statut !== 'annule' && x.start === incoming.start && x.end === incoming.end;
+        /* …ou qui ne porte que l'identifiant de Beds24 (session 48, D-230) :
+           Beds24 a pu apporter le séjour avant le calendrier. Sans cela, l'iCal
+           en créait un second exemplaire aux mêmes dates. */
+        return (!x.uid || /^b24:/.test(x.uid)) && x.statut !== 'annule' && x.start === incoming.start && x.end === incoming.end;
       })[0];
       if (sansUid) {
         sansUid.uid = incoming.uid;
@@ -2816,7 +2820,7 @@ function entrerAvecProfil(p) {
     if (restaurerNomsVoyageurs().length) save();     // D-141
     // Les calendriers sont relevés dès l'entrée : Marc ne doit plus avoir à
     // demander l'import de ses séjours (session 24, D-133).
-    releveAutoIcal();
+    releveAutoIcal().then(releveAutoBeds24);
   }
 }
 
@@ -9761,7 +9765,7 @@ function viewOwnerResa() {
         '<div style="margin-top:16px;padding-top:16px;border-top:1px solid rgba(36,30,26,.08)">' +
           '<label class="lab" for="rm-' + esc(r.id) + '">Montant du séjour (€)</label>' +
           '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:4px">' +
-            '<input class="inp num" id="rm-' + esc(r.id) + '" type="number" min="0" style="flex:1;min-width:140px"' +
+            '<input class="inp num" id="rm-' + esc(r.id) + '" type="number" min="0" step="0.01" style="flex:1;min-width:140px"' +
               ' placeholder="' + (parseInt(inf.prixNuit, 10) || 0) + ' € × ' + nb + ' nuits" value="' +
               (montantEstime(r) ? '' : esc(r.montant)) + '" data-fid="rm-' + esc(r.id) + '" data-in="resa-montant" data-rid="' + esc(r.id) + '">' +
             (montantEstime(r) ? '' : '<button type="button" class="btn btn--xs" style="background:var(--cream);color:var(--ink-soft)"' +
@@ -9907,6 +9911,12 @@ function viewOwnerMsgs() {
       }).join('') + '</div>' +
     '</div>' +
 
+    (biensBeds24().length ? '<div class="alert alert--blue" style="margin-top:20px"><div class="det" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">' +
+      '<span class="grow">💬 <strong>Messages Airbnb / Booking</strong> des logements reliés à Beds24 (' +
+        esc(biensBeds24().map(function (p) { return p.name; }).join(', ')) + ') — ' +
+        esc(b24Msg.texte || 'pas encore relevés') + '</span>' +
+      '<button type="button" class="btn btn--xs" style="background:#fff;color:var(--ink-soft)"' + (b24Msg.encours ? ' disabled' : '') +
+        act('b24-messages') + '>' + (b24Msg.encours ? 'Un instant…' : '⟳ Relever') + '</button></div></div>' : '') +
     /* Depuis la session 44 (D-199), la page sert déjà : on écrit au voyageur
        sur WhatsApp dès qu'on a son numéro. Seule la LECTURE des messages des
        plateformes attend Beds24. */
@@ -9935,6 +9945,8 @@ function viewOwnerMsgs() {
           '</span>' +
           '<span class="conv-r">' +
             (numeroWhatsApp(r.tel) ? '<span class="badge" style="background:#E3F6EA;color:#1C7A43">WhatsApp</span> ' : '') +
+            (messagesBeds24De(r.id).length ? '<span class="badge badge--blue num" title="Messages Airbnb / Booking par Beds24">💬 ' +
+              messagesBeds24De(r.id).length + (messagesBeds24De(r.id).some(function (m) { return m.de === 'guest' && !m.lu; }) ? ' · non lu' : '') + '</span> ' : '') +
             (n ? '<span class="badge badge--green num">' + n + '</span>' : (numeroWhatsApp(r.tel) ? '' : '<span class="conv-vide">pas de numéro</span>')) +
           '</span>' +
           '</button>';
@@ -9963,6 +9975,7 @@ function viewOwnerMsg() {
       '</div>' +
     '</div>' +
 
+    carteMessagesBeds24(r) +
     '<div class="card" style="margin-top:20px;padding:22px">' + (fil.length
       ? '<div class="stack" style="gap:10px">' + fil.map(function (m) {
         return '<div class="msg msg--' + (m.sens === 'recu' ? 'in' : 'out') + '">' +
@@ -13352,6 +13365,8 @@ function carteBeds24() {
         biensBeds24().map(function (p) { return p.name; }).join(', ') + ')', true) : '') + '</div>' +
     (b24.msg ? '<p class="sec-note" role="status" style="margin:10px 0 0;color:' + (b24.ok ? 'var(--green-t)' : 'var(--terra-d)') + '">' +
       esc(b24.msg) + '</p>' : '') +
+    (b24Auto.texte ? '<p class="sec-note" style="margin:10px 0 0;color:' + (b24Auto.ok ? 'var(--muted)' : 'var(--terra-d)') + '">' +
+      esc(b24Auto.texte) + '</p>' : '') +
     (b24.bilan ? '<div class="b24-bloc">' + b24.bilan.map(function (l) {
       return '<div style="font:700 14px Figtree,sans-serif">' + esc(l.nom) + '</div>' +
         (l.bilan.detail.length ? '<ul class="sec-note" style="margin:4px 0 0 18px;padding:0">' + l.bilan.detail.map(function (d) {
@@ -13454,7 +13469,7 @@ function fusionnerBeds24(pid, liste) {
     }
 
     var avant = JSON.stringify([connue.montant, connue.plat, connue.guest, connue.guests, connue.mail, connue.tel]);
-    if (brut.montant !== '' && !isNaN(parseFloat(brut.montant))) connue.montant = Math.round(parseFloat(brut.montant));
+    if (brut.montant !== '' && !isNaN(parseFloat(brut.montant))) connue.montant = Math.round(parseFloat(brut.montant) * 100) / 100;
     if ((!connue.plat || connue.plat === 'Direct') && brut.plat !== 'Direct') connue.plat = brut.plat;
     if (brut.guest && nomGeneriqueResa(connue.guest)) connue.guest = brut.guest;
     if (brut.guests && (!connue.guests || connue.guests <= 1)) connue.guests = brut.guests;
@@ -13472,6 +13487,137 @@ function fusionnerBeds24(pid, liste) {
 /** Les logements reliés à Beds24 : ceux dont la fiche porte un numéro de chambre. */
 function biensBeds24() {
   return (state.props || []).filter(function (p) { return !p.gone && String((state.info[p.id] || {}).beds24 || '').trim(); });
+}
+
+/* L'IMPORT BEDS24 SE FAIT TOUT SEUL (session 48, D-230)
+
+   Après l'essai réussi de Marc le 6 novembre, comme la relève iCal (D-133) :
+   à l'ouverture de l'application et au retour au premier plan, APRÈS la
+   relève des calendriers (pour compléter ce qu'elle vient d'apporter), au
+   plus une fois par heure. Il fait aussi servir la clé Beds24, qui se
+   périme après 30 jours sans servir. Son résultat — réussi ou non — est
+   écrit sur la carte Beds24 (règle 4 : un échec doit se voir). */
+var B24_DELAI = 60 * 60 * 1000;
+var b24Auto = { quand: 0, texte: '', ok: true };
+
+function releveAutoBeds24() {
+  if (state.auth !== 'owner' || !biensBeds24().length) return Promise.resolve(0);
+  if (typeof DB === 'undefined' || !DB.estDispo() || !DB.beds24 || !DB.profil()) return Promise.resolve(0);
+  if (b24.encours || (b24Auto.quand && Date.now() - b24Auto.quand < B24_DELAI)) return Promise.resolve(0);
+  b24Auto.quand = Date.now();
+  return DB.beds24('sejours').then(function (j) {
+    var lignes = biensBeds24().map(function (p) {
+      var room = String(state.info[p.id].beds24).trim();
+      return { nom: p.name, bilan: fusionnerBeds24(p.id, (j.sejours || []).filter(function (x) { return String(x.roomId) === room; })) };
+    });
+    var bouge = lignes.some(function (l) { return l.bilan.ajoutes || l.bilan.completes || l.bilan.annules; });
+    if (bouge) save();
+    b24Auto.ok = true;
+    b24Auto.texte = 'Import automatique à ' + nowHM() + ' : ' + lignes.map(function (l) {
+      var b = l.bilan;
+      return l.nom + ' — ' + (b.ajoutes || b.completes || b.annules
+        ? b.ajoutes + ' ajouté(s), ' + b.completes + ' complété(s), ' + b.annules + ' annulé(s)'
+        : 'tout était à jour');
+    }).join(' · ');
+    if (bouge) render();
+    chargerMessagesBeds24();
+    return 1;
+  }, function (err) {
+    b24Auto.ok = false;
+    b24Auto.texte = 'Import automatique à ' + nowHM() + ' : échec — ' + ((err && err.message) || 'Beds24 n’a pas répondu.');
+    render();
+    return 0;
+  });
+}
+
+/* LES MESSAGES AIRBNB / BOOKING, LUS PAR BEDS24 (session 48, D-231)
+
+   Demandé le 6 novembre : *« est-ce qu'on peut connecter les messages ? »*.
+   Première marche : les LIRE dans la rubrique Messages, rangés sous leur
+   séjour. Ils ne sont pas copiés dans le cahier partagé : on les redemande à
+   Beds24 à chaque relève — c'est lui qui les garde, et chaque appareil qui
+   les veut les relit (pas de donnée qui n'existerait que sur un appareil,
+   règle 14). Position d'affichage, hors de `state` (règle 7).
+
+   Un message de Beds24 porte le numéro de sa réservation Beds24 ; on retrouve
+   le séjour de MAISON WARME comme l'import (D-229) : identifiant « b24:… »,
+   sinon mêmes dates dans le logement relié. Un message d'un logement non
+   relié n'est pas montré. */
+var b24Msg = { quand: 0, parResa: {}, total: 0, nonLus: 0, ok: true, texte: '', encours: false };
+var B24_MSG_DELAI = 10 * 60 * 1000;
+
+function chargerMessagesBeds24(force) {
+  if (state.auth !== 'owner' || !biensBeds24().length) return Promise.resolve(0);
+  if (typeof DB === 'undefined' || !DB.estDispo() || !DB.beds24 || !DB.profil()) return Promise.resolve(0);
+  if (b24Msg.encours || (!force && b24Msg.quand && Date.now() - b24Msg.quand < B24_MSG_DELAI)) return Promise.resolve(0);
+  b24Msg.encours = true; if (force) render();
+  return Promise.all([DB.beds24('sejours'), DB.beds24('messages')]).then(function (rep) {
+    var parId = {};
+    (rep[0].sejours || []).forEach(function (b) { parId[b.id] = b; });
+    var parResa = {}, total = 0, nonLus = 0;
+    (rep[1].messages || []).forEach(function (m) {
+      var b = parId[m.bookingId];
+      if (!b) return;
+      var bien = biensBeds24().filter(function (p) { return String(state.info[p.id].beds24).trim() === String(b.roomId); })[0];
+      if (!bien) return;
+      var r = resasOf(bien.id).filter(function (x) { return x.uid === 'b24:' + b.id; })[0] ||
+        resasOf(bien.id).filter(function (x) { return x.statut !== 'annule' && x.start === b.arrivee && x.end === b.depart; })[0];
+      if (!r) return;
+      (parResa[r.id] = parResa[r.id] || []).push(m);
+      total++;
+      if (m.de === 'guest' && !m.lu) nonLus++;
+    });
+    Object.keys(parResa).forEach(function (k) {
+      parResa[k].sort(function (a, b) { return a.quand < b.quand ? -1 : a.quand > b.quand ? 1 : 0; });
+    });
+    b24Msg = { quand: Date.now(), parResa: parResa, total: total, nonLus: nonLus, ok: true, encours: false,
+      texte: total + ' message(s) Airbnb / Booking relevé(s) à ' + nowHM() + (nonLus ? ' · ' + nonLus + ' non lu(s) chez Beds24' : '') };
+    render();
+    return total;
+  }, function (err) {
+    b24Msg.encours = false; b24Msg.ok = false; b24Msg.quand = Date.now();
+    b24Msg.texte = 'Les messages n’ont pas pu être relevés : ' + ((err && err.message) || 'Beds24 n’a pas répondu.');
+    render();
+    return 0;
+  });
+}
+
+function messagesBeds24De(rid) { return (b24Msg.parResa && b24Msg.parResa[rid]) || []; }
+
+/** « 6 nov., 14:32 » à partir de l'heure Beds24 (ISO). */
+function quandMsgBeds24(iso) {
+  // L'heure de Beds24 est universelle (« Z ») : on l'affiche à l'heure de France.
+  var d = new Date(String(iso || ''));
+  if (!isNaN(d.getTime()) && /[zZ]|[+-]\d{2}:?\d{2}$/.test(String(iso))) {
+    var j = d.toLocaleDateString('fr-CA', { timeZone: 'Europe/Paris' });
+    var h = d.toLocaleTimeString('fr-FR', { timeZone: 'Europe/Paris', hour: '2-digit', minute: '2-digit' });
+    return fmtDate(j) + ', ' + h;
+  }
+  var m = /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})/.exec(String(iso || ''));
+  return m ? fmtDate(m[1]) + ', ' + m[2] : String(iso || '');
+}
+
+function carteMessagesBeds24(r) {
+  if (!biensBeds24().length) return '';
+  var l = messagesBeds24De(r.id);
+  return '<div class="card" style="margin-top:20px;padding:22px;border-left:4px solid var(--blue)">' +
+    '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">' +
+      '<h2 class="grow" style="font:700 16px Figtree,sans-serif;margin:0">Messages ' + esc(r.plat) + ' (par Beds24)</h2>' +
+      '<button type="button" class="btn btn--xs" style="background:var(--cream);color:var(--ink-soft)"' +
+        (b24Msg.encours ? ' disabled' : '') + act('b24-messages') + '>' + (b24Msg.encours ? 'Un instant…' : '⟳ Relever') + '</button>' +
+    '</div>' +
+    (b24Msg.texte ? '<p class="sec-note" style="margin:6px 0 0;color:' + (b24Msg.ok ? 'var(--muted)' : 'var(--terra-d)') + '">' + esc(b24Msg.texte) + '</p>' : '') +
+    (l.length ? '<div class="stack" style="gap:10px;margin-top:14px">' + l.map(function (m) {
+      var cote = m.de === 'guest' ? 'in' : 'out';
+      return '<div class="msg msg--' + cote + '"' + (m.de === 'system' ? ' style="opacity:.75"' : '') + '>' +
+        '<div class="msg-t">' + esc(m.texte || (m.piece ? '📎 ' + m.piece : '')) + (m.texte && m.piece ? '<br>📎 ' + esc(m.piece) : '') + '</div>' +
+        '<div class="msg-m num">' + esc((m.de === 'guest' ? r.guest : m.de === 'host' ? 'Toi' : 'Plateforme') + ' · ' + quandMsgBeds24(m.quand)) +
+          (m.de === 'guest' && !m.lu ? ' · non lu' : '') + '</div></div>';
+    }).join('') + '</div>'
+      : '<p class="empty" style="padding:12px 0 0">' + (b24Msg.quand ? 'Aucun message pour ce séjour chez Beds24.' : 'Touche « Relever » pour lire les messages.') + '</p>') +
+    '<p class="sec-note" style="margin:12px 0 0">Lecture seule pour l’instant : pour répondre, utilise encore Airbnb ou Booking. ' +
+      'Répondre d’ici viendra à l’étape suivante.</p>' +
+  '</div>';
 }
 
 function importerBeds24() {
@@ -17369,6 +17515,7 @@ var actions = {
   /* Beds24 (D-228) : rien de tout cela n'est enregistré (règle 7). */
   'b24-etat': function () { b24Appel('etat'); },
   'b24-importer': function () { importerBeds24(); },
+  'b24-messages': function () { chargerMessagesBeds24(true); },
   'b24-sejours': function () { b24Appel('sejours'); },
   'b24-inviter': function () {
     if (!String(b24.code || '').trim()) { b24.ok = false; b24.msg = 'Coller d’abord le code d’invitation.'; render(); return; }
@@ -19566,7 +19713,7 @@ var inputs = {
   'resa-montant': function (el) {
     var f = resaById(el.dataset.rid);
     if (!f) return;
-    f.r.montant = el.value === '' ? null : Math.max(0, parseInt(el.value, 10) || 0);
+    f.r.montant = el.value === '' ? null : Math.max(0, Math.round((parseFloat(String(el.value).replace(',', '.')) || 0) * 100) / 100);
     saisieResa(f.r);
     save();
   },
@@ -20155,7 +20302,7 @@ document.addEventListener('visibilitychange', function () {
     return;
   }
   if (document.visibilityState !== 'visible') return;
-  releveAutoIcal();
+  releveAutoIcal().then(releveAutoBeds24);
 });
 
 // Sauvegarde de sécurité : la frappe en cours n'est pas perdue en quittant la page.
@@ -20275,7 +20422,7 @@ if (cahierPret && !lienRecu) {
           if (restaurerNomsVoyageurs().length) save();
           // Session ouverte d'hier : les calendriers se relèvent sans rien
           // demander, avant même que Marc regarde ses missions (D-133).
-          releveAutoIcal();
+          releveAutoIcal().then(releveAutoBeds24);
         }
       });
     })

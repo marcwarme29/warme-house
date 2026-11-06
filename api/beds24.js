@@ -25,7 +25,7 @@
    documentation, sans jamais avoir vu les vraies réservations de Marc. On
    les regarde d'abord, ensemble ; l'import vient à la marche suivante.
 
-   Trois demandes, toutes réservées au propriétaire (ou à son administrateur) :
+   Quatre demandes, toutes réservées au propriétaire (ou à son administrateur) :
 
      · `etat`      — la clé est-elle posée ? Beds24 l'accepte-t-il ? Quels
                      logements et quelles chambres voit-il ? Quels droits ?
@@ -33,7 +33,11 @@
                      Beds24 (il périme vite) contre la clé permanente, que Marc
                      colle ensuite chez Vercel. Rien n'est gardé ici.
      · `sejours`   — les réservations que Beds24 connaît, en lecture seule,
-                     présentées simplement, pour l'aperçu.
+                     présentées simplement (l'import se fait dans l'application,
+                     D-229) ;
+     · `messages`  — la messagerie Airbnb / Booking des 120 derniers jours, en
+                     lecture seule (D-231). Répondre viendra ensuite, avec une
+                     clé qui en aura le droit.
 
    -----------------------------------------------------------------------------
    CE QU'IL FAUT AVOIR FAIT POUR QUE ÇA MARCHE (une seule fois)
@@ -299,6 +303,29 @@ module.exports = async function handler(req, res) {
     const l = await toutesLesPages(chemin, acces.jeton);
     if (!l.ok) return res.status(502).json(refusBeds24(l.rep, 'sejours'));
     return res.status(200).json({ depuis, jusqua, sejours: l.data.map(presenter) });
+  }
+
+  /* --- messages : la messagerie Airbnb / Booking, en LECTURE (D-231) ------
+     Les 120 derniers jours, tous logements. Les notes internes de l'hôte ne
+     sont pas des messages au voyageur : écartées. Rien n'est marqué « lu »
+     chez Beds24 — lire ici ne change rien là-bas. */
+  if (action === 'messages') {
+    const l = await toutesLesPages('/bookings/messages?maxAge=120', acces.jeton);
+    if (!l.ok) return res.status(502).json(refusBeds24(l.rep, 'messages'));
+    const garde = { guest: 1, host: 1, system: 1 };
+    return res.status(200).json({
+      messages: l.data.filter((m) => m && garde[m.source]).map((m) => ({
+        id: m.id,
+        bookingId: m.bookingId,
+        roomId: m.roomId,
+        propertyId: m.propertyId,
+        quand: String(m.time || ''),
+        de: m.source,
+        lu: m.read === true,
+        texte: String(m.message || '').slice(0, 5000),
+        piece: m.attachmentName ? String(m.attachmentName) : ''
+      }))
+    });
   }
 
   return res.status(400).json({ erreur: 'Demande inconnue : « ' + action + ' ».' });
