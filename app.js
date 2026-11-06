@@ -49,7 +49,7 @@ function isoDate(d) {
 /* La version de l'application, affichée dans les bandeaux d'erreur et sous le
    compte connecté (session 46) : trois fois, un écran resté sur l'ancienne
    version a fait chercher un défaut déjà corrigé. À changer à chaque envoi. */
-var VERSION_APP = '48.3';
+var VERSION_APP = '48.4';
 
 var TODAY = isoDate(new Date());
 var TODAY_LABEL = new Date().toLocaleDateString('fr-FR',
@@ -13265,7 +13265,7 @@ function b24Etat(pid) {
    — et surtout la clé permanente rendue par l'échange du code : elle ne doit
    JAMAIS partir dans `localStorage` ni dans le cahier. Elle s'efface au
    prochain rechargement, une fois collée chez Vercel. */
-var b24 = { encours: '', msg: '', ok: true, etat: null, sejours: null, cle: '', code: '' };
+var b24 = { encours: '', msg: '', ok: true, etat: null, sejours: null, cle: '', code: '', bilan: null };
 
 function b24LogementDe(roomId, propertyId) {
   var r = String(roomId || ''), p = String(propertyId || '');
@@ -13310,8 +13310,8 @@ function carteBeds24() {
   var blocSejours = !l ? '' : '<div class="b24-bloc">' +
     '<div style="font:700 14px Figtree,sans-serif">' + l.sejours.length + ' réservation(s) chez Beds24, du ' +
       esc(fmtDateLongue(l.depuis)) + ' au ' + esc(fmtDateLongue(l.jusqua)) + '</div>' +
-    '<p class="sec-note" style="margin:4px 0 10px">Lecture seule : <strong>rien n’est encore importé</strong> dans ' +
-      'MAISON WARME. C’est ce que nous regarderons ensemble avant d’écrire l’import.</p>' +
+    '<p class="sec-note" style="margin:4px 0 10px">Ce que Beds24 connaît, tel quel. « Importer » le reporte dans tes ' +
+      'séjours, pour les logements reliés seulement.</p>' +
     (l.sejours.length ? '<div class="b24-table">' + l.sejours.map(function (x) {
       var mw = b24LogementDe(x.roomId, x.propertyId);
       var annule = x.statut === 'cancelled', bloque = x.statut === 'black';
@@ -13343,12 +13343,20 @@ function carteBeds24() {
 
   return '<div class="card" style="margin-top:22px;padding:22px;border-left:4px solid var(--blue)">' +
     '<h2 style="font:700 16px Figtree,sans-serif;margin:0 0 4px">🔗 Beds24 → MAISON WARME</h2>' +
-    '<p class="sec-note" style="margin:0 0 12px">Première étape : relier les deux et <strong>regarder</strong> ' +
-      'ce que Beds24 enverrait. Rien n’est importé ni modifié, ni ici, ni chez Beds24.</p>' +
+    '<p class="sec-note" style="margin:0 0 12px">« Importer » complète tes séjours (vrai montant, nom, nombre de ' +
+      'voyageurs, plateforme) et ajoute ceux qui manquent, <strong>seulement pour les logements reliés</strong>. ' +
+      'Il ne change jamais les dates ni ce que tu as saisi toi-même, et n’écrit rien chez Beds24.</p>' +
     '<div style="display:flex;gap:8px;flex-wrap:wrap">' + bouton('b24-etat', 'Vérifier la liaison', true) +
-      bouton('b24-sejours', 'Voir les réservations de Beds24') + '</div>' +
+      bouton('b24-sejours', 'Voir les réservations de Beds24') +
+      (biensBeds24().length ? bouton('b24-importer', 'Importer dans MAISON WARME (' +
+        biensBeds24().map(function (p) { return p.name; }).join(', ') + ')', true) : '') + '</div>' +
     (b24.msg ? '<p class="sec-note" role="status" style="margin:10px 0 0;color:' + (b24.ok ? 'var(--green-t)' : 'var(--terra-d)') + '">' +
       esc(b24.msg) + '</p>' : '') +
+    (b24.bilan ? '<div class="b24-bloc">' + b24.bilan.map(function (l) {
+      return '<div style="font:700 14px Figtree,sans-serif">' + esc(l.nom) + '</div>' +
+        (l.bilan.detail.length ? '<ul class="sec-note" style="margin:4px 0 0 18px;padding:0">' + l.bilan.detail.map(function (d) {
+          return '<li>' + esc(d) + '</li>'; }).join('') + '</ul>' : '<p class="sec-note" style="margin:4px 0 0">Rien à changer : tout était déjà à jour.</p>');
+    }).join('') + '</div>' : '') +
     blocEtat + blocSejours +
     '<details class="b24-details"' + (b24.cle || (b24.msg && !b24.ok && /clé|relié|invitation/.test(b24.msg)) ? ' open' : '') + '>' +
       '<summary>Relier une première fois : le code d’invitation</summary>' +
@@ -13361,6 +13369,140 @@ function carteBeds24() {
         bouton('b24-inviter', 'Échanger le code', true) + '</div>' +
     '</details>' + blocCle +
   '</div>';
+}
+
+/* L'IMPORT BEDS24 → MAISON WARME, LOGEMENT PAR LOGEMENT (session 48, D-229)
+
+   Écrit APRÈS avoir lu les vraies réservations de Marc (D-152), le 6
+   novembre : 11 séjours sur « Appartement cosy », 9 Airbnb au statut « new »
+   (pas « confirmed »), 2 Booking ; montants et adultes/enfants présents ;
+   aucun téléphone ; un seul e-mail ; nom absent sur les séjours d'octobre.
+
+   LE PIÈGE : ces mêmes séjours arrivent DÉJÀ par les liens iCal, sous un
+   autre identifiant (celui du calendrier). Les rapprocher par identifiant
+   doublerait chaque séjour. On les rapproche donc d'abord par l'identifiant
+   Beds24 (`uid` « b24:<numéro> », posé sur les séjours que Beds24 a créés
+   lui-même), puis par les DATES dans le logement : une chambre louée en
+   entier n'a qu'un séjour à la fois sur un créneau donné.
+
+   Ce que l'import fait, et rien de plus :
+     · séjour déjà là → il le COMPLÈTE : le vrai montant, la plateforme si
+       elle était « Direct », le nom s'il n'y en avait pas, le nombre de
+       voyageurs s'il était inconnu (1 par défaut), l'e-mail et le téléphone
+       s'ils manquaient. Jamais les dates (l'iCal et Marc en ont la main),
+       jamais un nom saisi par Marc, jamais un effectif saisi par le voyageur
+       (règles 16 et D-141 : une valeur de remplissage est un vide déguisé) ;
+     · séjour absent → il l'AJOUTE (et son ménage, par `ajouterResa`), sauf
+       s'il est déjà fini ou si Marc l'avait supprimé (D-146, D-181) ;
+     · annulation → il ne retire que le séjour qu'il reconnaît à coup sûr :
+       même identifiant Beds24, ou mêmes dates ET même nom. Sinon il ne touche
+       à rien : une annulation sur un créneau rebooké par quelqu'un d'autre
+       effacerait le mauvais séjour (règle 15 : ne jamais deviner) ;
+     · les périodes bloquées (« black ») ne sont pas des séjours : ignorées.
+
+   Seuls les logements dont la fiche porte le numéro de chambre Beds24
+   (Synchronisation → Beds24) sont concernés — « Appartement cosy » seul pour
+   l'essai, à la demande de Marc. Le montant est celui que Beds24 transmet :
+   pour Airbnb, réglé chez Beds24 sur « versement attendu » (net de frais). */
+var PLAT_BEDS24 = { airbnb: 'Airbnb', airbnbical: 'Airbnb', booking: 'Booking.com' };
+
+function beds24VersResa(x) {
+  var nom = (String(x.prenom || '') + ' ' + String(x.nom || '')).trim();
+  var n = (parseInt(x.adultes, 10) || 0) + (parseInt(x.enfants, 10) || 0);
+  return {
+    uid: 'b24:' + x.id,
+    plat: PLAT_BEDS24[String(x.canal || '').toLowerCase()] || 'Direct',
+    guest: nom,
+    guests: n > 0 ? n : '',
+    start: x.arrivee,
+    end: x.depart,
+    montant: x.prix === null || x.prix === undefined ? '' : x.prix,
+    statut: x.statut === 'cancelled' ? 'annule' : 'confirme',
+    mail: x.email || '',
+    tel: x.telephone || '',
+    arriveePrevue: x.heureArrivee || ''
+  };
+}
+
+function fusionnerBeds24(pid, liste) {
+  var bilan = { ajoutes: 0, completes: 0, annules: 0, inchanges: 0, ignores: 0, detail: [] };
+  liste.forEach(function (x) {
+    if (!x || x.statut === 'black' || x.statut === 'inquiry' || !x.arrivee || !x.depart || x.depart <= x.arrivee) {
+      bilan.ignores++; return;
+    }
+    var brut = beds24VersResa(x);
+    var resas = resasOf(pid);
+    var connue = resas.filter(function (r) { return r.uid === brut.uid; })[0] ||
+      resas.filter(function (r) { return r.statut !== 'annule' && r.start === brut.start && r.end === brut.end; })[0];
+
+    if (brut.statut === 'annule') {
+      var sur = connue && (connue.uid === brut.uid ||
+        (brut.guest && nomSimple(connue.guest) === nomSimple(brut.guest)));
+      if (sur && connue.end >= TODAY) {
+        retirerResa(pid, connue, 'Le voyageur a annulé sa réservation sur ' + brut.plat + ' (Beds24).');
+        bilan.annules++; bilan.detail.push('annulé : ' + fmtDate(brut.start) + ' → ' + fmtDate(brut.end));
+      } else bilan.ignores++;
+      return;
+    }
+
+    if (!connue) {
+      var inc = normaliserResa(brut, 'beds24', pid);
+      if (inc.end < TODAY || sejourOublie(pid, inc.uid) || creneauOublie(pid, inc)) { bilan.ignores++; return; }
+      ajouterResa(pid, inc);
+      bilan.ajoutes++; bilan.detail.push('ajouté : ' + inc.guest + ', ' + fmtDate(inc.start) + ' → ' + fmtDate(inc.end));
+      return;
+    }
+
+    var avant = JSON.stringify([connue.montant, connue.plat, connue.guest, connue.guests, connue.mail, connue.tel]);
+    if (brut.montant !== '' && !isNaN(parseFloat(brut.montant))) connue.montant = Math.round(parseFloat(brut.montant));
+    if ((!connue.plat || connue.plat === 'Direct') && brut.plat !== 'Direct') connue.plat = brut.plat;
+    if (brut.guest && nomGeneriqueResa(connue.guest)) connue.guest = brut.guest;
+    if (brut.guests && (!connue.guests || connue.guests <= 1)) connue.guests = brut.guests;
+    if (brut.mail && !connue.mail) connue.mail = brut.mail;
+    if (brut.tel && !connue.tel) { connue.tel = brut.tel; connue.tel4 = quatreChiffres(brut.tel); }
+    if (brut.arriveePrevue && !connue.arriveePrevue) connue.arriveePrevue = brut.arriveePrevue;
+    if (JSON.stringify([connue.montant, connue.plat, connue.guest, connue.guests, connue.mail, connue.tel]) !== avant) {
+      refletSurMissions(pid, connue);
+      bilan.completes++; bilan.detail.push('complété : ' + connue.guest + ', ' + fmtDate(connue.start) + ' → ' + fmtDate(connue.end));
+    } else bilan.inchanges++;
+  });
+  return bilan;
+}
+
+/** Les logements reliés à Beds24 : ceux dont la fiche porte un numéro de chambre. */
+function biensBeds24() {
+  return (state.props || []).filter(function (p) { return !p.gone && String((state.info[p.id] || {}).beds24 || '').trim(); });
+}
+
+function importerBeds24() {
+  var biens = biensBeds24();
+  if (!biens.length) {
+    b24.ok = false; b24.msg = 'Aucun logement n’est relié : renseigner le numéro de chambre Beds24 dans sa fiche → Synchronisation.';
+    render(); return;
+  }
+  if (typeof DB === 'undefined' || !DB.estDispo() || !DB.beds24) {
+    b24.ok = false; b24.msg = 'Le cahier partagé n’est pas joignable : import impossible d’ici.'; render(); return;
+  }
+  b24.encours = 'b24-importer'; b24.msg = ''; render();
+  DB.beds24('sejours').then(function (j) {
+    b24.sejours = j;
+    var lignes = [];
+    biens.forEach(function (p) {
+      var room = String(state.info[p.id].beds24).trim();
+      var bil = fusionnerBeds24(p.id, (j.sejours || []).filter(function (x) { return String(x.roomId) === room; }));
+      lignes.push({ nom: p.name, bilan: bil });
+    });
+    save();
+    b24.encours = ''; b24.ok = true; b24.bilan = lignes;
+    b24.msg = '✅ Import fait. ' + lignes.map(function (l) {
+      var b = l.bilan;
+      return l.nom + ' : ' + b.ajoutes + ' ajouté(s), ' + b.completes + ' complété(s), ' + b.annules + ' annulé(s), ' +
+        b.inchanges + ' déjà à jour, ' + b.ignores + ' ignoré(s)';
+    }).join(' · ');
+    render();
+  }, function (err) {
+    b24.encours = ''; b24.ok = false; b24.msg = (err && err.message) || 'Beds24 n’a pas pu répondre.'; render();
+  });
 }
 
 function b24Appel(action, extra) {
@@ -17226,6 +17368,7 @@ var actions = {
      enregistré, ce sont des positions d'affichage (règle 7). */
   /* Beds24 (D-228) : rien de tout cela n'est enregistré (règle 7). */
   'b24-etat': function () { b24Appel('etat'); },
+  'b24-importer': function () { importerBeds24(); },
   'b24-sejours': function () { b24Appel('sejours'); },
   'b24-inviter': function () {
     if (!String(b24.code || '').trim()) { b24.ok = false; b24.msg = 'Coller d’abord le code d’invitation.'; render(); return; }
