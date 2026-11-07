@@ -177,14 +177,16 @@ function refusBeds24(rep, quoi) {
 
 /* Le jeton d'une heure, gardé tant que l'instance Vercel reste chaude : inutile
    d'en redemander un à chaque appel (chaque demande coûte des « crédits »). */
-let jetonCache = { valeur: '', jusqua: 0 };
+let jetonCache = { valeur: '', jusqua: 0, cle: '' };
 
 async function jetonBeds24(cle) {
-  if (jetonCache.valeur && Date.now() < jetonCache.jusqua) return { ok: true, jeton: jetonCache.valeur };
+  /* Session 49 bis : la mémoire est liée à LA clé qui l'a obtenue — une clé
+     remplacée chez Vercel ne doit jamais réutiliser le jeton de l'ancienne. */
+  if (jetonCache.valeur && jetonCache.cle === cle && Date.now() < jetonCache.jusqua) return { ok: true, jeton: jetonCache.valeur };
   const rep = await appel('/authentication/token', { refreshToken: cle });
   if (!rep.ok || !rep.j || !rep.j.token) return { ok: false, rep };
   const duree = Math.max(60, (parseInt(rep.j.expiresIn, 10) || 3600) - 120) * 1000;
-  jetonCache = { valeur: rep.j.token, jusqua: Date.now() + duree };
+  jetonCache = { valeur: rep.j.token, jusqua: Date.now() + duree, cle: cle };
   return { ok: true, jeton: rep.j.token };
 }
 
@@ -520,7 +522,10 @@ module.exports = async function handler(req, res) {
     const details = await appel('/authentication/details', { token: acces.jeton });
     const props = await toutesLesPages('/properties?includeAllRooms=true', acces.jeton);
     if (!props.ok) return res.status(502).json(refusBeds24(props.rep, 'etat'));
-    const scopes = details.ok && details.j && Array.isArray(details.j.scopes) ? details.j.scopes : [];
+    /* Session 49 bis : Beds24 range les droits sous `token.scopes` (apiV2.yaml),
+       pas à la racine — d'où « non précisés » jusqu'ici. Les deux sont lus. */
+    const dj = (details.ok && details.j) || {};
+    const scopes = Array.isArray(dj.scopes) ? dj.scopes : (dj.token && Array.isArray(dj.token.scopes) ? dj.token.scopes : []);
     return res.status(200).json({
       relie: true,
       droits: scopes,
