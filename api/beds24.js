@@ -529,6 +529,9 @@ module.exports = async function handler(req, res) {
     return res.status(200).json({
       relie: true,
       droits: scopes,
+      /* Session 49 bis : si les droits restent introuvables, ce que Beds24 dit
+         de la clé, tel quel (aucun secret dedans : propriétaire, dates, droits). */
+      droitsBrut: scopes.length ? '' : (details.ok ? JSON.stringify(dj).slice(0, 600) : 'détails refusés, code ' + details.statut),
       logements: props.data.map((p) => ({
         id: p.id,
         nom: String(p.name || ''),

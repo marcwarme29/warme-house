@@ -49,7 +49,7 @@ function isoDate(d) {
 /* La version de l'application, affichée dans les bandeaux d'erreur et sous le
    compte connecté (session 46) : trois fois, un écran resté sur l'ancienne
    version a fait chercher un défaut déjà corrigé. À changer à chaque envoi. */
-var VERSION_APP = '49.0';
+var VERSION_APP = '49.1';
 
 var TODAY = isoDate(new Date());
 var TODAY_LABEL = new Date().toLocaleDateString('fr-FR',
@@ -13450,7 +13450,8 @@ function carteBeds24() {
 
   var blocEtat = !e ? '' : '<div class="b24-bloc">' +
     '<div style="font:700 14px Figtree,sans-serif;color:var(--green-t)">✅ Beds24 répond : la liaison fonctionne.</div>' +
-    '<div class="sec-note" style="margin:4px 0 8px">Droits accordés : ' + esc((e.droits || []).join(', ') || 'non précisés') + '</div>' +
+    '<div class="sec-note" style="margin:4px 0 8px">Droits accordés : ' + esc((e.droits || []).join(', ') || 'non précisés') +
+      (e.droitsBrut ? ' <span style="font-size:11px;word-break:break-all">— Beds24 : ' + esc(e.droitsBrut) + '</span>' : '') + '</div>' +
     (e.logements || []).map(function (p) {
       return '<div class="b24-log"><strong>' + esc(p.nom) + '</strong> <span class="num">(propriété ' + esc(p.id) + ')</span>' +
         (p.chambres || []).map(function (c) {
