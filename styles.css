@@ -246,6 +246,13 @@ textarea.inp { min-height: 90px; resize: vertical; line-height: 1.5; }
   color: var(--ink);
   box-shadow: 0 1px 3px rgba(36,30,26,.14);
 }
+/* Session 50 (D-236) : les onglets d'une page (Biens & connexions, Messages
+   programmés, Stocks). Plus hauts ; sur téléphone, toute la largeur. */
+.seg--onglets > button { min-height: 44px; font-size: 13.5px; }
+@media (max-width: 620px) {
+  .seg--onglets { display: flex; width: 100%; flex-wrap: nowrap; }
+  .seg--onglets > button { flex: 1; padding: 0 6px; font-size: 12px; text-align: center; line-height: 1.2; }
+}
 
 /* Cartes ------------------------------------------------------------------ */
 
@@ -1874,6 +1881,8 @@ a.kd-flag { display: block; text-decoration: none; }
   display: flex; align-items: center; justify-content: center;
   font: 700 16px Figtree, sans-serif;
 }
+/* Session 50 : la photo du logement, en rond, à la place de l'initiale. */
+.conv-av--photo { object-fit: cover; display: block; background: var(--fill); }
 .conv-top { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
 .conv-n { font: 700 15px Figtree, sans-serif; }
 .conv-s { display: block; font: 500 12.5px Figtree, sans-serif; color: var(--muted); margin-top: 3px; }
@@ -2663,3 +2672,65 @@ button.varchip:hover { background: var(--blue-bg); color: var(--blue-t); }
 .file-l { padding: 12px 0; border-top: 1px solid rgba(36,30,26,.07); }
 .file-l:first-child { border-top: 0; }
 .file-l > summary { cursor: pointer; font: 500 13.5px/1.6 Figtree, sans-serif; list-style-position: outside; min-height: 32px; }
+
+/* ==========================================================================
+   Les entrepôts et ce qu'on emporte à chaque ménage (session 50, D-237)
+   ========================================================================== */
+.ent-carte { padding: 20px 22px; }
+.ent-table { margin-top: 12px; border-top: 1px solid rgba(36,30,26,.08); }
+.ent-ligne {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 0; border-bottom: 1px solid rgba(36,30,26,.06);
+}
+.ent-art { display: block; font: 600 14px Figtree, sans-serif; }
+.ent-sous { display: block; font: 500 11.5px/1.4 Figtree, sans-serif; color: var(--muted2); margin-top: 2px; }
+.ent-prevu { flex: none; font: 600 12px Figtree, sans-serif; color: var(--muted); min-width: 52px; text-align: right; }
+.ent-prevu--bas { color: var(--terra-d); }
+.stepper .ent-q {
+  width: 54px; border: 0; background: transparent; padding: 0;
+  -moz-appearance: textfield; appearance: textfield;
+}
+.stepper .ent-q::-webkit-outer-spin-button,
+.stepper .ent-q::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+
+.kit-carte { padding: 18px 20px; }
+.kit-sec { margin-top: 14px; padding-top: 12px; border-top: 1px solid rgba(36,30,26,.08); }
+.kit-lit {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 4px 4px 4px 11px; border-radius: 999px;
+  background: var(--cream); font: 600 12.5px Figtree, sans-serif; color: var(--ink-soft);
+}
+.kit-lit button {
+  width: 30px; height: 30px; border-radius: 999px; cursor: pointer;
+  font: 600 15px Figtree, sans-serif; color: var(--muted);
+}
+.kit-lit button:hover { background: rgba(36,30,26,.06); }
+.kit-ligne {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 8px 0; border-bottom: 1px solid rgba(36,30,26,.06);
+  font: 500 13.5px Figtree, sans-serif;
+}
+.kit-n { width: 70px; flex: none; }
+.kit-base { width: auto; flex: 1; min-width: 150px; }
+
+.emp-carte { border-left: 4px solid var(--amber-t, #B7791F); }
+.emp-bloc { margin-top: 12px; padding-top: 12px; border-top: 1px solid rgba(36,30,26,.08); }
+.emp-bloc:first-of-type { border-top: 0; padding-top: 0; }
+.emp-lieu { font: 500 14.5px Figtree, sans-serif; }
+.emp-adr { font: 500 12.5px/1.4 Figtree, sans-serif; color: var(--muted); margin-top: 2px; }
+.emp-liste { list-style: none; margin: 10px 0 0; padding: 0; }
+.emp-liste li {
+  display: flex; align-items: baseline; gap: 10px;
+  padding: 7px 0; border-bottom: 1px dashed rgba(36,30,26,.1);
+  font: 500 14.5px Figtree, sans-serif;
+}
+.emp-liste li:last-child { border-bottom: 0; }
+.emp-q { flex: none; min-width: 34px; font: 800 17px Figtree, sans-serif; color: var(--ink); text-align: right; }
+.emp-u { flex: none; font: 500 12px Figtree, sans-serif; color: var(--muted2); }
+.emp-detail { margin-top: 8px; display: flex; flex-direction: column; gap: 8px; }
+.emp-mission { display: flex; gap: 9px; align-items: flex-start; font: 500 12.5px/1.45 Figtree, sans-serif; color: var(--ink-soft); }
+.emp-mission .vignette { margin-top: 2px; }
+.emp-mini { display: block; color: var(--muted); font-size: 12px; }
+.ent-tete { padding: 8px 0; font: 700 11px Figtree, sans-serif; letter-spacing: .05em; text-transform: uppercase; color: var(--muted2); }
+.ent-tete .ent-prevu { font: inherit; color: inherit; }
+.ent-tete-stock { flex: none; width: 128px; text-align: center; }

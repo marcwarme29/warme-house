@@ -49,7 +49,7 @@ function isoDate(d) {
 /* La version de l'application, affichée dans les bandeaux d'erreur et sous le
    compte connecté (session 46) : trois fois, un écran resté sur l'ancienne
    version a fait chercher un défaut déjà corrigé. À changer à chaque envoi. */
-var VERSION_APP = '49.2';
+var VERSION_APP = '50.0';
 
 var TODAY = isoDate(new Date());
 var TODAY_LABEL = new Date().toLocaleDateString('fr-FR',
@@ -628,6 +628,14 @@ function initialState() {
        Beds24. `depuis` (ms) : rien ne part pour un moment antérieur à
        l'allumage. Voyage dans `reglages`, horodaté (`_maj`). */
     envoiBeds24: { actif: false, depuis: 0, _maj: 0 },
+    /* Session 50 (D-237) : les entrepôts et ce qu'on emporte à chaque ménage.
+       Voyagent dans `reglages`, horodatés (`_maj`), lus par les prestataires
+       (script 21). Voir « LES ENTREPÔTS » dans la partie des stocks.
+         entrepots.liste : [{ id, nom, adresse, biens: [pid], liesLe: { pid: ms },
+                              stock: { article: { q, at } } }]
+         trousseaux.biens : { pid: { lits: [{ p: 1|2 }], lignes: [{ k, n, base }] | null } } */
+    entrepots: { liste: [], _maj: 0 },
+    trousseaux: { biens: {}, _maj: 0 },
     reponseEd: null,                  // la réponse en cours d'écriture — état d'écran
     /* Session 45 (D-201) : quelle annonce Airbnb / Booking est quel logement,
        retenu une fois pour toutes (voyage dans `reglages`). */
@@ -1239,6 +1247,20 @@ function upgrade() {
   if (typeof state.envoiBeds24.actif !== 'boolean') state.envoiBeds24.actif = !!state.envoiBeds24.actif;
   if (typeof state.envoiBeds24.depuis !== 'number') state.envoiBeds24.depuis = 0;
   if (typeof state.envoiBeds24._maj !== 'number') state.envoiBeds24._maj = 0;
+  // Session 50 (D-237) — règle 9 : déclarés dans initialState() ET complétés ici.
+  if (!state.entrepots || typeof state.entrepots !== 'object' || Array.isArray(state.entrepots)) state.entrepots = { liste: [], _maj: 0 };
+  if (!Array.isArray(state.entrepots.liste)) state.entrepots.liste = [];
+  if (typeof state.entrepots._maj !== 'number') state.entrepots._maj = 0;
+  state.entrepots.liste.forEach(function (e) {
+    if (!Array.isArray(e.biens)) e.biens = [];
+    if (!e.liesLe || typeof e.liesLe !== 'object') e.liesLe = {};
+    if (!e.stock || typeof e.stock !== 'object' || Array.isArray(e.stock)) e.stock = {};
+    if (typeof e.nom !== 'string') e.nom = 'Entrepôt';
+    if (typeof e.adresse !== 'string') e.adresse = '';
+  });
+  if (!state.trousseaux || typeof state.trousseaux !== 'object' || Array.isArray(state.trousseaux)) state.trousseaux = { biens: {}, _maj: 0 };
+  if (!state.trousseaux.biens || typeof state.trousseaux.biens !== 'object' || Array.isArray(state.trousseaux.biens)) state.trousseaux.biens = {};
+  if (typeof state.trousseaux._maj !== 'number') state.trousseaux._maj = 0;
   if (!state.importAnnonces || typeof state.importAnnonces !== 'object' || Array.isArray(state.importAnnonces)) state.importAnnonces = {};
   if (!state.planStart) state.planStart = premierJourDuMois(TODAY);
   if (state.planProps === undefined) state.planProps = null;
@@ -5659,6 +5681,29 @@ function moisMissionsPresta() {
     : '<p class="sec-note center">Touche un jour pour voir ses missions.</p>');
 }
 
+/* « À EMPORTER » EN TÊTE DE MES MISSIONS (session 50, D-237). Ce que la
+   prestataire doit prendre pour ses ménages du jour — ou de demain, pour
+   préparer la veille —, rangé par lieu de retrait. Le jour choisi est une
+   position d'affichage (règle 7). Rien n'apparaît si elle n'a aucun ménage
+   ces deux jours-là. */
+var emporterJour = 'auj';
+function carteAEmporter() {
+  var jours = [['auj', TODAY, 'Aujourd’hui'], ['dem', jourPlus(TODAY, 1), 'Demain']];
+  var i = emporterJour === 'dem' ? 1 : 0;
+  var kits = kitsDuJour(jours[i][1], state.me);
+  if (!kits.length && !kitsDuJour(jours[1 - i][1], state.me).length) return '';
+  return '<article class="card emp-carte">' +
+    '<div style="font:700 17px Figtree,sans-serif">🧺 À emporter</div>' +
+    '<div class="seg seg--plein" style="margin-top:10px">' + jours.map(function (j) {
+      return '<button type="button" aria-pressed="' + (emporterJour === j[0]) + '"' + act('emporter-jour', { j: j[0] }) + '>' + j[2] + '</button>';
+    }).join('') + '</div>' +
+    (kits.length
+      ? '<p class="sec-note" style="margin:6px 0 0">' + kits.length + ' ménage' + (kits.length > 1 ? 's' : '') + ' · ' +
+          'd’après le nombre de voyageurs qui arrivent ensuite.</p>' + blocAEmporter(kits)
+      : '<p class="sec-note" style="margin:10px 0 0">Aucun ménage ' + (i ? 'demain' : 'aujourd’hui') + '.</p>') +
+  '</article>';
+}
+
 function viewPrestaMes() {
   var annul = annulationsPourMoi().map(carteAnnulation).join('');
   var toutesMiennes = state.missions.filter(function (m) {
@@ -5730,7 +5775,7 @@ function viewPrestaMes() {
 
   return prestaShell(
     prestaHeader(mine.length + ' mission(s) à venir', 'Mes missions'),
-    '<div class="stack">' + vues + annul + cards + aClore + history + '</div>'
+    '<div class="stack">' + vues + annul + carteAEmporter() + cards + aClore + history + '</div>'
   );
 }
 
@@ -5883,6 +5928,10 @@ function viewPrestaDetail() {
         : '') +
       (urgentNote ? '<div style="background:var(--terra-bg2);border-radius:16px;padding:13px 15px;font:600 13px/1.45 Figtree,sans-serif;color:var(--terra-dd)">' + esc(urgentNote) + '</div>' : '') +
       guest +
+      /* Ce qu'on emporte pour CE ménage, et où le prendre (session 50, D-237). */
+      (estMenage(m) && m.status !== 'termine' && m.status !== 'annulee'
+        ? '<div class="card"><h2 style="font:700 14px Figtree,sans-serif;margin:0 0 4px">🧺 À emporter pour ce ménage</h2>' +
+          blocAEmporter([kitMission(m)], { detail: true }) + '</div>' : '') +
       '<div>' +
         '<h2 class="sec-title" style="margin-bottom:8px">Ce qu\'il y a à faire</h2>' +
         '<div class="card card--flush"><div class="list">' +
@@ -9031,7 +9080,14 @@ function viewOwnerMission() {
           : fini ? 'Checklist' : 'Ce qui est déjà arrivé') + '</h2>' + checklist +
       '</section>' +
       '<section style="flex:1;min-width:min(100%,280px);display:flex;flex-direction:column;gap:14px">' +
-        problemesCard + noteCard + suivi + tarifCard + recap + carteCloreMission(m) + quiCard +
+        problemesCard + noteCard + suivi + tarifCard + recap +
+        /* Ce que la prestataire emporte pour ce ménage (session 50, D-237). */
+        (estMenage(m) && m.status !== 'annulee'
+          ? '<div class="card" style="padding:18px 20px"><h2 style="font:700 14px Figtree,sans-serif;margin:0 0 4px">🧺 À emporter</h2>' +
+            blocAEmporter([kitMission(m)], { detail: true }) +
+            '<button type="button" class="btn btn--xs" style="margin-top:10px;background:transparent;color:var(--muted)"' +
+              act('stock-tab', { t: 'entrepots' }) + ' data-nav="1">Régler dans Stocks → Entrepôts</button></div>' : '') +
+        carteCloreMission(m) + quiCard +
         carteMailMission(m) + decision +
         (state.migMsg ? '<p class="sec-note">' + esc(state.migMsg) + '</p>' : '') +
         '<button type="button" class="btn-danger-xs" style="align-self:flex-start"' +
@@ -9967,13 +10023,24 @@ function viewOwnerMsgs() {
         var b24 = messagesBeds24De(r.id);
         var der = b24.length ? b24[b24.length - 1] : null;
         var nonLu = b24.some(function (m) { return m.de === 'guest' && !m.lu; });
-        var quand = r.start > TODAY ? 'arrive le ' + fmtDate(r.start)
-          : r.end < TODAY ? 'parti le ' + fmtDate(r.end) : 'sur place jusqu’au ' + fmtDate(r.end);
+        /* LES DATES DU SÉJOUR, PAS SEULEMENT L'ARRIVÉE (session 50) — demandé
+           par Marc le 7/11. On garde un seul mot d'état quand le voyageur est
+           sur place : c'est la conversation la plus urgente. */
+        var nb = nights(r.start, r.end);
+        var quand = fmtDate(r.start) + ' → ' + fmtDate(r.end) + ' · ' + nb + ' nuit' + (nb > 1 ? 's' : '') +
+          (r.start <= TODAY && r.end >= TODAY ? ' · sur place' : '');
+        /* LA PHOTO DU LOGEMENT EN ROND (session 50), à la place de l'initiale
+           du voyageur : on reconnaît la maison d'un coup d'œil. Repli sur les
+           deux premières lettres du LOGEMENT, comme sur la page Biens. */
+        var photo = state.photosBien[x.pid];
+        var avatar = photo
+          ? '<img class="conv-av conv-av--photo" src="' + esc(photo) + '" alt="' + esc(p.name) + '" title="' + esc(p.name) + '">'
+          : '<span class="conv-av" style="background:' + p.tint + ';color:' + p.color + '" title="' + esc(p.name) + '">' +
+            esc(String(p.short || p.name || '?').slice(0, 2).toUpperCase()) + '</span>';
         var extrait = der ? (der.de === 'host' ? 'Toi : ' : der.de === 'system' ? 'Plateforme : ' : '') +
           String(der.texte || (der.piece ? '📎 ' + der.piece : '')).replace(/\s+/g, ' ').trim() : '';
         return '<button type="button" class="conv' + (nonLu ? ' conv--nonlu' : '') + '"' + act('nav', { path: '#/admin/messages/' + r.id }) + '>' +
-          '<span class="conv-av" style="background:' + p.tint + ';color:' + p.color + '">' +
-            esc(String(r.guest).slice(0, 1).toUpperCase()) + '</span>' +
+          avatar +
           '<span class="grow" style="min-width:0">' +
             '<span class="conv-top"><span class="conv-n">' + esc(r.guest) + '</span>' +
               '<span class="badge" style="background:' + pl.bg + ';color:' + pl.fg + '">' + esc(r.plat) + '</span></span>' +
@@ -10425,15 +10492,32 @@ function viewOwnerAuto() {
       '</article>';
   }).join('');
 
-  return ownerShell('auto',
-    '<div class="page-head">' +
+  /* LE MESSAGE TOUT PRÊT VIT ICI DEPUIS LA SESSION 50 (D-236), dans son
+     propre onglet : c'est un message comme les autres, celui qu'on colle
+     dans les messages automatiques d'Airbnb et de Booking. */
+  var tete = '<div class="page-head">' +
       '<div><h1 class="page-title">Messages programmés</h1>' +
       '<p class="page-sub">' + state.autoMsgs.length + ' message(s) type · ' + envois.length +
         ' envoi(s) prévus dans les 60 jours</p></div>' +
+      (autoOnglet === 'pret' ? '' :
       '<button type="button" class="btn btn--xs" style="' + (state.am ? 'background:var(--cream);color:var(--ink-soft)' : 'background:var(--terra);color:#fff') +
         ';min-height:42px;font-size:13px"' + act(state.am ? 'auto-cancel' : 'auto-new') + '>' +
-        (state.am ? 'Fermer' : '+ Nouveau message') + '</button>' +
+        (state.am ? 'Fermer' : '+ Nouveau message') + '</button>') +
     '</div>' +
+    '<div class="seg seg--onglets" style="margin-top:18px">' +
+      [['regles', '⏱ Mes messages programmés'], ['pret', '✏️ Message tout prêt']].map(function (o) {
+        return '<button type="button" aria-pressed="' + (autoOnglet === o[0]) + '"' + act('auto-onglet', { o: o[0] }) + '>' + o[1] + '</button>';
+      }).join('') + '</div>';
+
+  if (autoOnglet === 'pret') {
+    return ownerShell('auto', tete +
+      '<p class="sec-note" style="margin-top:14px">Le texte copié par les boutons « Message tout prêt » ' +
+        '(Biens & connexions → Liens voyageurs, et la fiche d’un séjour). À coller dans les messages ' +
+        'automatiques de l’annonce sur Airbnb ou Booking, ou à envoyer à un voyageur précis.</p>' +
+      carteMessagesVoyageur());
+  }
+
+  return ownerShell('auto', tete +
 
     (state.am ? formAuto() : '') +
 
@@ -12804,6 +12888,549 @@ function celluleStock(p, a) {
       ' data-pid="' + esc(p.id) + '" data-k="' + esc(a.key) + '"></span>';
 }
 
+/* ==========================================================================
+   LES ENTREPÔTS ET CE QU'ON EMPORTE À CHAQUE MÉNAGE (session 50, D-237)
+   ==========================================================================
+
+   Demandé par Marc le 7 novembre : *« à l'heure actuelle les stocks sont dans
+   chaque logement, je voudrais créer un système où le stock est dans un
+   entrepôt indépendant et le relier aux appartements concernés. Quand la
+   femme de ménage ouvre ses missions du jour, elle voit qu'elle doit aller
+   récupérer les produits dans tel stock (si ce n'est pas celui de
+   l'appartement). L'idéal serait qu'elle voie la liste des produits à
+   prendre pour ses missions de la journée — par exemple 2 voyageurs pour
+   2 lits : 2 draps, 2 housses de couette… — personnalisable pour chaque
+   appartement, sans que ce soit obligatoire. »*
+
+   TROIS PIÈCES, ET UN SYSTÈME EN PARALLÈLE DE L'ANCIEN
+   · Un ENTREPÔT : un nom, une adresse, les logements qu'il sert, et son
+     stock compté (`state.entrepots`). Le stock de chaque logement continue
+     d'exister et de se relever comme avant : rien n'est retiré.
+   · Ce qu'on EMPORTE À CHAQUE MÉNAGE (`state.trousseaux`), par logement et
+     facultatif : ses lits (dans l'ordre où on les fait) et ses lignes —
+     « 1 drap par lit fait », « 2 serviettes par voyageur »… Sans réglage, un
+     réglage de base : 1 lit par voyageur, draps et housse par lit, taie par
+     voyageur, 2 serviettes par voyageur — les articles que la liste de Marc
+     contient vraiment, et rien d'inventé au-delà (règle 5).
+   · La LISTE À EMPORTER, calculée pour chaque ménage d'après le nombre de
+     voyageurs du séjour SUIVANT (c'est pour eux qu'on fait les lits), et
+     rassemblée par lieu de retrait sur le téléphone de la prestataire.
+
+   LE STOCK DE L'ENTREPÔT DESCEND TOUT SEUL, SANS QUE PERSONNE N'ÉCRIVE
+   La prestataire n'écrit jamais dans les réglages (le cahier le lui
+   interdit, et un second écrivain sur une même valeur, c'est la règle 25).
+   On retient donc, pour chaque article, le dernier COMPTAGE (quantité et
+   heure) ; le stock affiché = ce comptage − ce qu'ont emporté les ménages
+   TERMINÉS depuis, chacun selon sa liste. C'est un calcul, refait à chaque
+   affichage : il ne peut ni se perdre ni compter deux fois. Il est écrit
+   « estimé », parce qu'il suppose que la liste a été suivie. Corriger le
+   chiffre, c'est recompter : il repart de là.
+
+   Ce que le téléphone de la prestataire a le droit de lire est fixé par le
+   cahier : le script 21 y ajoute les entrepôts. Tant qu'il n'est pas collé,
+   elle ne SAIT pas où prendre — et on le lui dit, au lieu de lui dire « sur
+   place » à tort (règle 22 : une liste vide est la forme du refus). */
+
+var BASES_KIT = [
+  ['lit', 'par lit fait'], ['lit2', 'par lit double'], ['lit1', 'par lit simple'],
+  ['voyageur', 'par voyageur'], ['sejour', 'par ménage']
+];
+var KIT_DEFAUT = [['draps', 'lit', 1], ['couette', 'lit', 1], ['taies', 'voyageur', 1], ['serviettes', 'voyageur', 2]];
+
+function entrepots() {
+  return state.entrepots && Array.isArray(state.entrepots.liste) ? state.entrepots.liste : [];
+}
+function entrepotParId(id) {
+  return entrepots().find(function (e) { return e.id === id; }) || null;
+}
+/** L'entrepôt qui sert ce logement — un seul à la fois. */
+function entrepotDe(pid) {
+  return entrepots().find(function (e) { return (e.biens || []).indexOf(pid) >= 0; }) || null;
+}
+function articleParCle(k) {
+  return arts().find(function (a) { return a.key === k; }) || null;
+}
+function baseKitLabel(b) {
+  var t = BASES_KIT.find(function (x) { return x[0] === b; });
+  return t ? t[1] : 'par ménage';
+}
+
+function trousseau(pid) {
+  var b = state.trousseaux && state.trousseaux.biens;
+  return b && b[pid] ? b[pid] : null;
+}
+function litsDuBien(pid) {
+  var t = trousseau(pid);
+  return t && Array.isArray(t.lits) ? t.lits : [];
+}
+function kitPersonnalise(pid) {
+  var t = trousseau(pid);
+  return !!(t && Array.isArray(t.lignes));
+}
+/** Les lignes de ce qu'on emporte : celles du logement, ou le réglage de base. */
+function lignesKit(pid) {
+  var t = trousseau(pid);
+  if (t && Array.isArray(t.lignes)) return t.lignes.filter(function (l) { return articleParCle(l.k); });
+  return KIT_DEFAUT.filter(function (d) { return articleParCle(d[0]); })
+    .map(function (d) { return { k: d[0], base: d[1], n: d[2] }; });
+}
+
+/* LES LITS À FAIRE POUR n VOYAGEURS. Les lits décrits se font dans l'ordre
+   de la liste, jusqu'à coucher tout le monde. Sans lits décrits : un lit par
+   voyageur (l'exemple de Marc, « 2 voyageurs pour 2 lits »). Voyageurs
+   inconnus : tous les lits décrits — et rien du tout s'il n'y en a pas,
+   plutôt qu'un chiffre inventé (règle 5). */
+function litsAFaire(pid, n) {
+  var lits = litsDuBien(pid);
+  var connu = n > 0;
+  if (!lits.length) {
+    return connu ? { total: n, doubles: 0, simples: n, places: n, decrits: false, inconnu: false, trop: false } : null;
+  }
+  var pris = [], reste = connu ? n : Infinity;
+  for (var i = 0; i < lits.length && reste > 0; i++) {
+    pris.push(lits[i]);
+    reste -= lits[i].p === 2 ? 2 : 1;
+  }
+  var doubles = pris.filter(function (l) { return l.p === 2; }).length;
+  return {
+    total: pris.length, doubles: doubles, simples: pris.length - doubles,
+    places: pris.reduce(function (s, l) { return s + (l.p === 2 ? 2 : 1); }, 0),
+    decrits: true, inconnu: !connu, trop: connu && reste > 0
+  };
+}
+
+function libelleLits(l) {
+  if (!l) return 'lits : inconnu';
+  var parts = [];
+  if (l.decrits) {
+    if (l.doubles) parts.push(l.doubles + ' lit' + (l.doubles > 1 ? 's' : '') + ' double' + (l.doubles > 1 ? 's' : ''));
+    if (l.simples) parts.push(l.simples + ' lit' + (l.simples > 1 ? 's' : '') + ' simple' + (l.simples > 1 ? 's' : ''));
+  } else {
+    parts.push(l.total + ' lit' + (l.total > 1 ? 's' : ''));
+  }
+  return parts.join(' + ') + (l.inconnu ? ' (tous les lits)' : '') +
+    (l.trop ? ' — plus de voyageurs que de couchages' : '');
+}
+
+/** Pour qui on prépare, en mots : le nombre, ou pourquoi on ne le sait pas. */
+function libelleVoyageurs(kt) {
+  if (kt.n) return kt.n + ' voyageur' + (kt.n > 1 ? 's' : '');
+  return kt.m && kt.m.next ? 'nombre de voyageurs inconnu' : 'pas encore de réservation après';
+}
+
+/** Un ménage, pas une réparation ni un réapprovisionnement. */
+function estMenage(m) {
+  if (!m) return false;
+  return /^menage/.test(String(m.type || '')) || /m[ée]nage/i.test(service(m.type).label || '');
+}
+/** Les voyageurs pour qui on prépare : ceux du séjour qui SUIT le ménage. */
+function voyageursMission(m) {
+  var n = m && m.next ? parseInt(m.next.guests, 10) : NaN;
+  return n > 0 ? n : null;
+}
+
+/** Ce qu'on emporte pour un ménage : { m, pid, n, lits, lignes, ent }.
+    Une quantité `null` veut dire « inconnue » — jamais 0 à la place. */
+function kitMission(m) {
+  var pid = m.prop, n = voyageursMission(m);
+  var lits = litsAFaire(pid, n);
+  var vy = n || (lits && lits.decrits ? lits.places : null);
+  var lignes = lignesKit(pid).map(function (l) {
+    var a = articleParCle(l.k), nb = Math.max(0, Number(l.n) || 0), q = null;
+    if (l.base === 'sejour') q = nb;
+    else if (l.base === 'voyageur') q = vy === null ? null : vy * nb;
+    else if (lits) q = nb * (l.base === 'lit2' ? lits.doubles : l.base === 'lit1' ? lits.simples : lits.total);
+    return { k: l.k, label: a.label, unit: a.unit, q: q };
+  }).filter(function (l) { return l.q === null || l.q > 0; });
+  return { m: m, pid: pid, n: n, lits: lits, lignes: lignes, ent: entrepotDe(pid) };
+}
+
+/** L'addition de plusieurs listes, article par article, dans l'ordre des articles. */
+function additionnerKits(kits) {
+  var tot = {};
+  kits.forEach(function (kt) {
+    kt.lignes.forEach(function (l) {
+      var t = tot[l.k] || (tot[l.k] = { k: l.k, label: l.label, unit: l.unit, q: 0, inconnu: false });
+      if (l.q === null) t.inconnu = true; else t.q += l.q;
+    });
+  });
+  return arts().map(function (a) { return tot[a.key]; }).filter(Boolean);
+}
+
+/** L'heure de fin d'une mission terminée, en millisecondes. Sans heure
+    notée (mission close après coup), midi du jour de la mission. */
+function finMission(m) {
+  var rep = state.reports && state.reports[m.id];
+  var h = rep && /^\d{1,2}:\d{2}/.test(String(rep.fini || '')) ? String(rep.fini).slice(0, 5) : '12:00';
+  if (/^\d:/.test(h)) h = '0' + h.slice(0, 4);
+  var t = Date.parse(m.date + 'T' + h + ':00');
+  return isNaN(t) ? 0 : t;
+}
+
+/* L'ÉTAT DU STOCK D'UN ENTREPÔT, ARTICLE PAR ARTICLE.
+   { k: { compte, at, sorti, menages, inconnus, reste, prevu, prevuInconnu } } */
+function etatEntrepot(e) {
+  var finis = [], prevus = [];
+  var fin7 = jourPlus(TODAY, 7);
+  state.missions.forEach(function (m) {
+    if (!estMenage(m) || (e.biens || []).indexOf(m.prop) < 0) return;
+    if (m.status === 'termine') {
+      var t = finMission(m);
+      if (t > ((e.liesLe || {})[m.prop] || 0)) finis.push({ t: t, kit: kitMission(m) });
+    } else if (m.status !== 'annulee' && m.date >= TODAY && m.date <= fin7) {
+      prevus.push(kitMission(m));
+    }
+  });
+  var cles = {};
+  Object.keys(e.stock || {}).forEach(function (k) { cles[k] = true; });
+  e.biens.forEach(function (pid) { lignesKit(pid).forEach(function (l) { cles[l.k] = true; }); });
+  var prevuTot = {};
+  additionnerKits(prevus).forEach(function (l) { prevuTot[l.k] = l; });
+
+  var out = {};
+  Object.keys(cles).forEach(function (k) {
+    var s = (e.stock || {})[k] || null;
+    var at = s ? s.at || 0 : 0;
+    var sorti = 0, menages = 0, inconnus = 0;
+    finis.forEach(function (f) {
+      if (f.t <= at) return;
+      var l = f.kit.lignes.find(function (x) { return x.k === k; });
+      if (!l) return;
+      if (l.q === null) inconnus++; else { sorti += l.q; menages++; }
+    });
+    var compte = s ? Math.max(0, Number(s.q) || 0) : null;
+    var pv = prevuTot[k];
+    out[k] = {
+      compte: compte, at: at, sorti: sorti, menages: menages, inconnus: inconnus,
+      reste: compte === null ? null : Math.max(0, compte - sorti),
+      prevu: pv ? pv.q : 0, prevuInconnu: !!(pv && pv.inconnu)
+    };
+  });
+  return { articles: out, prevus: prevus };
+}
+
+/** Ce qui manque dans un entrepôt pour les ménages des 7 prochains jours. */
+function manquesEntrepot(e, etat) {
+  etat = etat || etatEntrepot(e);
+  return Object.keys(etat.articles).map(function (k) {
+    var x = etat.articles[k], a = articleParCle(k);
+    if (!a || x.reste === null || !x.prevu || x.prevu <= x.reste) return null;
+    return { k: k, label: a.label, unit: a.unit, manque: x.prevu - x.reste };
+  }).filter(Boolean);
+}
+
+/** Un horodatage lisible : « 7 nov. à 15:20 ». */
+function quandCompte(ms) {
+  if (!ms) return '';
+  var d = new Date(ms);
+  return fmtDate(isoDate(d)) + ' à ' + String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+}
+
+/* LE LIEU OÙ PRENDRE, DIT SANS MENTIR. Sur le téléphone de la prestataire,
+   tant que le script 21 n'est pas collé, le cahier lui cache les entrepôts :
+   on dit « demande au propriétaire », pas « sur place ». */
+function lieuInconnuIci() {
+  return state.auth !== 'owner' && typeof DB !== 'undefined' && DB.estDispo() && DB.entrepotsLisibles() === false;
+}
+
+/** Les ménages d'un jour pour une prestataire, avec ce qu'elle emporte. */
+function kitsDuJour(jour, qui) {
+  return state.missions.filter(function (m) {
+    return m.taker === qui && m.date === jour && m.status !== 'termine' && m.status !== 'annulee' && estMenage(m);
+  }).sort(function (a, b) { return a.prop < b.prop ? -1 : a.prop > b.prop ? 1 : 0; }).map(kitMission);
+}
+
+/* LA LISTE À EMPORTER, RANGÉE PAR LIEU DE RETRAIT : un bloc par entrepôt
+   (avec son adresse), un bloc « sur place » pour les logements qui gardent
+   leur linge, et sous chaque bloc le détail par ménage. Sert sur le
+   téléphone de la prestataire (« Mes missions ») et dans le détail d'une
+   mission, chez elle comme chez le propriétaire. */
+function blocAEmporter(kits, opts) {
+  opts = opts || {};
+  if (!kits.length) return '';
+  var inconnu = lieuInconnuIci();
+  var groupes = [], parCle = {};
+  kits.forEach(function (kt) {
+    var cle = inconnu ? '?' : kt.ent ? kt.ent.id : '';
+    var g = parCle[cle];
+    if (!g) { g = parCle[cle] = { cle: cle, ent: inconnu ? null : kt.ent, kits: [] }; groupes.push(g); }
+    g.kits.push(kt);
+  });
+  groupes.sort(function (a, b) { return (a.ent ? 0 : 1) - (b.ent ? 0 : 1); });
+
+  return groupes.map(function (g) {
+    var tot = additionnerKits(g.kits);
+    var titre = g.cle === '?'
+      ? '<div class="emp-lieu">📦 Où prendre : <strong>demande au propriétaire</strong></div>' +
+        '<div class="emp-adr">Le lieu de retrait n’est pas encore visible sur ton téléphone.</div>'
+      : g.ent
+      ? '<div class="emp-lieu">📦 À prendre à <strong>' + esc(g.ent.nom) + '</strong></div>' +
+        (g.ent.adresse ? '<div class="emp-adr">' + esc(g.ent.adresse) + '</div>' : '')
+      : '<div class="emp-lieu">🏠 <strong>Sur place</strong>, dans le logement</div>';
+    var plusieurs = g.kits.length > 1;
+    var detail = '<div class="emp-detail">' + g.kits.map(function (kt) {
+      var p = prop(kt.pid);
+      return '<div class="emp-mission">' + vignetteBien(kt.pid, p.color, 's') +
+        '<span class="grow"><strong>' + esc(p.name || p.short) + '</strong> · ' +
+          esc(libelleVoyageurs(kt)) + ' · ' + esc(libelleLits(kt.lits)) +
+          (plusieurs && kt.lignes.length ? '<span class="emp-mini">' + esc(kt.lignes.map(function (l) {
+            return (l.q === null ? '?' : l.q) + ' ' + l.label;
+          }).join(' · ')) + '</span>' : '') +
+        '</span></div>';
+    }).join('') + '</div>';
+    return '<div class="emp-bloc">' + titre + detail +
+      (tot.length ? '<ul class="emp-liste">' + tot.map(function (l) {
+        return '<li><span class="emp-q num">' + (l.inconnu ? (l.q ? l.q + ' + ?' : '?') : l.q) + '</span>' +
+          '<span class="grow">' + esc(l.label) + '</span><span class="emp-u">' + esc(l.unit) + '</span></li>';
+      }).join('') + '</ul>'
+        : '<p class="sec-note" style="margin:8px 0 0">Rien à emporter d’après les réglages.</p>') +
+      (g.kits.some(function (kt) { return kt.lignes.some(function (l) { return l.q === null; }); })
+        ? '<p class="sec-note" style="margin:8px 0 0">« ? » : on ne sait pas encore pour combien de voyageurs préparer. ' +
+          (state.auth === 'owner' ? 'Renseigne le nombre dans la réservation suivante, ou décris les lits du logement (Stocks → Entrepôts).'
+            : 'Demande au propriétaire.') + '</p>' : '') +
+    '</div>';
+  }).join('');
+}
+
+/* L'ONGLET « ENTREPÔTS » DES STOCKS (session 50, D-237). Trois parties :
+   les entrepôts (logements reliés, stock estimé, ce que demandent les
+   7 prochains jours), ce qu'on emporte à chaque ménage logement par
+   logement, et les ménages des 7 prochains jours avec leur liste.
+   Les formulaires ouverts sont des positions d'affichage (règle 7). */
+var entForm = null;                // { id: '' | id, nom, adresse } — l'entrepôt en cours d'écriture
+var entTous = {};                  // { entrepôt: true } — afficher tous les articles
+var kitOuvert = {};                // { logement: true } — réglage du logement déplié
+
+function formEntrepot() {
+  var f = entForm;
+  return '<div class="card pop" style="margin-top:16px;padding:22px">' +
+    '<h2 style="font:700 16px Figtree,sans-serif;margin:0 0 4px">' + (f.id ? 'Modifier l’entrepôt' : 'Nouvel entrepôt') + '</h2>' +
+    '<p class="sec-note" style="margin:0 0 14px">Un garage, une cave, un local : l’endroit où la prestataire ' +
+      'passe prendre le linge et les produits avant ses ménages. L’adresse s’affiche sur son téléphone.</p>' +
+    '<div class="cols" style="gap:14px">' +
+      '<div style="flex:1;min-width:200px"><label class="lab" for="ent-nom">Nom</label>' +
+        '<input class="inp" id="ent-nom" type="text" placeholder="Ex. Garage de Brest" value="' + esc(f.nom) + '" data-fid="ent-nom" data-in="ent-nom"></div>' +
+      '<div style="flex:2;min-width:220px"><label class="lab" for="ent-adr">Adresse, et comment y entrer</label>' +
+        '<input class="inp" id="ent-adr" type="text" placeholder="Ex. 12 rue de Siam, box n° 4 — clé dans la boîte" value="' + esc(f.adresse) + '" data-fid="ent-adr" data-in="ent-adr"></div>' +
+    '</div>' +
+    '<div style="display:flex;gap:10px;align-items:center;margin-top:16px;flex-wrap:wrap">' +
+      '<button type="button" class="btn btn--primary btn--sm"' + act('ent-enregistrer') + '>' + (f.id ? 'Enregistrer' : 'Créer l’entrepôt') + '</button>' +
+      '<button type="button" class="btn btn--sm" style="background:transparent;color:var(--muted)"' + act('ent-annuler') + '>Annuler</button>' +
+      (entFormMsg ? '<span class="sec-note" style="color:var(--terra-d)">' + esc(entFormMsg) + '</span>' : '') +
+    '</div></div>';
+}
+var entFormMsg = '';
+
+function carteEntrepot(e) {
+  var etat = etatEntrepot(e);
+  var manques = manquesEntrepot(e, etat);
+  var tous = !!entTous[e.id];
+  var liste = tous ? arts() : arts().filter(function (a) { return etat.articles[a.key]; });
+
+  var biens = '<div class="perm-row" style="border:0;padding:0;margin-top:12px">' +
+    '<span class="perm-label">Logements servis :</span>' +
+    state.props.filter(function (p) { return !p.gone; }).map(function (p) {
+      var on = e.biens.indexOf(p.id) >= 0;
+      var ailleurs = !on && entrepotDe(p.id);
+      return '<button type="button" class="perm-chip" aria-pressed="' + on + '" style="--accent:' + p.color + '"' +
+        ' title="' + esc(ailleurs ? 'Servi aujourd’hui par « ' + ailleurs.nom + ' » : le cocher ici le change d’entrepôt.' : p.name) + '"' +
+        act('ent-bien', { id: e.id, pid: p.id }) + '>' +
+        '<span class="checkbox-sq' + (on ? ' checkbox-sq--on' : '') + '" style="--accent:' + p.color + '"></span>' +
+        esc(p.short) + (ailleurs ? ' <span style="color:var(--muted2);font-weight:500">(' + esc(ailleurs.nom) + ')</span>' : '') + '</button>';
+    }).join('') + '</div>';
+
+  var lignes = liste.length ? liste.map(function (a) {
+    var x = etat.articles[a.key] || { compte: null, reste: null, sorti: 0, menages: 0, inconnus: 0, prevu: 0, prevuInconnu: false };
+    var bas = x.reste !== null && x.prevu > x.reste;
+    var fid = 'eq-' + e.id + '-' + a.key;
+    return '<div class="ent-ligne">' +
+      '<span class="grow" style="min-width:0">' +
+        '<span class="ent-art">' + esc(a.label) + '</span>' +
+        '<span class="ent-sous num">' + esc(a.unit) +
+          (x.compte === null ? ' · pas encore compté'
+            : ' · compté ' + x.compte + ' le ' + esc(quandCompte(x.at)) +
+              (x.sorti ? ' · ' + x.sorti + ' emporté' + (x.sorti > 1 ? 's' : '') + ' depuis (' + x.menages + ' ménage' + (x.menages > 1 ? 's' : '') + ')' : '') +
+              (x.inconnus ? ' · ' + x.inconnus + ' ménage(s) sans nombre de voyageurs, non déduits' : '')) +
+        '</span></span>' +
+      '<span class="ent-prevu num' + (bas ? ' ent-prevu--bas' : '') + '" title="Ce que demandent les ménages des 7 prochains jours">' +
+        (x.prevu || x.prevuInconnu ? x.prevu + (x.prevuInconnu ? ' + ?' : '') : '—') + '</span>' +
+      '<span class="stepper stepper--sm">' +
+        '<button type="button" aria-label="Un de moins : ' + esc(a.label) + '"' + act('ent-step', { id: e.id, k: a.key, d: -1 }) + '>−</button>' +
+        '<input class="val num ent-q' + (x.reste === null ? '' : x.reste === 0 ? ' cell-q--zero' : bas ? ' cell-q--low' : '') + '" type="number" min="0" inputmode="numeric"' +
+          ' value="' + (x.reste === null ? '' : x.reste) + '" placeholder="—" aria-label="' + esc(a.label + ' en stock à ' + e.nom) + '"' +
+          ' data-fid="' + esc(fid) + '" data-ch="ent-qty" data-id="' + esc(e.id) + '" data-k="' + esc(a.key) + '">' +
+        '<button type="button" aria-label="Un de plus : ' + esc(a.label) + '"' + act('ent-step', { id: e.id, k: a.key, d: 1 }) + '>+</button>' +
+      '</span>' +
+    '</div>';
+  }).join('') : '<p class="empty" style="padding:14px 0">Aucun article suivi. Relie un logement ou affiche tous les articles.</p>';
+
+  return '<article class="card ent-carte">' +
+    '<div style="display:flex;gap:10px;align-items:flex-start;flex-wrap:wrap">' +
+      '<div class="grow" style="min-width:200px">' +
+        '<div style="font:700 17px Figtree,sans-serif">📦 ' + esc(e.nom) + '</div>' +
+        (e.adresse ? '<div class="sec-note" style="margin-top:2px">' + esc(e.adresse) + '</div>' : '') +
+      '</div>' +
+      '<button type="button" class="btn btn--xs" style="background:var(--cream);color:var(--ink-soft)"' + act('ent-modifier', { id: e.id }) + '>Modifier</button>' +
+      '<button type="button" class="btn-danger-xs"' + act('ent-supprimer', { id: e.id }) + '>Supprimer</button>' +
+    '</div>' +
+    biens +
+    (manques.length ? '<div class="alert alert--terra" style="margin-top:14px"><div class="det">⚠️ <strong>Pas assez pour les 7 prochains jours</strong> : ' +
+      esc(manques.map(function (m) { return 'il manque ' + m.manque + ' ' + m.label; }).join(' · ')) + '.</div></div>'
+      : (e.biens.length && etat.prevus.length ? (function () {
+          var flous = etat.prevus.filter(function (kt) { return kt.lignes.some(function (l) { return l.q === null; }); }).length;
+          var nets = etat.prevus.length - flous;
+          return '<p class="sec-note" style="margin:12px 0 0;color:' + (flous ? 'var(--amber-t)' : 'var(--green-t)') + '">' +
+            (nets ? '✓ De quoi faire ' + (nets > 1 ? 'les ' + nets + ' ménages' : 'le ménage') + ' des 7 prochains jours' +
+              (flous ? '. ' : '.') : '') +
+            (flous ? (flous > 1 ? flous + ' autres ménages' : (nets ? 'Un autre ménage' : 'Un ménage')) +
+              ' sans nombre de voyageurs connu : « ? » dans la colonne du besoin.' : '') + '</p>';
+        })() : '')) +
+    '<div class="ent-table">' +
+      (liste.length ? '<div class="ent-ligne ent-tete"><span class="grow">Article</span>' +
+        '<span class="ent-prevu">Besoin 7 j</span><span class="ent-tete-stock">En stock (estimé)</span></div>' : '') +
+      lignes + '</div>' +
+    '<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:10px">' +
+      '<button type="button" class="btn btn--xs" style="background:transparent;color:var(--muted)"' + act('ent-tous', { id: e.id }) + '>' +
+        (tous ? 'N’afficher que les articles suivis' : 'Afficher tous les articles') + '</button>' +
+      '<span class="sec-note">Le chiffre est <strong>estimé</strong> : ton dernier comptage, moins ce qu’ont emporté ' +
+        'les ménages terminés depuis. Le corriger, c’est recompter.</span>' +
+    '</div>' +
+  '</article>';
+}
+
+/* CE QU'ON EMPORTE À CHAQUE MÉNAGE, POUR UN LOGEMENT. Facultatif : sans
+   réglage, le réglage de base s'applique et on le montre tel quel. */
+function carteKitBien(p) {
+  var pid = p.id;
+  var lits = litsDuBien(pid);
+  var perso = kitPersonnalise(pid);
+  var ent = entrepotDe(pid);
+  var ouvert = !!kitOuvert[pid];
+  var lignes = lignesKit(pid);
+  var ex = litsAFaire(pid, 2);
+  var exemple = kitMission({ prop: pid, type: 'menage', next: { guests: 2 } });
+
+  var tete = '<div style="display:flex;gap:10px;align-items:center">' +
+    vignetteBien(pid, p.color, 'l') +
+    '<div class="grow" style="min-width:0"><div style="font:700 15px Figtree,sans-serif">' + esc(p.name) + '</div>' +
+      '<div class="sec-note" style="margin:2px 0 0">' + (ent ? '📦 ' + esc(ent.nom) : '🏠 Linge et produits sur place') +
+        ' · ' + (perso || lits.length ? 'réglage du logement' : 'réglage de base') + '</div></div>' +
+    '<button type="button" class="btn btn--xs" style="background:var(--cream);color:var(--ink-soft)"' + act('kit-ouvrir', { pid: pid }) + '>' +
+      (ouvert ? 'Fermer' : 'Régler') + '</button>' +
+  '</div>';
+
+  var resume = '<p class="sec-note" style="margin:10px 0 0">Pour <strong>2 voyageurs</strong> : ' + esc(libelleLits(ex)) +
+    (exemple.lignes.length ? ' — ' + esc(exemple.lignes.map(function (l) { return (l.q === null ? '?' : l.q) + ' ' + l.label; }).join(', ')) : '') + '.</p>';
+
+  if (!ouvert) return '<div class="card kit-carte">' + tete + resume + '</div>';
+
+  var blocLits = '<div class="kit-sec"><div class="lab" style="margin:0">Les lits, dans l’ordre où on les fait</div>' +
+    '<div class="chiprow" style="margin-top:8px;gap:6px">' +
+    (lits.length ? lits.map(function (l, i) {
+      return '<span class="kit-lit">' + (i + 1) + '. ' + (l.p === 2 ? 'Lit double' : 'Lit simple') +
+        '<button type="button" aria-label="Retirer ce lit"' + act('kit-lit-retirer', { pid: pid, i: i }) + '>×</button></span>';
+    }).join('') : '<span class="sec-note" style="margin:0">Non décrits : <strong>un lit par voyageur</strong>.</span>') +
+    '</div>' +
+    '<div class="chiprow" style="margin-top:8px;gap:6px">' +
+      '<button type="button" class="btn btn--xs" style="background:var(--cream);color:var(--ink-soft)"' + act('kit-lit', { pid: pid, p: 2 }) + '>+ Lit double</button>' +
+      '<button type="button" class="btn btn--xs" style="background:var(--cream);color:var(--ink-soft)"' + act('kit-lit', { pid: pid, p: 1 }) + '>+ Lit simple</button>' +
+    '</div>' +
+    '<p class="sec-note" style="margin:6px 0 0">Avec 3 voyageurs et « lit double, lit simple, lit simple », on fait le lit double et un lit simple.</p></div>';
+
+  var blocLignes = '<div class="kit-sec"><div class="lab" style="margin:0">Ce qu’on emporte</div>' +
+    lignes.map(function (l, i) {
+      var a = articleParCle(l.k);
+      if (!perso) {
+        return '<div class="kit-ligne"><span class="grow">' + esc(a.label) + '</span>' +
+          '<span class="num" style="font:600 13px Figtree,sans-serif">' + l.n + ' ' + esc(baseKitLabel(l.base)) + '</span></div>';
+      }
+      return '<div class="kit-ligne">' +
+        '<span class="grow" style="min-width:110px">' + esc(a.label) + '</span>' +
+        '<input class="inp num kit-n" type="number" min="0" step="1" value="' + esc(l.n) + '" aria-label="Combien de ' + esc(a.label) + '"' +
+          ' data-fid="kit-n-' + esc(pid) + '-' + i + '" data-ch="kit-n" data-pid="' + esc(pid) + '" data-i="' + i + '">' +
+        '<select class="inp kit-base" aria-label="Compté comment" data-fid="kit-b-' + esc(pid) + '-' + i + '" data-ch="kit-base" data-pid="' + esc(pid) + '" data-i="' + i + '">' +
+          BASES_KIT.map(function (b) { return '<option value="' + b[0] + '"' + (l.base === b[0] ? ' selected' : '') + '>' + esc(b[1]) + '</option>'; }).join('') +
+        '</select>' +
+        '<button type="button" class="x-btn" aria-label="Retirer ' + esc(a.label) + '"' + act('kit-ligne-retirer', { pid: pid, i: i }) + '>×</button>' +
+      '</div>';
+    }).join('') +
+    (perso
+      ? '<select class="inp" style="margin-top:10px" aria-label="Ajouter un article" data-fid="kit-ajout-' + esc(pid) + '" data-ch="kit-ajout" data-pid="' + esc(pid) + '">' +
+          '<option value="">+ Ajouter un article…</option>' +
+          grouped().map(function (g) {
+            return '<optgroup label="' + esc(g[0]) + '">' + g[1].filter(function (a) {
+              return !lignes.some(function (l) { return l.k === a.key; });
+            }).map(function (a) { return '<option value="' + esc(a.key) + '">' + esc(a.label) + '</option>'; }).join('') + '</optgroup>';
+          }).join('') + '</select>' +
+        '<button type="button" class="btn btn--xs" style="margin-top:10px;background:transparent;color:var(--muted)"' + act('kit-defaut', { pid: pid }) + '>Revenir au réglage de base</button>'
+      : '<button type="button" class="btn btn--xs" style="margin-top:10px;background:var(--terra);color:#fff"' + act('kit-perso', { pid: pid }) + '>Personnaliser pour ce logement</button>') +
+  '</div>';
+
+  return '<div class="card kit-carte">' + tete + resume + blocLits + blocLignes + '</div>';
+}
+
+/** Le réglage d'un logement, créé au premier geste. */
+function trousseauEcrit(pid) {
+  if (!state.trousseaux.biens[pid]) state.trousseaux.biens[pid] = { lits: [], lignes: null };
+  var t = state.trousseaux.biens[pid];
+  if (!Array.isArray(t.lits)) t.lits = [];
+  return t;
+}
+/** Un réglage revenu à la base (aucun lit, aucune ligne) disparaît. */
+function nettoyerTrousseau(pid) {
+  var t = state.trousseaux.biens[pid];
+  if (t && !(t.lits || []).length && !Array.isArray(t.lignes)) delete state.trousseaux.biens[pid];
+  state.trousseaux._maj = Date.now();
+}
+
+function viewStockEntrepots() {
+  var liste = entrepots();
+  var manque21 = typeof DB !== 'undefined' && DB.estDispo() && DB.entrepotsLisibles() === false && liste.length;
+
+  var intro = '<div class="alert alert--blue" style="margin-top:20px"><div class="det">' +
+    '<strong>Un entrepôt</strong>, c’est une réserve à part — garage, cave, local — d’où la prestataire emporte ' +
+    'le linge et les produits pour les ménages des logements qui y sont reliés. Sur son téléphone, « Mes missions » ' +
+    'lui dit <strong>où passer</strong> et <strong>quoi prendre</strong>, d’après le nombre de voyageurs. Le stock de chaque ' +
+    'logement continue de fonctionner comme avant, en parallèle.</div></div>';
+
+  var alerte21 = manque21 ? '<div class="alert alert--amber" style="margin-top:12px"><div class="det">⚠️ <strong>Tes prestataires ne voient pas encore ' +
+    'tes entrepôts</strong> : il faut coller le script <strong>21-entrepots.sql</strong> dans Supabase (SQL Editor → New query → Run). ' +
+    'En attendant, leur téléphone leur dit de te demander où prendre.</div></div>' : '';
+
+  var cartes = (entForm ? formEntrepot() : '') +
+    (liste.length ? '<div class="stack" style="margin-top:16px;gap:14px">' + liste.map(carteEntrepot).join('') + '</div>'
+      : (entForm ? '' : '<p class="empty" style="margin-top:16px">Aucun entrepôt pour l’instant.</p>')) +
+    (entForm ? '' : '<button type="button" class="btn btn--dark btn--sm" style="margin-top:14px"' + act('ent-nouveau') + '>+ Ajouter un entrepôt</button>');
+
+  var kits = '<h2 class="sec-title" style="margin-top:28px">Ce qu’on emporte à chaque ménage</h2>' +
+    '<p class="sec-note" style="margin:-4px 0 12px">Facultatif. Calculé pour les voyageurs du séjour <strong>qui suit</strong> le ménage. ' +
+      'Sans réglage : un lit par voyageur, draps et housse de couette par lit, une taie et deux serviettes par voyageur.</p>' +
+    '<div class="grid-cards">' + state.props.filter(function (p) { return !p.gone; }).map(carteKitBien).join('') + '</div>';
+
+  // Les ménages des 7 prochains jours, avec ce qu'ils demandent.
+  var fin7 = jourPlus(TODAY, 7);
+  var prochains = state.missions.filter(function (m) {
+    return estMenage(m) && m.status !== 'termine' && m.status !== 'annulee' && m.date >= TODAY && m.date <= fin7;
+  }).sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : 0; }).map(kitMission);
+  var lieu = function (kt) { return kt.ent ? '📦 ' + kt.ent.nom : '🏠 sur place'; };
+  var tableau = '<h2 class="sec-title" style="margin-top:28px">Les ménages des 7 prochains jours</h2>' +
+    (prochains.length ? '<div class="card" style="padding:0;overflow:hidden"><div class="list">' + prochains.map(function (kt) {
+      var p = prop(kt.pid);
+      return '<div class="list-row" style="align-items:flex-start">' +
+        vignetteBien(kt.pid, p.color, 's') +
+        '<div class="grow" style="min-width:0">' +
+          '<div style="font:600 14px Figtree,sans-serif">' + esc(jourLabel(kt.m.date)) + ' · ' + esc(p.short || p.name) +
+            ' <span class="sec-note" style="margin:0">· ' + esc(nomPreneur(kt.m)) + '</span></div>' +
+          '<div class="num" style="font:500 12px Figtree,sans-serif;color:var(--muted);margin-top:2px">' +
+            esc(libelleVoyageurs(kt)) + ' · ' + esc(libelleLits(kt.lits)) + ' · ' + esc(lieu(kt)) + '</div>' +
+          '<div class="num" style="font:500 12px Figtree,sans-serif;color:var(--ink-soft);margin-top:3px">' +
+            esc(kt.lignes.map(function (l) { return (l.q === null ? '?' : l.q) + ' ' + l.label; }).join(' · ') || 'rien à emporter') + '</div>' +
+        '</div></div>';
+    }).join('') + '</div></div>' : '<p class="empty">Aucun ménage prévu dans les 7 prochains jours.</p>');
+
+  return intro + alerte21 + cartes + kits + tableau;
+}
+
 /* UN LOGEMENT À LA FOIS — LA SAISIE DE STOCK PENSÉE POUR LE TÉLÉPHONE (session 30, D-158).
 
    Signalé par Marc : le tableau « Par bien » (une colonne par logement) est
@@ -12929,6 +13556,8 @@ function viewOwnerStocks() {
       }).join('') + '</div>' + formNewArticle();
   } else if (onglet === 'unbien') {
     content = viewStockUnBien();
+  } else if (onglet === 'entrepots') {
+    content = viewStockEntrepots();     // session 50, D-237
   } else {
     /* Biens retenus pour les courses. Tant que rien n'a été décoché, ils y sont tous. */
     var choisis = coursesPropIds();
@@ -13026,7 +13655,7 @@ function viewOwnerStocks() {
     '<div class="page-head">' +
       '<div><h1 class="page-title">Stocks</h1>' +
       '<p class="page-sub">Dernier relevé du prestataire. Ajuste le seuil de chaque article pour piloter la liste de courses.</p></div>' +
-      '<div class="seg">' + [['matrice', 'Tableau'], ['unbien', 'Un logement à la fois'], ['courses', 'Liste de courses']].map(function (t) {
+      '<div class="seg">' + [['matrice', 'Tableau'], ['unbien', 'Un logement à la fois'], ['courses', 'Liste de courses'], ['entrepots', '📦 Entrepôts']].map(function (t) {
         return '<button type="button" aria-pressed="' + (onglet === t[0]) + '"' + act('stock-tab', { t: t[0] }) + '>' + t[1] + '</button>';
       }).join('') + '</div>' +
     '</div>' + content);
@@ -13132,18 +13761,45 @@ function viewOwnerBiens() {
       '</div>' +
     '</div>';
 
+  /* BIENS & CONNEXIONS EN TROIS ONGLETS (session 50, D-236)
+
+     Demandé le 7/11 : *« la première page commence à être bien remplie,
+     faudrait ranger un peu tout ça intelligemment »*. Six blocs s'empilaient
+     les uns sous les autres — les logements, les liens, le message tout prêt,
+     Beds24, l'import de fichier, les connexions. On les range par usage :
+       · Logements — ce qu'on ouvre tous les jours ;
+       · Liens voyageurs — ce qu'on colle dans Airbnb et Booking ;
+       · Connexions — Beds24, l'import d'un fichier, d'où viennent les séjours.
+     Le texte du « message tout prêt » part dans « Messages programmés », avec
+     les autres messages (demandé : « le mettre dans message programmé »).
+     L'onglet ouvert est une position d'affichage, hors de `state` (règle 7). */
+  var onglet = biensOnglet;
+  var onglets = '<div class="seg seg--onglets" style="margin-top:18px">' +
+    [['logements', '🏠 Logements'], ['liens', '🔗 Liens voyageurs'], ['connexions', '🔌 Connexions']].map(function (o) {
+      return '<button type="button" aria-pressed="' + (onglet === o[0]) + '"' + act('biens-onglet', { o: o[0] }) + '>' + o[1] + '</button>';
+    }).join('') + '</div>';
+
+  var contenu = onglet === 'liens'
+    ? carteLiensParLogement() +
+      '<div class="alert alert--blue" style="margin-top:16px"><div class="det" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">' +
+        '<span class="grow">✏️ Le <strong>texte</strong> copié par « Message tout prêt » se règle désormais dans ' +
+          '<strong>Messages programmés</strong>, avec tes autres messages.</span>' +
+        '<button type="button" class="btn btn--xs" style="background:#fff;color:var(--ink-soft)"' +
+          act('msg-modifier', { k: 'bien' }) + '>Modifier le texte →</button></div></div>'
+    : onglet === 'connexions'
+    ? carteBeds24() + carteImport() + carteConnexions()
+    : form + '<div class="grid-cards" style="margin-top:18px">' +
+        (cards || '<p class="empty">Aucun bien. Ajoutez le premier ci-dessus.</p>') + '</div>';
+
   return ownerShell('biens',
     '<div class="page-head">' +
       '<div><h1 class="page-title">Biens & connexions</h1>' +
       '<p class="page-sub">Checklist, tarifs, réservations, livret d\'accueil et connexions — pour chaque logement.</p></div>' +
-      '<button type="button" class="btn btn--xs" style="' + (state.showNewBien ? 'background:var(--cream);color:var(--ink-soft)' : 'background:var(--terra);color:#fff') +
-        ';min-height:42px;font-size:13px"' + act('toggle-new-bien') + '>' +
-        (state.showNewBien ? 'Fermer' : '+ Ajouter un bien') + '</button>' +
-    '</div>' + messageCahier() + form +
-    '<div class="grid-cards" style="margin-top:22px">' +
-      (cards || '<p class="empty">Aucun bien. Ajoutez le premier ci-dessus.</p>') + '</div>' +
-    carteLiensParLogement() +
-    carteMessagesVoyageur() +
+      (onglet === 'logements'
+        ? '<button type="button" class="btn btn--xs" style="' + (state.showNewBien ? 'background:var(--cream);color:var(--ink-soft)' : 'background:var(--terra);color:#fff') +
+          ';min-height:42px;font-size:13px"' + act('toggle-new-bien') + '>' +
+          (state.showNewBien ? 'Fermer' : '+ Ajouter un bien') + '</button>' : '') +
+    '</div>' + messageCahier() + onglets +
     /* LA CARTE DU LIEN GÉNÉRAL A ÉTÉ RETIRÉE (session 31, D-167) : « chaque
        appartement a maintenant son propre lien ». Le lien `#/bienvenue`
        continue de fonctionner — il est encore proposé au voyageur qui ouvre un
@@ -13151,10 +13807,9 @@ function viewOwnerBiens() {
        programmés le remplace toujours. Seule sa mise en avant disparaît, avec
        la confusion qu'elle entretenait : `carteLienUnique()` reste écrite plus
        bas, simplement plus appelée. */
-    carteBeds24() +
-    carteImport() +
-    carteConnexions());
+    contenu);
 }
+var biensOnglet = 'logements';   // 'logements' | 'liens' | 'connexions' — règle 7
 
 /* LE LIEN QUE L'ON COLLE UNE FOIS POUR TOUTES (mis en avant en session 19)
 
@@ -13307,6 +13962,7 @@ function texteBienvenueBien(pid) {
    vraiment le voyageur — calculé sur un vrai logement et un vrai séjour
    quand il y en a, pour qu'on voie le résultat et non la recette. */
 var msgOnglet = 'bien';
+var autoOnglet = 'regles';   // 'regles' | 'pret' — Messages programmés, règle 7 (session 50)
 
 function exempleMsg(k) {
   var biens = state.props.filter(function (p) { return !p.gone; });
@@ -17135,6 +17791,99 @@ function basculerDroitAdmin(uid, quoi, cle) {
 }
 
 var actions = {
+
+  /* LES ENTREPÔTS ET CE QU'ON EMPORTE (session 50, D-237). Chaque geste
+     horodate la valeur entière (`_maj`) : c'est elle qui voyage, et le plus
+     récent l'emporte d'un appareil à l'autre (règle 27). */
+  'emporter-jour': function (el) { emporterJour = el.dataset.j === 'dem' ? 'dem' : 'auj'; render(); },
+  'ent-nouveau': function () { entForm = { id: '', nom: '', adresse: '' }; entFormMsg = ''; render(); },
+  'ent-modifier': function (el) {
+    var e = entrepotParId(el.dataset.id);
+    if (!e) return;
+    entForm = { id: e.id, nom: e.nom, adresse: e.adresse || '' };
+    entFormMsg = '';
+    render();
+  },
+  'ent-annuler': function () { entForm = null; entFormMsg = ''; render(); },
+  'ent-enregistrer': function () {
+    if (!entForm) return;
+    var nom = String(entForm.nom || '').trim();
+    if (!nom) { entFormMsg = 'Donne-lui un nom.'; render(); return; }
+    var e = entForm.id ? entrepotParId(entForm.id) : null;
+    if (e) {
+      e.nom = nom;
+      e.adresse = String(entForm.adresse || '').trim();
+    } else {
+      state.entrepots.liste.push({ id: 'ent_' + jeton(10), nom: nom, adresse: String(entForm.adresse || '').trim(),
+        biens: [], liesLe: {}, stock: {} });
+    }
+    state.entrepots._maj = Date.now();
+    entForm = null; entFormMsg = '';
+    save(); render();
+  },
+  'ent-supprimer': function (el) {
+    var e = entrepotParId(el.dataset.id);
+    if (!e || !confirm('Supprimer l’entrepôt « ' + e.nom + ' » ? Les logements qu’il sert reprendront leur linge sur place.')) return;
+    state.entrepots.liste = state.entrepots.liste.filter(function (x) { return x.id !== e.id; });
+    state.entrepots._maj = Date.now();
+    save(); render();
+  },
+  'ent-bien': function (el) {
+    var e = entrepotParId(el.dataset.id), pid = el.dataset.pid;
+    if (!e || !pid) return;
+    if (e.biens.indexOf(pid) >= 0) {
+      e.biens = e.biens.filter(function (x) { return x !== pid; });
+    } else {
+      // Un logement n'est servi que par un entrepôt à la fois.
+      entrepots().forEach(function (x) { x.biens = x.biens.filter(function (y) { return y !== pid; }); });
+      e.biens.push(pid);
+      e.liesLe[pid] = Date.now();     // les ménages d'avant la liaison ne sont pas déduits
+    }
+    state.entrepots._maj = Date.now();
+    save(); render();
+  },
+  'ent-step': function (el) {
+    var e = entrepotParId(el.dataset.id), k = el.dataset.k;
+    if (!e || !k) return;
+    var x = etatEntrepot(e).articles[k];
+    var reste = x && x.reste !== null ? x.reste : 0;
+    e.stock[k] = { q: Math.max(0, reste + (parseInt(el.dataset.d, 10) || 0)), at: Date.now() };
+    state.entrepots._maj = Date.now();
+    save(); render();
+  },
+  'ent-tous': function (el) { entTous[el.dataset.id] = !entTous[el.dataset.id]; render(); },
+  'kit-ouvrir': function (el) { kitOuvert[el.dataset.pid] = !kitOuvert[el.dataset.pid]; render(); },
+  'kit-lit': function (el) {
+    var t = trousseauEcrit(el.dataset.pid);
+    t.lits.push({ p: el.dataset.p === '2' ? 2 : 1 });
+    state.trousseaux._maj = Date.now();
+    save(); render();
+  },
+  'kit-lit-retirer': function (el) {
+    var t = trousseauEcrit(el.dataset.pid), i = parseInt(el.dataset.i, 10);
+    if (i >= 0) t.lits.splice(i, 1);
+    nettoyerTrousseau(el.dataset.pid);
+    save(); render();
+  },
+  'kit-perso': function (el) {
+    var pid = el.dataset.pid;
+    var lignes = lignesKit(pid).map(function (l) { return { k: l.k, base: l.base, n: l.n }; });
+    trousseauEcrit(pid).lignes = lignes;
+    state.trousseaux._maj = Date.now();
+    save(); render();
+  },
+  'kit-defaut': function (el) {
+    var t = trousseauEcrit(el.dataset.pid);
+    t.lignes = null;
+    nettoyerTrousseau(el.dataset.pid);
+    save(); render();
+  },
+  'kit-ligne-retirer': function (el) {
+    var t = trousseauEcrit(el.dataset.pid), i = parseInt(el.dataset.i, 10);
+    if (Array.isArray(t.lignes) && i >= 0) t.lignes.splice(i, 1);
+    state.trousseaux._maj = Date.now();
+    save(); render();
+  },
   /* Navigation ---------------------------------------------------------- */
   nav: function (el) { menuProprioOuvert = false; go(el.dataset.path); },
   /* Le menu « Plus » du propriétaire sur téléphone (session 40, D-183). */
@@ -17504,9 +18253,17 @@ var actions = {
     state.messagesVoyageur._maj = Date.now();
     save(); render();
   },
+  'biens-onglet': function (el) {
+    biensOnglet = ['logements', 'liens', 'connexions'].indexOf(el.dataset.o) >= 0 ? el.dataset.o : 'logements';
+    render();
+  },
+  'auto-onglet': function (el) { autoOnglet = el.dataset.o === 'pret' ? 'pret' : 'regles'; render(); },
+  /* Session 50 (D-236) : le texte du message tout prêt vit dans « Messages
+     programmés », onglet « Message tout prêt ». */
   'msg-modifier': function (el) {
     msgOnglet = el.dataset.k === 'sejour' ? 'sejour' : 'bien';
-    go('#/admin/biens');
+    autoOnglet = 'pret';
+    go('#/admin/messages-programmes');
     setTimeout(function () {
       var c = document.getElementById('carte-messages');
       if (c && c.scrollIntoView) c.scrollIntoView({ block: 'start', behavior: 'smooth' });
@@ -18116,7 +18873,11 @@ var actions = {
     state.openReglages = state.openReglages === el.dataset.ag ? null : el.dataset.ag;
     save(); render();
   },
-  'stock-tab': function (el) { stockOngletChoisi = true; state.stockTab = el.dataset.t; save(); render(); },
+  'stock-tab': function (el) {
+    stockOngletChoisi = true; state.stockTab = el.dataset.t; save();
+    // Depuis le détail d'une mission (session 50) : on va d'abord sur la page Stocks.
+    if (el.dataset.nav) go('#/admin/stocks'); else render();
+  },
   'stock-group': function (el) { state.stockGroup = el.dataset.g; save(); render(); },
   'stock-un-bien': function (el) { state.stockUnBien = el.dataset.pid; save(); render(); },
   'stock-step': function (el) {
@@ -20326,6 +21087,10 @@ function createResa(pid) {
 /* Saisies silencieuses : mettent l'état à jour sans redessiner l'écran,
    pour ne pas faire perdre le curseur pendant la frappe. */
 var inputs = {
+
+  // Le formulaire d'un entrepôt (session 50) : saisie silencieuse, sans redessin.
+  'ent-nom': function (el) { if (entForm) entForm.nom = el.value; },
+  'ent-adr': function (el) { if (entForm) entForm.adresse = el.value; },
   /* Porte d'entrée du livret. Saisie silencieuse (pas de redessin) pour ne pas
      perdre le curseur : le contrôle se fait au clic sur « Continuer ». */
   'bv-tel': function (el) {
@@ -20549,6 +21314,41 @@ function setBienField(el) {
 
 /* Changements qui demandent un redessin (listes déroulantes, dates). */
 var changes = {
+
+  /* Les entrepôts (session 50, D-237). Taper une quantité, c'est recompter :
+     le chiffre repart de là, à cette heure-ci. Vide = « pas compté ». */
+  'ent-qty': function (el) {
+    var e = entrepotParId(el.dataset.id), k = el.dataset.k;
+    if (!e || !k) return;
+    if (el.value === '') delete e.stock[k];
+    else e.stock[k] = { q: Math.max(0, parseInt(el.value, 10) || 0), at: Date.now() };
+    state.entrepots._maj = Date.now();
+    save(); render();
+  },
+  'kit-n': function (el) {
+    var t = trousseauEcrit(el.dataset.pid), i = parseInt(el.dataset.i, 10);
+    if (!Array.isArray(t.lignes) || !t.lignes[i]) return;
+    t.lignes[i].n = Math.max(0, parseInt(el.value, 10) || 0);
+    state.trousseaux._maj = Date.now();
+    save(); render();
+  },
+  'kit-base': function (el) {
+    var t = trousseauEcrit(el.dataset.pid), i = parseInt(el.dataset.i, 10);
+    if (!Array.isArray(t.lignes) || !t.lignes[i]) return;
+    if (BASES_KIT.some(function (b) { return b[0] === el.value; })) t.lignes[i].base = el.value;
+    state.trousseaux._maj = Date.now();
+    save(); render();
+  },
+  'kit-ajout': function (el) {
+    var t = trousseauEcrit(el.dataset.pid), k = el.value;
+    if (!k || !articleParCle(k) || !Array.isArray(t.lignes)) return;
+    if (!t.lignes.some(function (l) { return l.k === k; })) {
+      var a = articleParCle(k);
+      t.lignes.push({ k: k, base: a.group === 'Linge' ? 'lit' : 'sejour', n: 1 });
+    }
+    state.trousseaux._maj = Date.now();
+    save(); render();
+  },
   /* Les factures (session 46, D-206). */
   'facture-champ': function (el) {
     if (!state.factureEd) return;

@@ -1268,7 +1268,13 @@ var DB = (function () {
        programmés par Beds24 — `{ actif, depuis, _maj }`. Horodaté : le couper
        doit voyager, et un appareil en retard ne doit pas le rallumer. Le robot
        le relit lui-même dans le cahier (script 19) avant chaque passage. */
-    'envoiBeds24'];
+    'envoiBeds24',
+    /* Session 50 (D-237) : les entrepôts — réserves à part reliées à des
+       logements, avec leur stock compté — et ce qu'on emporte à chaque ménage
+       (les lits d'un logement, le linge par lit ou par voyageur). Horodatés :
+       on peut supprimer le dernier entrepôt, et ce vide doit voyager. Le
+       téléphone de la prestataire les LIT (script 21), il n'y écrit jamais. */
+    'entrepots', 'trousseaux'];
 
   /* Deux clés ne doivent JAMAIS être remplacées par une liste vide : sans
      prestation ni article, l'application n'a plus rien à afficher et
@@ -1339,7 +1345,8 @@ var DB = (function () {
      trois-là sont relues juste avant chaque envoi : l'appareil resté ouvert
      depuis ce matin apprend la tâche ajoutée ailleurs avant de renvoyer sa
      copie, au lieu de l'effacer. */
-  var REGLAGES_DATES = { todos: 1, sansPresta: 1, adminDroits: 1, servicesRetires: 1, messagesVoyageur: 1, envoiBeds24: 1 };
+  var REGLAGES_DATES = { todos: 1, sansPresta: 1, adminDroits: 1, servicesRetires: 1, messagesVoyageur: 1, envoiBeds24: 1,
+    entrepots: 1, trousseaux: 1 };
   function majDe(v) { return v && typeof v === 'object' && typeof v._maj === 'number' ? v._maj : 0; }
 
   function fusionnerOublis(local, distant) {
@@ -2183,6 +2190,27 @@ var DB = (function () {
     }, function () { return null; });
   }
 
+  /* LE SCRIPT 21 EST-IL COLLÉ ? (session 50, D-237)
+
+     Sans lui, le téléphone de la prestataire n'a pas le droit de lire les
+     entrepôts : il recevrait une liste VIDE, indistinguable de « aucun
+     entrepôt » (règle 22) — et lui dirait à tort de tout prendre sur place.
+     Le script crée la fonction `reglages_partages()`, la liste des réglages
+     que les prestataires peuvent lire ; on la demande, et on SAIT :
+     `true` = collé, `false` = pas collé, `null` = on n'a pas pu savoir. */
+  var entrepotsLisibles = null;
+  function sonderEntrepots() {
+    return client.rpc('reglages_partages').then(function (r) {
+      if (r && r.error) {
+        var c = r.error.code || '', m = r.error.message || '';
+        if (c === 'PGRST202' || c === '42883' || /reglages_partages|function/i.test(m)) entrepotsLisibles = false;
+      } else if (r) {
+        entrepotsLisibles = Array.isArray(r.data) && r.data.indexOf('entrepots') >= 0;
+      }
+      return null;
+    }, function () { return null; });
+  }
+
   /** « J'ai quitté le logement ». */
   function signalerDepart(jeton, heure) {
     if (!dispo || !jeton) return Promise.resolve(false);
@@ -2339,6 +2367,12 @@ var DB = (function () {
     if (tablesAbsentes.messages_sortants && typeof state !== 'undefined' && state.envoiBeds24 && state.envoiBeds24.actif) {
       out.push('19-messages-beds24.sql');
     }
+    /* Session 50 (D-237) : les entrepôts, lisibles par les prestataires. Dit
+       seulement si Marc en a créé un — sinon personne n'en a besoin. */
+    if (entrepotsLisibles === false && typeof state !== 'undefined' && state.entrepots &&
+        Array.isArray(state.entrepots.liste) && state.entrepots.liste.length) {
+      out.push('21-entrepots.sql');
+    }
     return out;
   }
 
@@ -2386,7 +2420,8 @@ var DB = (function () {
       // Le script 14 est-il collé ? (session 31, D-164). Ne rend rien d'utile :
       // il ne sert qu'à savoir si la colonne existe, pour pouvoir le DIRE.
       sonderCommentaire(),
-      lireFacultative('factures')        // r[11] — session 46, D-206
+      lireFacultative('factures'),       // r[11] — session 46, D-206
+      sonderEntrepots()                  // r[12] — session 50, D-237 (ne rend rien)
     ]).then(function (r) {
       var erreur = r.slice(0, 5).filter(function (x) { return x.error; })[0];
       if (erreur) throw erreur.error;
@@ -3353,6 +3388,8 @@ var DB = (function () {
     /* Les scripts SQL qui manquent, nommés. Un écran vide doit pouvoir dire
        pourquoi il est vide (session 19). */
     scriptsManquants: manquantes,
+    // Le script 21 (entrepôts lisibles par les prestataires) : true / false / null.
+    entrepotsLisibles: function () { return entrepotsLisibles; },
     // Le lot 4 (script 09, session 19).
     enregistrerStock: enregistrerStock,
     supprimerStock: supprimerStock,
