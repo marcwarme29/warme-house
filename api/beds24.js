@@ -160,7 +160,10 @@ function refusBeds24(rep, quoi) {
         ? 'Beds24 refuse ce code d’invitation : il a été mal recopié, ou il a déjà périmé (il ne vaut que ' +
           'peu de temps). En générer un nouveau chez Beds24 et le coller aussitôt.'
         : 'Beds24 refuse la clé posée chez Vercel : elle a été mal recopiée, ou elle a périmé (plus de ' +
-          '30 jours sans servir). Refaire l’étape « code d’invitation » du mode d’emploi (§53).'
+          '30 jours sans servir). Refaire l’étape « code d’invitation » du mode d’emploi (§53).' +
+          // Session 49 bis : la phrase de Beds24, pour distinguer « clé fausse » de « droit d'écrire manquant ».
+          ' [' + (quoi === 'envoyer' ? 'à l’envoi' : 'à la connexion') + ', code ' + rep.statut +
+          (dit ? ', Beds24 : « ' + dit.slice(0, 200) + ' »' : '') + ']'
     };
   }
   if (rep.statut === 429 || /credit|limit/i.test(dit)) {
@@ -250,6 +253,9 @@ function refusEnvoi(rep) {
     return { code: r.code, definitif: false, erreur: r.erreur };
   }
   if (rep.statut === 401) {
+    /* Session 49 bis : premier essai réel de Marc, refusé en « clé refusée »
+       sans qu'on sache si la clé était mauvaise ou si elle n'avait que le
+       droit de lire. La phrase de Beds24 est désormais recopiée (règle 5). */
     const r = refusBeds24(rep, 'envoyer');
     return { code: r.code, definitif: true, erreur: r.erreur };
   }
