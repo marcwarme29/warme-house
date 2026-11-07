@@ -37,7 +37,20 @@
                      D-229) ;
      · `messages`  — la messagerie Airbnb / Booking des 120 derniers jours, en
                      lecture seule (D-231). Répondre viendra ensuite, avec une
-                     clé qui en aura le droit.
+                     clé qui en aura le droit. *(Obsolète depuis la session 49 :
+                     répondre est fait, voir ci-dessous.)*
+
+   SESSION 49 — TROIS DEMANDES DE PLUS, LES SEULES QUI ÉCRIVENT CHEZ BEDS24, et
+   seulement dans la conversation d'une réservation (jamais prix, dates ni
+   réservations). Elles exigent une clé avec « bookings » en écriture (§54) :
+
+     · `envoyer`   — un message écrit par le propriétaire, relu dans l'aperçu
+                     (D-232) ;
+     · `lu`        — marquer « lus » les messages du voyageur qu'il a ouverts ;
+     · `robot`     — envoyer les messages programmés dont l'heure est venue
+                     (D-233). Appelée par le propriétaire connecté, OU sans
+                     compte avec le secret du robot (`CRON_SECRET`), par le
+                     réveil que pose le script 19 dans Supabase.
 
    -----------------------------------------------------------------------------
    CE QU'IL FAUT AVOIR FAIT POUR QUE ÇA MARCHE (une seule fois)
@@ -188,6 +201,201 @@ async function toutesLesPages(chemin, jeton) {
 }
 
 /* --------------------------------------------------------------------------
+   ÉCRIRE CHEZ BEDS24 — un message au voyageur (session 49, D-232)
+   --------------------------------------------------------------------------
+   Une seule écriture existe, et elle est étroite : poster un message dans la
+   conversation Airbnb / Booking d'une réservation (ou marquer un message
+   « lu »). Rien d'autre n'est jamais écrit chez Beds24 depuis ici : ni prix,
+   ni disponibilités, ni réservation. */
+
+/** Un envoi à Beds24 (POST). Rend `{ ok, statut, j }` — jamais d'exception. */
+async function poster(chemin, jeton, corps) {
+  const t = avecDelai(DELAI_MAX);
+  try {
+    const r = await fetch(BEDS24 + chemin, {
+      method: 'POST', signal: t.signal,
+      headers: { accept: 'application/json', 'Content-Type': 'application/json', token: jeton },
+      body: JSON.stringify(corps)
+    });
+    let j = null;
+    try { j = await r.json(); } catch (e) { j = null; }
+    /* Beds24 répond 201 avec une LISTE, une ligne par message, chacune avec son
+       propre `success` : un 201 ne suffit pas, il faut lire la ligne (règle 4 —
+       on ne coche « parti » que pour ce qui a réellement été accepté). */
+    const ligne = Array.isArray(j) ? j[0] : null;
+    const ok = r.ok && !!ligne && ligne.success === true;
+    return { ok, statut: r.status, j, ligne };
+  } catch (e) {
+    return { ok: false, statut: 0, j: null, ligne: null };
+  } finally {
+    t.fin();
+  }
+}
+
+/** Le refus d'un ENVOI, dit en français. `definitif` : inutile de réessayer seul. */
+function refusEnvoi(rep) {
+  const ligne = rep.ligne || {};
+  const errs = Array.isArray(ligne.errors) ? ligne.errors : [];
+  const dit = String((errs[0] && errs[0].message) || (rep.j && !Array.isArray(rep.j) && (rep.j.error || rep.j.message)) || '');
+  if (rep.statut === 403 || /scope|permission|not allowed|no access|write/i.test(dit)) {
+    return {
+      code: 'sans-droit-ecrire', definitif: true,
+      erreur: 'La clé Beds24 posée chez Vercel ne donne que le droit de LIRE. Pour écrire aux voyageurs, ' +
+        'refaire un code d’invitation chez Beds24 avec « bookings » en lecture ET écriture, l’échanger dans ' +
+        'MAISON WARME et remplacer la clé chez Vercel (§54 du mode d’emploi).'
+    };
+  }
+  if (rep.statut === 0 || rep.statut === 429 || rep.statut >= 500 || /credit|limit/i.test(dit)) {
+    const r = refusBeds24(rep, 'envoyer');
+    return { code: r.code, definitif: false, erreur: r.erreur };
+  }
+  if (rep.statut === 401) {
+    const r = refusBeds24(rep, 'envoyer');
+    return { code: r.code, definitif: true, erreur: r.erreur };
+  }
+  return {
+    code: 'refus', definitif: true,
+    erreur: 'Beds24 n’a pas accepté le message' + (dit ? ' : « ' + dit + ' »' : ' (code ' + rep.statut + ')') +
+      '. Le voyageur ne l’a pas reçu.'
+  };
+}
+
+/* --------------------------------------------------------------------------
+   LE ROBOT DES MESSAGES PROGRAMMÉS (session 49, D-233)
+   --------------------------------------------------------------------------
+   MAISON WARME prépare à l'avance, dans le cahier partagé (table
+   `messages_sortants`, script 19), chaque message programmé rempli pour son
+   voyageur, avec son heure d'envoi. Ce robot ne compose RIEN : il prend ceux
+   dont l'heure est venue et les poste chez Beds24. Toute la mise en forme
+   reste dans `app.js` (`remplirVars`), à un seul endroit.
+
+   Qui le réveille : le cahier partagé lui-même, toutes les dix minutes
+   (Supabase Cron, script 19), avec le secret du robot ; et le navigateur du
+   propriétaire, quand il est ouvert et qu'un message est dû. Les deux peuvent
+   tomber en même temps : c'est le cahier qui tranche, en « prenant » chaque
+   message dans une seule transaction — un message pris par l'un n'est pas
+   rendu à l'autre (`for update skip locked`).
+
+   Trois vérifications avant chaque envoi :
+     1. la réservation existe encore chez Beds24 et n'y est pas annulée ;
+     2. le même texte n'est pas DÉJÀ dans la conversation (un passage coupé
+        après l'envoi et avant la note ne doit pas faire partir un doublon) ;
+     3. l'envoi est accepté, ligne lue (voir `poster`).
+   Un refus passager (Beds24 occupé) remet le message en file pour le passage
+   suivant ; au troisième essai, il est marqué « échec » et l'écran le dit. */
+const MAX_PAR_PASSAGE = 4;
+const STATUTS_TOUS = '&status=confirmed&status=request&status=new&status=cancelled&status=black&status=inquiry';
+
+async function rpc(nom, corps) {
+  const t = avecDelai(DELAI_MAX);
+  try {
+    const r = await fetch(SUPABASE_URL + '/rest/v1/rpc/' + nom, {
+      method: 'POST', signal: t.signal,
+      headers: { apikey: SUPABASE_KEY, Authorization: 'Bearer ' + SUPABASE_KEY, 'Content-Type': 'application/json' },
+      body: JSON.stringify(corps)
+    });
+    let j = null;
+    try { j = await r.json(); } catch (e) { j = null; }
+    return { ok: r.ok, statut: r.status, j };
+  } catch (e) {
+    return { ok: false, statut: 0, j: null };
+  } finally {
+    t.fin();
+  }
+}
+
+/** Le refus du cahier partagé, dit en français : quel script manque, ou quel secret. */
+function refusFile(rep) {
+  const dit = String((rep.j && (rep.j.message || rep.j.hint)) || '');
+  if (rep.statut === 404 || /could not find the function|does not exist/i.test(dit)) {
+    return { code: 'sans-script', erreur: 'Le script 19 (messages-beds24) n’est pas encore collé dans Supabase : ' +
+      'la file des messages programmés n’existe pas. §54 du mode d’emploi.' };
+  }
+  if (/secret/i.test(dit)) {
+    return { code: 'secret-refuse', erreur: 'Le secret du robot (CRON_SECRET chez Vercel) ne correspond pas à celui ' +
+      'du script 19. Les deux doivent être identiques (§35 et §54 du mode d’emploi).' };
+  }
+  if (rep.statut === 0) return { code: 'injoignable', erreur: 'Le cahier partagé n’a pas répondu à temps.' };
+  return { code: 'file', erreur: 'Le cahier partagé a refusé (code ' + rep.statut + ')' + (dit ? ' : « ' + dit + ' »' : '') + '.' };
+}
+
+function memeTexte(a, b) {
+  const n = (s) => String(s || '').replace(/\s+/g, ' ').trim();
+  return n(a) === n(b);
+}
+
+async function traiterUn(m, jeton) {
+  const id = parseInt(m.booking_b24, 10);
+  if (!id) return { statut: 'echec', erreur: 'Numéro de réservation Beds24 manquant.' };
+  if (!String(m.texte || '').trim()) return { statut: 'echec', erreur: 'Message vide.' };
+
+  const b = await appel('/bookings?id=' + id + STATUTS_TOUS, { token: jeton });
+  if (!b.ok) return { statut: 'prevu', erreur: refusBeds24(b, 'robot').erreur };
+  const resa = b.j && Array.isArray(b.j.data) ? b.j.data[0] : null;
+  if (!resa) return { statut: 'annule', erreur: 'Beds24 ne connaît plus cette réservation : rien n’est parti.' };
+  if (String(resa.status) === 'cancelled') return { statut: 'annule', erreur: 'Réservation annulée chez Beds24 : rien n’est parti.' };
+
+  const deja = await appel('/bookings/messages?bookingId=' + id + '&source=host&maxAge=90', { token: jeton });
+  if (!deja.ok) return { statut: 'prevu', erreur: refusBeds24(deja, 'robot').erreur };
+  if ((Array.isArray(deja.j && deja.j.data) ? deja.j.data : []).some((x) => memeTexte(x.message, m.texte))) {
+    return { statut: 'envoye', erreur: 'Déjà dans la conversation : pas renvoyé une seconde fois.' };
+  }
+
+  const p = await poster('/bookings/messages', jeton, [{ bookingId: id, message: String(m.texte).slice(0, 5000) }]);
+  if (p.ok) return { statut: 'envoye', erreur: '' };
+  const ref = refusEnvoi(p);
+  return { statut: ref.definitif ? 'echec' : 'prevu', erreur: ref.erreur };
+}
+
+async function passageRobot(secret) {
+  const dus = await rpc('robot_messages_dus', { p_secret: secret, p_max: MAX_PAR_PASSAGE });
+  if (!dus.ok) return { statut: 503, corps: refusFile(dus) };
+  const j = dus.j || {};
+  if (j.actif === false) {
+    return { statut: 200, corps: { actif: false, envoyes: 0, texte: 'L’envoi automatique est coupé dans MAISON WARME : rien n’est parti.' } };
+  }
+  const liste = Array.isArray(j.messages) ? j.messages : [];
+  const bilan = { actif: true, pris: liste.length, envoyes: 0, annules: 0, reportes: 0, echecs: 0, details: [] };
+  if (!liste.length) return { statut: 200, corps: bilan };
+
+  /* Une panne de clé remet TOUT en file, sans rien perdre ni rien envoyer. */
+  const rendre = async (erreur) => {
+    for (const m of liste) await rpc('robot_message_fait', { p_secret: secret, p_id: m.id, p_statut: 'prevu', p_erreur: erreur });
+  };
+  const cle = String(process.env.BEDS24_REFRESH_TOKEN || '').trim();
+  if (!cle) {
+    const e = 'La clé Beds24 n’est pas posée chez Vercel (BEDS24_REFRESH_TOKEN).';
+    await rendre(e);
+    return { statut: 503, corps: { code: 'sans-cle', erreur: e } };
+  }
+  const acces = await jetonBeds24(cle);
+  if (!acces.ok) {
+    const r = refusBeds24(acces.rep, 'robot');
+    await rendre(r.erreur);
+    return { statut: 502, corps: r };
+  }
+
+  for (const m of liste) {
+    const r = await traiterUn(m, acces.jeton);
+    await rpc('robot_message_fait', { p_secret: secret, p_id: m.id, p_statut: r.statut, p_erreur: r.erreur || '' });
+    if (r.statut === 'envoye') bilan.envoyes++;
+    else if (r.statut === 'annule') bilan.annules++;
+    else if (r.statut === 'prevu') bilan.reportes++;
+    else bilan.echecs++;
+    bilan.details.push({ id: m.id, statut: r.statut, erreur: r.erreur || '' });
+  }
+  return { statut: 200, corps: bilan };
+}
+
+/** Le secret du robot, comparé sans laisser deviner sa longueur au chronomètre. */
+function bonSecret(donne) {
+  const attendu = String(process.env.CRON_SECRET || '');
+  if (!attendu || typeof donne !== 'string' || !donne) return false;
+  const a = Buffer.from(attendu), b = Buffer.from(donne);
+  return a.length === b.length && require('crypto').timingSafeEqual(a, b);
+}
+
+/* --------------------------------------------------------------------------
    Présenter une réservation — SEULEMENT pour l'aperçu
    --------------------------------------------------------------------------
    Rien de ceci n'est encore la traduction vers MAISON WARME : c'est ce qu'on
@@ -233,6 +441,20 @@ module.exports = async function handler(req, res) {
   const corps = lireCorps(req);
   if (!corps) return res.status(400).json({ erreur: 'La demande est illisible.' });
 
+  /* --- Le robot, réveillé par le cahier partagé (D-233) -------------------
+     Pas de compte connecté ici : c'est le secret du robot qui ouvre la porte,
+     et il n'ouvre que celle-ci. Sans `CRON_SECRET` chez Vercel, refus. */
+  if (corps.action === 'robot' && !corps.jeton) {
+    const entete = String(req.headers && (req.headers.authorization || '') || '').replace(/^Bearer\s+/i, '');
+    const donne = typeof corps.secret === 'string' && corps.secret ? corps.secret : entete;
+    if (!String(process.env.CRON_SECRET || '')) {
+      return res.status(503).json({ code: 'sans-secret', erreur: 'Le secret du robot (CRON_SECRET) n’est pas posé chez Vercel (§35 du mode d’emploi).' });
+    }
+    if (!bonSecret(donne)) return res.status(401).json({ erreur: 'Secret du robot absent ou faux.' });
+    const p = await passageRobot(process.env.CRON_SECRET);
+    return res.status(p.statut).json(p.corps);
+  }
+
   /* --- Verrous : un compte connecté, et c'est le propriétaire ------------ */
   const jeton = typeof corps.jeton === 'string' ? corps.jeton : '';
   if (!jeton) {
@@ -249,6 +471,19 @@ module.exports = async function handler(req, res) {
 
   const action = String(corps.action || '');
   const cle = String(process.env.BEDS24_REFRESH_TOKEN || '').trim();
+
+  /* --- robot, demandé par le propriétaire connecté -------------------------
+     Même passage que celui du réveil : MAISON WARME ouvert le déclenche dès
+     qu'un message est dû, sans attendre les dix minutes. Le secret reste chez
+     Vercel ; le navigateur ne le connaît pas. */
+  if (action === 'robot') {
+    if (!String(process.env.CRON_SECRET || '')) {
+      return res.status(503).json({ code: 'sans-secret', erreur: 'Le secret du robot (CRON_SECRET) n’est pas posé chez Vercel : ' +
+        'les messages programmés ne peuvent pas partir tout seuls (§35 et §54 du mode d’emploi).' });
+    }
+    const p = await passageRobot(process.env.CRON_SECRET);
+    return res.status(p.statut).json(p.corps);
+  }
 
   /* --- inviter : code d'invitation → clé permanente ---------------------- */
   if (action === 'inviter') {
@@ -326,6 +561,30 @@ module.exports = async function handler(req, res) {
         piece: m.attachmentName ? String(m.attachmentName) : ''
       }))
     });
+  }
+
+  /* --- envoyer : un message écrit par le propriétaire (D-232) -------------
+     Il l'a relu dans l'aperçu et confirmé : on le poste tel quel. */
+  if (action === 'envoyer') {
+    const bookingId = parseInt(corps.bookingId, 10);
+    const texte = String(corps.texte || '').trim();
+    if (!bookingId) return res.status(400).json({ erreur: 'Ce séjour n’est pas relié à une réservation Beds24 : impossible d’y écrire d’ici.' });
+    if (!texte) return res.status(400).json({ erreur: 'Le message est vide.' });
+    if (texte.length > 5000) return res.status(400).json({ erreur: 'Le message est trop long (5 000 caractères au plus).' });
+    const p = await poster('/bookings/messages', acces.jeton, [{ bookingId: bookingId, message: texte }]);
+    if (!p.ok) return res.status(502).json(refusEnvoi(p));
+    return res.status(200).json({ envoye: true, id: (p.ligne && p.ligne.new && p.ligne.new.id) || null });
+  }
+
+  /* --- lu : les messages du voyageur ouverts dans MAISON WARME ------------
+     Sans ce geste, « non lu » resterait affiché pour toujours : c'est Beds24
+     qui garde cette information. Facultatif : un refus ne bloque rien. */
+  if (action === 'lu') {
+    const ids = (Array.isArray(corps.ids) ? corps.ids : []).map((x) => parseInt(x, 10)).filter(Boolean).slice(0, 50);
+    if (!ids.length) return res.status(200).json({ lus: 0 });
+    const p = await poster('/bookings/messages', acces.jeton, ids.map((id) => ({ id: id, read: true })));
+    if (!p.ok) return res.status(502).json(refusEnvoi(p));
+    return res.status(200).json({ lus: ids.length });
   }
 
   return res.status(400).json({ erreur: 'Demande inconnue : « ' + action + ' ».' });

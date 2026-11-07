@@ -2643,3 +2643,23 @@ button.mcal-jour:hover { background: var(--blue-bg); }
 .b24-ligne--annule { opacity: .6; }
 .b24-details { margin-top: 14px; }
 .b24-details > summary { cursor: pointer; font: 600 13.5px Figtree, sans-serif; color: var(--ink-soft); min-height: 36px; display: flex; align-items: center; }
+
+/* Messages par Beds24 : écrire, aperçu, file d'envoi (session 49, D-232 à D-234) */
+.rail-nav .rail-badge--msg, .omenu-l .rail-badge--msg { background: var(--blue); }
+.onav-b--msg { background: var(--blue); }
+.conv--nonlu .conv-n::after { content: ""; display: inline-block; width: 8px; height: 8px; margin-left: 7px;
+  border-radius: 999px; background: var(--blue); vertical-align: middle; }
+.conv-extrait { display: block; margin-top: 4px; font: 500 13px/1.35 Figtree, sans-serif; color: var(--ink-soft);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.conv--nonlu .conv-extrait { font-weight: 700; color: var(--ink); }
+.conv-quand { color: var(--muted2); font-weight: 500; }
+.msg--apercu { max-width: 100%; border: 1px dashed rgba(36,30,26,.18); }
+.msg--prog { border: 1px dashed var(--blue); background: var(--blue-bg); }
+.msg--echec { border-color: var(--terra-d); background: var(--terra-bg); }
+.apercu-vide { color: var(--muted2); font-style: italic; }
+.perm-chip--lien { border-color: var(--terra); color: var(--terra-d); font-weight: 700; }
+button.varchip { cursor: pointer; min-height: 32px; border: 0; }
+button.varchip:hover { background: var(--blue-bg); color: var(--blue-t); }
+.file-l { padding: 12px 0; border-top: 1px solid rgba(36,30,26,.07); }
+.file-l:first-child { border-top: 0; }
+.file-l > summary { cursor: pointer; font: 500 13.5px/1.6 Figtree, sans-serif; list-style-position: outside; min-height: 32px; }

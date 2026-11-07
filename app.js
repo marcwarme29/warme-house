@@ -49,7 +49,7 @@ function isoDate(d) {
 /* La version de l'application, affichée dans les bandeaux d'erreur et sous le
    compte connecté (session 46) : trois fois, un écran resté sur l'ancienne
    version a fait chercher un défaut déjà corrigé. À changer à chaque envoi. */
-var VERSION_APP = '48.6';
+var VERSION_APP = '49.0';
 
 var TODAY = isoDate(new Date());
 var TODAY_LABEL = new Date().toLocaleDateString('fr-FR',
@@ -624,6 +624,10 @@ function initialState() {
     reponses: {},                     // { logement: [{ id, titre, texte }] } — réponses toutes faites
     waOuverts: {},                    // { 'regle_sejour': 'AAAA-MM-JJ HH:MM' } — message programmé ouvert dans WhatsApp
     waTexte: {},                      // { sejour: texte en cours } — état d'écran, remis à zéro (règle 7)
+    /* Session 49 (D-233) : l'envoi automatique des messages programmés par
+       Beds24. `depuis` (ms) : rien ne part pour un moment antérieur à
+       l'allumage. Voyage dans `reglages`, horodaté (`_maj`). */
+    envoiBeds24: { actif: false, depuis: 0, _maj: 0 },
     reponseEd: null,                  // la réponse en cours d'écriture — état d'écran
     /* Session 45 (D-201) : quelle annonce Airbnb / Booking est quel logement,
        retenu une fois pour toutes (voyage dans `reglages`). */
@@ -1228,6 +1232,13 @@ function upgrade() {
   if (!state.reponses || typeof state.reponses !== 'object' || Array.isArray(state.reponses)) state.reponses = {};
   if (!state.waOuverts || typeof state.waOuverts !== 'object' || Array.isArray(state.waOuverts)) state.waOuverts = {};
   if (!state.waTexte || typeof state.waTexte !== 'object') state.waTexte = {};
+  // Session 49 (D-233) — règle 9 : déclarée dans initialState() ET complétée ici.
+  if (!state.envoiBeds24 || typeof state.envoiBeds24 !== 'object' || Array.isArray(state.envoiBeds24)) {
+    state.envoiBeds24 = { actif: false, depuis: 0, _maj: 0 };
+  }
+  if (typeof state.envoiBeds24.actif !== 'boolean') state.envoiBeds24.actif = !!state.envoiBeds24.actif;
+  if (typeof state.envoiBeds24.depuis !== 'number') state.envoiBeds24.depuis = 0;
+  if (typeof state.envoiBeds24._maj !== 'number') state.envoiBeds24._maj = 0;
   if (!state.importAnnonces || typeof state.importAnnonces !== 'object' || Array.isArray(state.importAnnonces)) state.importAnnonces = {};
   if (!state.planStart) state.planStart = premierJourDuMois(TODAY);
   if (state.planProps === undefined) state.planProps = null;
@@ -2820,7 +2831,8 @@ function entrerAvecProfil(p) {
     if (restaurerNomsVoyageurs().length) save();     // D-141
     // Les calendriers sont relevés dès l'entrée : Marc ne doit plus avoir à
     // demander l'import de ses séjours (session 24, D-133).
-    releveAutoIcal().then(releveAutoBeds24);
+    releveAutoIcal().then(releveAutoBeds24).then(releveAutoMessages);
+    lancerReleveMessages();               // D-232
   }
 }
 
@@ -6970,12 +6982,16 @@ function barreProprio(page, openCount) {
       '<span class="onav-i" aria-hidden="true">' + OWNER_TAB_ICONE[k] + '</span>' +
       '<span class="onav-l">' + OWNER_TAB_COURT[k] + '</span>' +
       (k === 'missions' && openCount > 0 ? '<span class="onav-b num">' + openCount + '</span>' : '') +
+      (k === 'messages' && b24Msg.nonLus > 0 ? '<span class="onav-b onav-b--msg num">' + b24Msg.nonLus + '</span>' : '') +
       '</button>';
   }).join('');
   return '<nav class="onav" aria-label="Rubriques">' + onglets +
     '<button type="button" aria-expanded="' + menuProprioOuvert + '"' +
       ((dansPlus || menuProprioOuvert) ? ' aria-current="page"' : '') + act('menu-proprio') + '>' +
-      '<span class="onav-i" aria-hidden="true">☰</span><span class="onav-l">Plus</span></button>' +
+      '<span class="onav-i" aria-hidden="true">☰</span><span class="onav-l">Plus</span>' +
+      // Messages vit dans « Plus » au téléphone : la pastille des non lus s'y voit (D-232).
+      (OWNER_TABS.indexOf('messages') < 0 && b24Msg.nonLus > 0 ? '<span class="onav-b onav-b--msg num">' + b24Msg.nonLus + '</span>' : '') +
+      '</button>' +
     '</nav>';
 }
 
@@ -6990,6 +7006,7 @@ function menuProprio(page, openCount) {
           ' style="--nav:' + n.color + '"' + act('nav', { path: n.path }) + '>' +
           '<span class="rail-dot"></span>' + esc(n.label) +
           (n.key === 'missions' && openCount > 0 ? '<span class="rail-badge num">' + openCount + '</span>' : '') +
+          (n.key === 'messages' && b24Msg.nonLus > 0 ? '<span class="rail-badge rail-badge--msg num">' + b24Msg.nonLus + '</span>' : '') +
           '</button>';
       }).join('') +
       '<div class="omenu-pied">' + esc(compteConnecte()) + '</div>' +
@@ -7015,6 +7032,7 @@ function ownerShell(page, content) {
       act('nav', { path: n.path }) + '>' +
       '<span class="rail-dot"></span>' + n.label +
       (n.key === 'missions' && openCount > 0 ? '<span class="rail-badge num">' + openCount + '</span>' : '') +
+      (n.key === 'messages' && b24Msg.nonLus > 0 ? '<span class="rail-badge rail-badge--msg num" title="Messages non lus">' + b24Msg.nonLus + '</span>' : '') +
       '</button>';
   }).join('');
 
@@ -9901,6 +9919,19 @@ function viewOwnerMsgs() {
   var list = conversations();
   var filtres = [['encours', 'En cours et à venir'], ['avenir', 'Arrivées à venir'], ['tous', 'Tous les séjours']];
 
+  /* LA DERNIÈRE PHRASE DE CHAQUE CONVERSATION (session 49, D-232) — demandé :
+     *« une prévisualisation du message dans la rubrique Messages »*. Comme
+     dans toute messagerie : sous le nom, le début du dernier message, et les
+     conversations qui viennent de bouger remontent en tête. Les autres
+     gardent leur ordre (par date de séjour). */
+  var dernier = function (rid) { var l = messagesBeds24De(rid); return l.length ? l[l.length - 1] : null; };
+  list = list.map(function (x, i) { return { x: x, i: i, d: dernier(x.r.id) }; })
+    .sort(function (a, b) {
+      if (a.d && b.d) return a.d.quand < b.d.quand ? 1 : a.d.quand > b.d.quand ? -1 : 0;
+      if (a.d || b.d) return a.d ? -1 : 1;
+      return a.i - b.i;
+    }).map(function (o) { return o.x; });
+
   return ownerShell('messages',
     '<div class="page-head">' +
       '<div><h1 class="page-title">Messages</h1>' +
@@ -9911,43 +9942,51 @@ function viewOwnerMsgs() {
       }).join('') + '</div>' +
     '</div>' +
 
+    /* Session 49 (D-232) : la relève est automatique — plus de « Relever »
+       à toucher. Le petit ⟳ reste pour forcer. */
     (biensBeds24().length ? '<div class="alert alert--blue" style="margin-top:20px"><div class="det" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">' +
-      '<span class="grow">💬 <strong>Messages Airbnb / Booking</strong> des logements reliés à Beds24 (' +
+      '<span class="grow">💬 <strong>Airbnb / Booking</strong> des logements reliés à Beds24 (' +
         esc(biensBeds24().map(function (p) { return p.name; }).join(', ')) + ') — ' +
-        esc(b24Msg.texte || 'pas encore relevés') + '</span>' +
-      '<button type="button" class="btn btn--xs" style="background:#fff;color:var(--ink-soft)"' + (b24Msg.encours ? ' disabled' : '') +
-        act('b24-messages') + '>' + (b24Msg.encours ? 'Un instant…' : '⟳ Relever') + '</button></div></div>' : '') +
-    /* Depuis la session 44 (D-199), la page sert déjà : on écrit au voyageur
-       sur WhatsApp dès qu'on a son numéro. Seule la LECTURE des messages des
-       plateformes attend Beds24. */
-    '<div class="alert alert--blue" style="margin-top:20px">' +
-      '<div style="display:flex;align-items:center;gap:8px"><span class="dot" style="background:#25D366"></span>' +
-        '<span class="kind">WhatsApp</span></div>' +
-      '<div class="title" style="color:var(--ink)">Écris à tes voyageurs sur WhatsApp, dès que tu as leur numéro</div>' +
-      '<div class="det">Ouvre une conversation : tes réponses toutes faites et tes messages programmés s’y ' +
-        'recopient en un toucher, et WhatsApp s’ouvre avec le message prêt. Les messages Airbnb et Booking.com, ' +
-        'eux, n’arriveront ici qu’avec Beds24 — un lien iCal ne les transporte pas.</div>' +
+        esc(b24Msg.texte || 'relève automatique en cours…') + '</span>' +
+      '<button type="button" class="btn btn--xs" style="background:#fff;color:var(--ink-soft)" title="Relever tout de suite"' + (b24Msg.encours ? ' disabled' : '') +
+        act('b24-messages') + '>' + (b24Msg.encours ? 'Un instant…' : '⟳') + '</button></div></div>' : '') +
+    '<div class="alert alert--blue" style="margin-top:' + (biensBeds24().length ? '10' : '20') + 'px">' +
+      '<div class="title" style="color:var(--ink)">Ouvre une conversation pour écrire</div>' +
+      '<div class="det">' + (biensBeds24().length
+        ? 'Pour un séjour Airbnb ou Booking d’un logement relié à Beds24, ton message part dans la conversation de la ' +
+          'plateforme. Pour les autres, par WhatsApp dès que tu as le numéro. Un aperçu te montre le message ' +
+          'tel que le voyageur le recevra.'
+        : 'Par WhatsApp dès que tu as le numéro du voyageur. Les messages Airbnb et Booking.com arrivent ici ' +
+          'pour les logements reliés à Beds24 (fiche du logement → Synchronisation).') + '</div>' +
     '</div>' +
 
     '<div class="card" style="margin-top:18px;padding:0;overflow:hidden">' + (list.length
       ? list.map(function (x) {
         var p = prop(x.pid), r = x.r, pl = PLATS[r.plat] || PLATS['Direct'];
         var n = messagesDe(r.id).length;
+        var b24 = messagesBeds24De(r.id);
+        var der = b24.length ? b24[b24.length - 1] : null;
+        var nonLu = b24.some(function (m) { return m.de === 'guest' && !m.lu; });
         var quand = r.start > TODAY ? 'arrive le ' + fmtDate(r.start)
           : r.end < TODAY ? 'parti le ' + fmtDate(r.end) : 'sur place jusqu’au ' + fmtDate(r.end);
-        return '<button type="button" class="conv"' + act('nav', { path: '#/admin/messages/' + r.id }) + '>' +
+        var extrait = der ? (der.de === 'host' ? 'Toi : ' : der.de === 'system' ? 'Plateforme : ' : '') +
+          String(der.texte || (der.piece ? '📎 ' + der.piece : '')).replace(/\s+/g, ' ').trim() : '';
+        return '<button type="button" class="conv' + (nonLu ? ' conv--nonlu' : '') + '"' + act('nav', { path: '#/admin/messages/' + r.id }) + '>' +
           '<span class="conv-av" style="background:' + p.tint + ';color:' + p.color + '">' +
             esc(String(r.guest).slice(0, 1).toUpperCase()) + '</span>' +
-          '<span class="grow">' +
+          '<span class="grow" style="min-width:0">' +
             '<span class="conv-top"><span class="conv-n">' + esc(r.guest) + '</span>' +
               '<span class="badge" style="background:' + pl.bg + ';color:' + pl.fg + '">' + esc(r.plat) + '</span></span>' +
             '<span class="conv-s num">' + esc(p.short) + ' · ' + esc(quand) + '</span>' +
+            (extrait ? '<span class="conv-extrait">' + esc(extrait.length > 110 ? extrait.slice(0, 110) + '…' : extrait) +
+              '<span class="conv-quand num"> · ' + esc(quandMsgBeds24(der.quand)) + '</span></span>' : '') +
           '</span>' +
           '<span class="conv-r">' +
             (numeroWhatsApp(r.tel) ? '<span class="badge" style="background:#E3F6EA;color:#1C7A43">WhatsApp</span> ' : '') +
-            (messagesBeds24De(r.id).length ? '<span class="badge badge--blue num" title="Messages Airbnb / Booking par Beds24">💬 ' +
-              messagesBeds24De(r.id).length + (messagesBeds24De(r.id).some(function (m) { return m.de === 'guest' && !m.lu; }) ? ' · non lu' : '') + '</span> ' : '') +
-            (n ? '<span class="badge badge--green num">' + n + '</span>' : (numeroWhatsApp(r.tel) ? '' : '<span class="conv-vide">pas de numéro</span>')) +
+            (b24.length ? '<span class="badge badge--blue num" title="Messages Airbnb / Booking par Beds24">💬 ' +
+              b24.length + (nonLu ? ' · non lu' : '') + '</span> ' : '') +
+            (n ? '<span class="badge badge--green num">' + n + '</span>'
+              : (numeroWhatsApp(r.tel) || b24.length || bookingIdDe(x.pid, r) ? '' : '<span class="conv-vide">pas de numéro</span>')) +
           '</span>' +
           '</button>';
       }).join('')
@@ -9959,6 +9998,7 @@ function viewOwnerMsg() {
   if (!f) return viewOwnerMsgs();
   var pid = f.pid, r = f.r, p = prop(pid), pl = PLATS[r.plat] || PLATS['Direct'];
   var fil = messagesDe(r.id);
+  var relie = biensBeds24().some(function (x) { return x.id === pid; });
 
   return ownerShell('messages',
     '<button type="button" class="btn-back" style="min-height:38px;font-size:13px;color:var(--muted)"' +
@@ -9975,83 +10015,26 @@ function viewOwnerMsg() {
       '</div>' +
     '</div>' +
 
-    carteMessagesBeds24(r) +
-    '<div class="card" style="margin-top:20px;padding:22px">' + (fil.length
-      ? '<div class="stack" style="gap:10px">' + fil.map(function (m) {
+    (relie ? carteMessagesBeds24(r) : '') +
+    /* L'ancienne boîte `state.messages` (D-106) reste lue, mais elle est vide
+       chez tout le monde : on ne l'affiche que si elle contient quelque chose. */
+    (fil.length ? '<div class="card" style="margin-top:20px;padding:22px"><div class="stack" style="gap:10px">' + fil.map(function (m) {
         return '<div class="msg msg--' + (m.sens === 'recu' ? 'in' : 'out') + '">' +
           '<div class="msg-t">' + esc(m.texte) + '</div>' +
           '<div class="msg-m num">' + esc(m.at) + '</div></div>';
-      }).join('') + '</div>'
-      : '<p class="empty" style="padding:30px 20px">Aucun message pour ce séjour.<br>' +
-        'Les échanges Airbnb et Booking.com apparaîtront ici dès que Beds24 sera connecté.</p>') +
-    '</div>' +
+      }).join('') + '</div></div>' : '') +
 
-    carteWhatsApp(pid, r) +
+    carteEcrire(pid, r) +
 
-    '<p class="sec-note" style="margin-top:14px">Les messages Airbnb et Booking.com se lisent et se répondent ' +
-      'depuis leur application tant que Beds24 n’est pas branché. Rien n’est perdu : la conversation sera ' +
-      'reprise ici lors de la première synchronisation.</p>');
+    (relie ? '' : '<p class="sec-note" style="margin-top:14px">Ce logement n’est pas relié à Beds24 : ses messages Airbnb ' +
+      'et Booking.com se lisent et se répondent depuis leur application. Pour les voir ici, renseigner son numéro de ' +
+      'chambre Beds24 (fiche du logement → Synchronisation).</p>'));
 }
 
-/* Écrire au voyageur sur WhatsApp, depuis sa conversation (D-199, D-200).
-   Le numéro vient de son livret (il l'a donné) ou de la fiche du séjour (le
-   propriétaire l'a écrit). Sans numéro, on DIT où le trouver, plutôt qu'un
-   bouton qui ne mènerait nulle part (règle 13). */
-function carteWhatsApp(pid, r) {
-  var num = numeroWhatsApp(r.tel);
-  var tete = '<h2 style="font:700 16px Figtree,sans-serif;margin:0">Écrire sur WhatsApp</h2>';
-
-  if (!num) {
-    return '<div class="card" style="margin-top:16px;padding:20px 22px">' + tete +
-      '<p class="sec-note" style="margin-top:6px">' +
-        (r.tel
-          ? 'Le numéro noté (« ' + esc(r.tel) + ' ») n’a pas d’indicatif pays : écris-le avec « + » ' +
-            '(ex. +44 7…) sur la fiche du séjour. Un numéro français en 06 ou 07 est reconnu tout seul.'
-          : 'Pas encore de numéro. Il arrive quand le voyageur remplit le formulaire de son livret, ' +
-            'ou tu peux l’écrire toi-même sur la fiche du séjour.') + '</p>' +
-      '<button type="button" class="btn btn--xs" style="margin-top:10px;background:var(--cream);color:var(--ink-soft)"' +
-        act('nav', { path: '#/admin/reservations/' + r.id }) + '>Ouvrir la fiche du séjour</button>' +
-      '</div>';
-  }
-
-  var reps = reponsesDe(pid);
-  var autos = state.autoMsgs.filter(function (x) {
-    return !x.props || !x.props.length || x.props.indexOf(pid) >= 0;
-  });
-  var puce = function (src, x, titre) {
-    return '<button type="button" class="perm-chip"' + act('wa-reponse', { rid: r.id, src: src, id: x.id }) + '>' +
-      esc(titre) + '</button>';
-  };
-  var texte = state.waTexte[r.id] || '';
-
-  return '<div class="card" style="margin-top:16px;padding:20px 22px;border-left:4px solid #25D366">' + tete +
-    '<p class="sec-note" style="margin-top:4px">Au <strong class="num">+' + esc(num) + '</strong>. ' +
-      'WhatsApp s’ouvre avec le message déjà écrit : <strong>c’est toi qui appuies sur « Envoyer »</strong>.</p>' +
-
-    '<div style="margin-top:12px"><span class="lab">Réponses toutes faites de ce logement</span>' +
-      (reps.length
-        ? '<div class="chiprow" style="margin-top:6px">' + reps.map(function (x) { return puce('rep', x, x.titre); }).join('') + '</div>'
-        : '<p class="sec-note" style="margin:4px 0 0">Aucune pour l’instant. ' +
-          '<button type="button" class="lienbtn"' + act('nav', { path: '#/admin/biens/' + pid }) + '>Les écrire dans la fiche du logement</button> ' +
-          '(onglet « Réponses toutes faites »).</p>') +
-    '</div>' +
-    (autos.length
-      ? '<div style="margin-top:10px"><span class="lab">Ou un message programmé</span>' +
-          '<div class="chiprow" style="margin-top:6px">' + autos.map(function (x) { return puce('auto', x, x.nom); }).join('') + '</div></div>'
-      : '') +
-
-    '<div style="margin-top:12px"><label class="lab" for="wa-' + esc(r.id) + '">Message</label>' +
-      '<textarea class="inp" id="wa-' + esc(r.id) + '" style="min-height:120px" placeholder="Écris ton message, ou touche une réponse ci-dessus."' +
-        ' data-fid="wa-' + esc(r.id) + '" data-in="wa-texte" data-rid="' + esc(r.id) + '">' + esc(texte) + '</textarea></div>' +
-    '<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:12px">' +
-      '<button type="button" class="btn btn--sm" style="background:#25D366;color:#fff"' +
-        act('wa-ouvrir', { rid: r.id }) + '>Ouvrir dans WhatsApp</button>' +
-      boutonContact(r.id) +
-    '</div>' +
-    '<p class="sec-note" style="margin:6px 0 0">Le contact s’appellera « ' + esc(nomContactSejour(pid, r)) +
-      ' » : tu reconnaîtras le séjour dans WhatsApp.</p>' +
-    '</div>';
-}
+/* L'encadré « Écrire sur WhatsApp » (D-199, D-200) est devenu, en session 49,
+   la carte « Écrire à … » (`carteEcrire`, plus haut, près de Beds24) : même
+   numéro, mêmes puces, même bouton WhatsApp, plus l'envoi par Beds24 et
+   l'aperçu (D-232). */
 
 /* --------------------------------------------------------------------------
    Messages programmés
@@ -10060,7 +10043,12 @@ function carteWhatsApp(pid, r) {
    -------------------------------------------------------------------------- */
 
 var DECLENCHEURS = [
-  { key: 'reservation', label: 'Dès la réservation', offset: false, aide: 'Part aussitôt qu’une réservation arrive.' },
+  { key: 'reservation', label: 'Dès la réservation', offset: false,
+    /* Session 49 (D-233) : dit tel quel. La file ne connaît une réservation
+       que quand MAISON WARME l'a vue — application ouverte. Le robot, lui,
+       n'invente pas de message (il ne compose rien). */
+    aide: 'Par Beds24 : part dès que MAISON WARME voit la nouvelle réservation — dans les minutes qui suivent si ' +
+      'l’application est ouverte, sinon à sa prochaine ouverture. Par WhatsApp : proposé pour tout séjour à venir.' },
   { key: 'avant_arrivee', label: 'Avant l’arrivée', offset: true, defaut: 3, aide: 'Le nombre de jours choisi avant la date d’arrivée.' },
   { key: 'jour_arrivee', label: 'Le jour de l’arrivée', offset: false, aide: 'Le matin du jour d’arrivée.' },
   { key: 'jour_depart', label: 'Le jour du départ', offset: false, aide: 'Le matin du départ, pour rappeler les consignes.' },
@@ -10161,6 +10149,16 @@ function prochainsEnvois() {
    l'application ne doit pas faire disparaître un message en silence.
    Les messages « dès la réservation » n'ont pas de date (la plateforme ne
    dit pas quand on a réservé) : ils sont proposés pour tout séjour à venir. */
+/* PAR OÙ PART CE MESSAGE ? (session 49, D-233) — un message programmé d'un
+   séjour relié à Beds24, envoi automatique allumé, part tout seul : il ne doit
+   plus être proposé à la main dans WhatsApp, sinon le voyageur le reçoit deux
+   fois. */
+function partParBeds24(rg, pid, r) {
+  var l = (b24File.lignes || []).filter(function (x) { return x.id === rg.id + '_' + r.id; })[0];
+  if (l && l.statut !== 'annule') return true;
+  return envoiAutoActif() && biensBeds24().some(function (p) { return p.id === pid; }) && !!bookingIdDe(pid, r);
+}
+
 function envoisAFaire() {
   var out = [];
   state.autoMsgs.forEach(function (rg) {
@@ -10169,6 +10167,7 @@ function envoisAFaire() {
       if (x.r.statut === 'annule') return;
       if (rg.props && rg.props.length && rg.props.indexOf(x.pid) < 0) return;
       if (state.waOuverts[rg.id + '_' + x.r.id]) return;
+      if (partParBeds24(rg, x.pid, x.r)) return;           // D-233 : il part tout seul
       var d = dateEnvoi(rg, x.r);
       if (d === null) { if (x.r.start < TODAY) return; d = TODAY; }
       else if (d > TODAY || d < jourPlus(TODAY, -3)) return;
@@ -10180,7 +10179,7 @@ function envoisAFaire() {
 
 function blocEnvoisAFaire() {
   var l = envoisAFaire();
-  return '<h2 class="sec-title" style="margin-top:24px">À envoyer maintenant' +
+  return '<h2 class="sec-title" style="margin-top:24px">À envoyer à la main, par WhatsApp' +
       (l.length ? ' <span class="badge badge--amber num">' + l.length + '</span>' : '') + '</h2>' +
     '<div class="card" style="padding:' + (l.length ? '6px 20px' : '18px 20px') + '">' + (l.length ? l.map(function (e) {
       var p = prop(e.pid), num = numeroWhatsApp(e.r.tel);
@@ -10199,11 +10198,132 @@ function blocEnvoisAFaire() {
         '<button type="button" class="btn btn--xs" style="background:transparent;color:var(--muted)"' +
           act('wa-fait', { rid: e.r.id, regle: e.regle.id }) + '>Déjà fait</button>' +
         '</div>';
-    }).join('') : '<p class="empty" style="padding:0">Rien à envoyer aujourd’hui.</p>') + '</div>';
+    }).join('') : '<p class="empty" style="padding:0">Rien à envoyer à la main aujourd’hui.</p>') + '</div>';
+}
+
+/* L'INTERRUPTEUR ET LA FILE (session 49, D-233). Une carte qui dit, sans
+   jargon, si les messages partent tout seuls, ce qu'il faut avoir fait avant,
+   et ce que le robot a fait la dernière fois — un envoi raté doit se VOIR
+   (règle 4). */
+function carteEnvoiBeds24() {
+  var relies = biensBeds24();
+  if (!relies.length) {
+    return '<div class="alert alert--blue" style="margin-top:20px">' +
+      '<div class="title" style="color:var(--ink)">Envoi automatique par Beds24 : aucun logement relié</div>' +
+      '<div class="det">Quand un logement est relié à Beds24 (fiche du logement → Synchronisation), ses messages ' +
+        'programmés peuvent partir tout seuls dans la conversation Airbnb ou Booking. En attendant, ils t’attendent ' +
+        'ici, prêts pour WhatsApp.</div></div>';
+  }
+  var on = envoiAutoActif();
+  var l = b24File.lignes || [];
+  var compte = function (st) { return l.filter(function (x) { return x.statut === st; }).length; };
+  var semaine = Date.now() - 7 * 86400000;
+  var envoyes = l.filter(function (x) { return x.statut === 'envoye' && Date.parse(x.envoye_le || x.envoyer_a) >= semaine; }).length;
+  var echecs = compte('echec');
+  var noms = relies.map(function (p) { return p.name; }).join(', ');
+
+  if (!on) {
+    return '<div class="card" style="margin-top:20px;padding:22px;border-left:4px solid var(--blue)">' +
+      '<h2 style="font:700 16px Figtree,sans-serif;margin:0">Envoi automatique par Beds24 — coupé</h2>' +
+      '<p class="sec-note" style="margin-top:6px">Une fois allumé, chaque message programmé part <strong>tout seul, à son ' +
+        'heure</strong>, dans la conversation Airbnb ou Booking du voyageur — même MAISON WARME fermé. Logements ' +
+        'concernés : ' + esc(noms) + '. Les autres restent ici, prêts pour WhatsApp.</p>' +
+      '<p class="sec-note" style="margin-top:8px"><strong>Avant d’allumer</strong> (§54 du mode d’emploi) : ' +
+        '① la clé Beds24 doit avoir le droit d’<strong>écrire</strong> ; ② le script <strong>19</strong> collé dans Supabase ; ' +
+        '③ <strong>couper les messages programmés d’Airbnb et de Booking</strong> qui disent la même chose — sinon le ' +
+        'voyageur les reçoit deux fois.</p>' +
+      '<p class="sec-note" style="margin-top:8px">Rien ne part pour un moment déjà passé à l’allumage : les voyageurs ' +
+        'actuels ne reçoivent pas d’un coup les messages qu’Airbnb leur a déjà envoyés.</p>' +
+      '<button type="button" class="btn btn--sm btn--primary" style="margin-top:12px"' + act('b24-auto', { on: '1' }) + '>Allumer l’envoi automatique</button>' +
+      '</div>';
+  }
+
+  var rob = b24File.robot;
+  return '<div class="card" style="margin-top:20px;padding:22px;border-left:4px solid var(--green,#2E8B57)">' +
+    '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">' +
+      '<h2 class="grow" style="font:700 16px Figtree,sans-serif;margin:0">✅ Envoi automatique par Beds24 — allumé</h2>' +
+      '<button type="button" class="btn btn--xs" style="background:var(--cream);color:var(--ink-soft)"' + act('b24-auto', { on: '0' }) + '>Couper</button>' +
+    '</div>' +
+    '<p class="sec-note" style="margin-top:6px">Depuis le ' + esc(quandMsgBeds24(new Date(state.envoiBeds24.depuis).toISOString())) +
+      ' · ' + esc(noms) + '. Les messages partent tout seuls à leur heure (à dix minutes près), même MAISON WARME fermé.</p>' +
+    '<div class="chiprow" style="margin-top:10px">' +
+      '<span class="badge badge--soft num">' + compte('prevu') + ' prévu(s)</span>' +
+      '<span class="badge badge--green num">' + envoyes + ' envoyé(s) ces 7 jours</span>' +
+      (echecs ? '<span class="badge badge--amber num">' + echecs + ' en échec</span>' : '') +
+    '</div>' +
+    (b24File.texte ? '<p class="sec-note" style="margin:10px 0 0;color:' + (b24File.ok ? 'var(--muted)' : 'var(--terra-d)') + '">' +
+      esc(b24File.texte) + '</p>' : '') +
+    (rob ? '<p class="sec-note" style="margin:6px 0 0;color:' + (rob.ok ? 'var(--muted)' : 'var(--terra-d)') + '">Robot, ' +
+      esc(rob.quand) + ' : ' + esc(rob.texte) + '</p>' : '') +
+    '<p class="sec-note" style="margin:8px 0 0">N’oublie pas de couper les messages programmés d’Airbnb et de Booking qui ' +
+      'disent la même chose.</p>' +
+    '</div>';
+}
+
+/** La file, lisible : ce qui va partir, ce qui est parti, ce qui a raté. */
+function blocFileBeds24() {
+  if (!biensBeds24().length || (!envoiAutoActif() && !(b24File.lignes || []).length)) return '';
+  var maintenant = Date.now(), semaine = maintenant - 7 * 86400000;
+  var l = (b24File.lignes || []).filter(function (x) {
+    if (x.statut === 'prevu' || x.statut === 'envoi' || x.statut === 'echec') return true;
+    var t = Date.parse(x.envoye_le || x.updated_at || x.envoyer_a);
+    return t >= semaine;
+  });
+  var ordre = { echec: 0, envoi: 1, prevu: 2, envoye: 3, annule: 4 };
+  l.sort(function (a, b) {
+    if (ordre[a.statut] !== ordre[b.statut]) return ordre[a.statut] - ordre[b.statut];
+    return a.statut === 'envoye' || a.statut === 'annule'
+      ? (a.envoyer_a < b.envoyer_a ? 1 : -1) : (a.envoyer_a < b.envoyer_a ? -1 : 1);
+  });
+  var etiquette = {
+    prevu: ['badge--soft', '🕒 Prévu'], envoi: ['badge--blue', '⏳ En cours'], envoye: ['badge--green', '✓ Envoyé'],
+    annule: ['badge--soft', 'Ne part pas'], echec: ['badge--amber', '⚠️ Échec']
+  };
+  return '<h2 class="sec-title" style="margin-top:24px">Envois par Beds24</h2>' +
+    '<div class="card" style="padding:' + (l.length ? '6px 20px' : '18px 20px') + '">' + (l.length ? l.slice(0, 60).map(function (x) {
+      var f = resaById(x.resa_id), p = f ? prop(f.pid) : null;
+      var e = etiquette[x.statut] || etiquette.prevu;
+      return '<details class="file-l"><summary>' +
+        '<span class="badge ' + e[0] + '">' + e[1] + '</span> ' +
+        '<span class="num" style="font-weight:600">' + esc(quandMsgBeds24(x.statut === 'envoye' && x.envoye_le ? x.envoye_le : x.envoyer_a)) + '</span>' +
+        ' · ' + esc(f ? f.r.guest : 'séjour supprimé') + (p ? ' · ' + esc(p.short) : '') + ' · ' +
+        '<span style="color:var(--muted3)">' + esc(x.regle_nom) + '</span>' +
+        '</summary>' +
+        (x.erreur ? '<p class="sec-note" style="margin:8px 0 0;color:' + (x.statut === 'echec' ? 'var(--terra-d)' : 'var(--muted)') + '">' + esc(x.erreur) + '</p>' : '') +
+        '<div class="msg msg--out msg--apercu" style="margin-top:8px;max-width:100%"><div class="msg-t">' + esc(x.texte) + '</div></div>' +
+        '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">' +
+          (x.statut === 'prevu' ? '<button type="button" class="btn btn--xs" style="background:var(--cream);color:var(--ink-soft)"' +
+            act('b24-file-maintenant', { mid: x.id }) + '>Envoyer maintenant</button>' : '') +
+          (x.statut === 'echec' ? '<button type="button" class="btn btn--xs btn--primary"' +
+            act('b24-file-reessayer', { mid: x.id }) + '>Réessayer</button>' : '') +
+          (f ? '<button type="button" class="btn btn--xs" style="background:transparent;color:var(--muted)"' +
+            act('nav', { path: '#/admin/messages/' + f.r.id }) + '>Conversation</button>' : '') +
+        '</div>' +
+        '</details>';
+    }).join('') : '<p class="empty" style="padding:0">' + (b24File.quand ? 'Rien de prévu dans les 60 prochains jours.' : 'Lecture de la file…') + '</p>') +
+    '</div>';
+}
+
+/** Le séjour qui sert d'exemple à l'aperçu d'un message programmé : le
+    prochain séjour à venir d'un des logements choisis (ou de n'importe
+    lequel), et « Voir avec un autre séjour » fait défiler. */
+var amApercuRang = 0;
+function sejoursPourApercu(a) {
+  var l = allResas().filter(function (x) {
+    return x.r.statut !== 'annule' && x.r.end >= TODAY && (!a.props.length || a.props.indexOf(x.pid) >= 0);
+  }).sort(function (x, y) { return x.r.start < y.r.start ? -1 : x.r.start > y.r.start ? 1 : 0; });
+  if (!l.length) l = allResas().filter(function (x) { return x.r.statut !== 'annule'; });
+  return l;
+}
+function sejourApercu(a) {
+  var l = sejoursPourApercu(a);
+  return l.length ? l[amApercuRang % l.length] : null;
 }
 
 function formAuto() {
   var a = state.am, dc = declencheur(a.quand);
+  var ex = sejourApercu(a);
+  var apercu = ex ? remplirVars(a.texte, ex.pid, ex.r) : '';
   return '<div class="card pop" style="margin-top:18px;padding:22px">' +
     '<h2 style="font:700 16px Figtree,sans-serif;margin:0 0 16px">' +
       (a.id ? 'Modifier le message' : 'Nouveau message programmé') + '</h2>' +
@@ -10217,8 +10337,8 @@ function formAuto() {
         }).join('') + '</select></div>' +
       (dc.offset ? '<div style="flex:1;min-width:min(100%,130px)"><label class="lab" for="am-dec">Nombre de jours</label>' +
         '<input class="inp num" id="am-dec" type="number" min="0" max="30" value="' + esc(a.decalage) + '" data-fid="am-dec" data-in="am-dec"></div>' : '') +
-      '<div style="flex:1;min-width:min(100%,130px)"><label class="lab" for="am-heure">Heure</label>' +
-        '<input class="inp num" id="am-heure" type="time" value="' + esc(a.heure) + '" data-fid="am-heure" data-ch="am-heure"></div>' +
+      (a.quand === 'reservation' ? '' : '<div style="flex:1;min-width:min(100%,130px)"><label class="lab" for="am-heure">Heure</label>' +
+        '<input class="inp num" id="am-heure" type="time" value="' + esc(a.heure) + '" data-fid="am-heure" data-ch="am-heure"></div>') +
     '</div>' +
     '<p class="sec-note" style="margin-top:6px">' + esc(dc.aide) + '</p>' +
 
@@ -10235,13 +10355,36 @@ function formAuto() {
         }).join('') +
       '</div></div>' +
 
-    '<div style="margin-top:14px"><label class="lab" for="am-texte">Message</label>' +
-      '<textarea class="inp" id="am-texte" style="min-height:170px" data-fid="am-texte" data-in="am-texte">' + esc(a.texte) + '</textarea></div>' +
+    /* LE RACCOURCI DU LIVRET (session 49, D-234) — demandé : *« dans les
+       messages programmés, un raccourci pour insérer le lien du livret
+       personnel »*. Il pose {lien} à l'endroit du curseur : à l'envoi, chaque
+       voyageur reçoit SON lien, qui ouvre son livret sans rien taper. Les
+       autres variables deviennent elles aussi des boutons (elles n'étaient
+       qu'une liste à recopier à la main). */
+    '<div style="margin-top:14px;display:flex;align-items:flex-end;gap:10px;flex-wrap:wrap">' +
+      '<label class="lab grow" for="am-texte" style="margin:0">Message</label>' +
+      '<button type="button" class="btn btn--xs btn--primary"' + act('am-inserer', { v: '{lien}' }) +
+        ' title="Chaque voyageur recevra SON lien : il ouvre son livret sans rien taper">🔗 Insérer le lien du livret personnel</button>' +
+    '</div>' +
+    '<textarea class="inp" id="am-texte" style="min-height:170px;margin-top:6px" data-fid="am-texte" data-in="am-texte">' + esc(a.texte) + '</textarea>' +
     '<div class="chiprow" style="margin-top:8px">' +
-      '<span class="sec-note">À écrire tel quel, remplacé à l’envoi :</span>' +
+      '<span class="sec-note">Toucher pour insérer à l’endroit du curseur :</span>' +
       VARIABLES.map(function (v) {
-        return '<span class="varchip" title="' + esc(v[1]) + '">' + esc(v[0]) + '</span>';
+        return '<button type="button" class="varchip"' + act('am-inserer', { v: v[0] }) + ' title="' + esc(v[1]) + '">' + esc(v[0]) + '</button>';
       }).join('') + '</div>' +
+
+    '<div style="margin-top:16px">' +
+      '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">' +
+        '<span class="lab grow" style="margin:0">Aperçu' + (ex ? ' — avec le séjour de ' + esc(ex.r.guest) + ' (' + esc(prop(ex.pid).short) +
+          ', ' + esc(fmtDate(ex.r.start)) + ' → ' + esc(fmtDate(ex.r.end)) + ')' : '') + '</span>' +
+        (sejoursPourApercu(a).length > 1 ? '<button type="button" class="lienbtn"' + act('am-apercu-suivant') + '>Voir avec un autre séjour</button>' : '') +
+      '</div>' +
+      '<div class="stack" style="margin-top:6px"><div class="msg msg--out msg--apercu">' +
+        '<div class="msg-t" id="am-apercu" data-rid="' + esc(ex ? ex.r.id : '') + '" data-pid="' + esc(ex ? ex.pid : '') + '">' +
+          (!ex ? '<span class="apercu-vide">Aucun séjour pour montrer l’aperçu.</span>'
+            : apercu.trim() ? esc(apercu) : '<span class="apercu-vide">L’aperçu s’affiche ici dès que tu écris.</span>') +
+        '</div></div></div>' +
+    '</div>' +
 
     '<div style="display:flex;gap:10px;align-items:center;margin-top:18px;flex-wrap:wrap">' +
       '<button type="button" class="btn btn--primary btn--sm"' + act('auto-save') + '>' +
@@ -10266,7 +10409,7 @@ function viewOwnerAuto() {
         '<div class="grow" style="min-width:200px">' +
           '<div style="display:flex;align-items:center;gap:9px;flex-wrap:wrap">' +
             '<span style="font:700 17px Figtree,sans-serif">' + esc(rg.nom) + '</span>' +
-            '<span class="badge badge--soft">' + esc(quand) + ' · ' + esc(rg.heure) + '</span>' +
+            '<span class="badge badge--soft">' + esc(quand) + (rg.quand === 'reservation' ? '' : ' · ' + esc(rg.heure)) + '</span>' +
             (rg.actif ? '' : '<span class="badge badge--amber">En pause</span>') +
           '</div>' +
           '<div class="sec-note" style="margin-top:4px">' + esc(cibles) + '</div>' +
@@ -10294,14 +10437,11 @@ function viewOwnerAuto() {
 
     (state.am ? formAuto() : '') +
 
-    '<div class="alert alert--blue" style="margin-top:20px">' +
-      '<div style="display:flex;align-items:center;gap:8px"><span class="dot" style="background:#25D366"></span>' +
-        '<span class="kind">Envoi par WhatsApp</span></div>' +
-      '<div class="title" style="color:var(--ink)">Le jour venu, le message t’attend ici, prêt à partir</div>' +
-      '<div class="det">« À envoyer maintenant » ouvre WhatsApp avec le message rempli pour ce voyageur : tu ' +
-        'appuies sur « Envoyer ». Il faut son numéro (son livret, ou la fiche du séjour). L’envoi tout seul, ' +
-        'sans toi, viendra avec Beds24 (D-199).</div>' +
-    '</div>' +
+    /* Session 49 (D-233) : l'envoi tout seul par Beds24 existe. L'encadré
+       WhatsApp disait « viendra avec Beds24 » : remplacé par l'interrupteur,
+       la file des envois Beds24, puis ce qui reste à envoyer à la main. */
+    carteEnvoiBeds24() +
+    blocFileBeds24() +
     blocEnvoisAFaire() +
 
     '<h2 class="sec-title" style="margin-top:24px">Mes messages types</h2>' +
@@ -10312,17 +10452,21 @@ function viewOwnerAuto() {
     '<h2 class="sec-title" style="margin-top:26px">Prochains envois</h2>' +
     '<div class="card" style="padding:0;overflow:hidden">' +
       '<div class="table-scroll">' +
-        '<div class="thead" style="min-width:700px"><span style="width:120px">Date</span><span style="width:70px">Heure</span>' +
-          '<span style="flex:1.2">Voyageur</span><span style="flex:1">Logement</span><span style="flex:1.2">Message</span></div>' +
+        '<div class="thead" style="min-width:800px"><span style="width:120px">Date</span><span style="width:70px">Heure</span>' +
+          '<span style="flex:1.2">Voyageur</span><span style="flex:1">Logement</span><span style="flex:1.2">Message</span>' +
+          '<span style="width:110px">Par</span></div>' +
         (envois.length ? envois.slice(0, 40).map(function (e) {
           var p = prop(e.pid);
-          return '<div class="trow" style="min-width:700px">' +
+          var auto = partParBeds24(e.regle, e.pid, e.r);
+          return '<div class="trow" style="min-width:800px">' +
             '<span class="num" style="width:120px;font-weight:600">' + esc(jourLabel(e.date)) + '</span>' +
             '<span class="num" style="width:70px">' + esc(e.regle.heure) + '</span>' +
             '<span style="flex:1.2;min-width:0">' + esc(e.r.guest) + '</span>' +
             '<span style="flex:1;display:flex;align-items:center;gap:8px;min-width:0">' +
               '<span class="dot" style="background:' + p.color + '"></span>' + esc(p.short) + '</span>' +
             '<span style="flex:1.2;color:var(--muted3);min-width:0">' + esc(e.regle.nom) + '</span>' +
+            '<span style="width:110px">' + (auto ? '<span class="badge badge--blue">Beds24, seul</span>'
+              : '<span class="badge badge--soft">À la main</span>') + '</span>' +
             '</div>';
         }).join('') : '<p class="empty">Aucun envoi prévu. Les messages « dès la réservation » ne figurent pas ici : ' +
           'ils partent au moment où la réservation arrive.</p>') +
@@ -13358,7 +13502,8 @@ function carteBeds24() {
     '<h2 style="font:700 16px Figtree,sans-serif;margin:0 0 4px">🔗 Beds24 → MAISON WARME</h2>' +
     '<p class="sec-note" style="margin:0 0 12px">« Importer » complète tes séjours (vrai montant, nom, nombre de ' +
       'voyageurs, plateforme) et ajoute ceux qui manquent, <strong>seulement pour les logements reliés</strong>. ' +
-      'Il ne change jamais les dates ni ce que tu as saisi toi-même, et n’écrit rien chez Beds24.</p>' +
+      'Il ne change jamais les dates ni ce que tu as saisi toi-même, et n’écrit rien chez Beds24. ' +
+      'Seuls tes <strong>messages aux voyageurs</strong> y sont écrits (rubrique Messages, Messages programmés).</p>' +
     '<div style="display:flex;gap:8px;flex-wrap:wrap">' + bouton('b24-etat', 'Vérifier la liaison', true) +
       bouton('b24-sejours', 'Voir les réservations de Beds24') +
       (biensBeds24().length ? bouton('b24-importer', 'Importer dans MAISON WARME (' +
@@ -13374,10 +13519,15 @@ function carteBeds24() {
     }).join('') + '</div>' : '') +
     blocEtat + blocSejours +
     '<details class="b24-details"' + (b24.cle || (b24.msg && !b24.ok && /clé|relié|invitation/.test(b24.msg)) ? ' open' : '') + '>' +
-      '<summary>Relier une première fois : le code d’invitation</summary>' +
+      '<summary>Relier, ou changer la clé : le code d’invitation</summary>' +
+      /* Session 49 (D-232) : répondre aux voyageurs et envoyer les messages
+         programmés demandent le droit d'ÉCRIRE sur « bookings ». Le texte
+         « uniquement en lecture » de la session 48 est remplacé (règle 8). */
       '<p class="sec-note" style="margin:8px 0">Chez Beds24 : <strong>Settings → Marketplace → API → Generate invite code</strong>. ' +
-        'Cocher <strong>uniquement en lecture</strong> : bookings, bookings-personal, bookings-financial, properties. ' +
-        'Le code périme vite : le coller ici <strong>aussitôt</strong>.</p>' +
+        'Cocher <strong>en lecture</strong> : bookings, bookings-personal, bookings-financial, properties — et ' +
+        '<strong>bookings aussi en écriture</strong> : c’est ce qui permet de répondre aux voyageurs et d’envoyer ' +
+        'les messages programmés. Rien sur les prix ni les disponibilités. ' +
+        'Le code périme vite : le coller ici <strong>aussitôt</strong>. §54 du mode d’emploi.</p>' +
       '<div style="display:flex;gap:8px;flex-wrap:wrap">' +
         '<input class="inp" style="flex:1;min-width:200px" type="text" autocomplete="off" placeholder="Coller le code d’invitation" value="' +
           esc(b24.code) + '" data-fid="b24-code" data-in="b24-code">' +
@@ -13505,7 +13655,7 @@ function releveAutoBeds24() {
   if (typeof DB === 'undefined' || !DB.estDispo() || !DB.beds24 || !DB.profil()) return Promise.resolve(0);
   if (b24.encours || (b24Auto.quand && Date.now() - b24Auto.quand < B24_DELAI)) return Promise.resolve(0);
   b24Auto.quand = Date.now();
-  return DB.beds24('sejours').then(function (j) {
+  return DB.beds24('sejours').then(retenirSejoursBeds24).then(function (j) {
     var lignes = biensBeds24().map(function (p) {
       var room = String(state.info[p.id].beds24).trim();
       return { nom: p.name, bilan: fusionnerBeds24(p.id, (j.sejours || []).filter(function (x) { return String(x.roomId) === room; })) };
@@ -13542,43 +13692,166 @@ function releveAutoBeds24() {
    Un message de Beds24 porte le numéro de sa réservation Beds24 ; on retrouve
    le séjour de MAISON WARME comme l'import (D-229) : identifiant « b24:… »,
    sinon mêmes dates dans le logement relié. Un message d'un logement non
-   relié n'est pas montré. */
-var b24Msg = { quand: 0, parResa: {}, total: 0, nonLus: 0, ok: true, texte: '', encours: false };
+   relié n'est pas montré.
+
+   LA RELÈVE DEVIENT AUTOMATIQUE (session 49, D-232). Demandé le 7 novembre :
+   *« tu m'as mis en place un relevé manuel des messages, j'aimerais en faire
+   un automatique »*. Jusqu'ici, la relève suivait l'import horaire — donc au
+   mieux une fois par heure, et la page disait « pas encore relevés » tant
+   qu'on n'avait pas touché « Relever ». Désormais, MAISON WARME ouvert :
+     · toutes les DEUX minutes quand la rubrique Messages est affichée ;
+     · toutes les DIX minutes ailleurs (pour la pastille « non lus » du menu) ;
+     · tout de suite à l'ouverture, au retour au premier plan, et en entrant
+       dans la rubrique.
+   L'écran n'est redessiné QUE si quelque chose a changé : un redessin
+   inutile toutes les deux minutes gênerait une saisie en cours. Le bouton
+   « ⟳ » reste, pour qui veut forcer. Application fermée, rien ne se relève :
+   il n'y a personne pour lire. */
+var b24Msg = { quand: 0, parResa: {}, total: 0, nonLus: 0, ok: true, texte: '', encours: false, signature: '' };
 var B24_MSG_DELAI = 10 * 60 * 1000;
+var B24_MSG_DELAI_PAGE = 2 * 60 * 1000;
+
+/* Les réservations Beds24 de la dernière relève (D-232) : elles donnent le
+   NUMÉRO Beds24 d'un séjour — sans lui on ne peut pas lui écrire — et
+   l'HEURE de sa réservation, pour « Dès la réservation ». Position
+   d'affichage, relue de Beds24 à chaque fois (règle 7). */
+var b24Sejours = { quand: 0, liste: [] };
+function retenirSejoursBeds24(j) { b24Sejours = { quand: Date.now(), liste: (j && j.sejours) || [] }; return j; }
+
+function surPageMessages() { return !!route && (route.name === 'o-msgs' || route.name === 'o-msg'); }
+
+/** La réservation Beds24 d'un séjour de MAISON WARME, ou null. Même
+    rapprochement que l'import (D-229) : identifiant « b24:… », sinon mêmes
+    dates dans la chambre reliée. */
+function sejourBeds24De(pid, r) {
+  var room = String((state.info[pid] || {}).beds24 || '').trim();
+  if (!room || !r) return null;
+  var l = b24Sejours.liste || [];
+  var id = String(r.uid || '').indexOf('b24:') === 0 ? String(r.uid).slice(4) : '';
+  return (id && l.filter(function (b) { return String(b.id) === id; })[0]) ||
+    l.filter(function (b) {
+      return String(b.roomId) === room && b.statut !== 'cancelled' && b.arrivee === r.start && b.depart === r.end;
+    })[0] || (id ? { id: id } : null);
+}
+
+/** Le numéro Beds24 d'un séjour (pour lui écrire), ou 0. */
+function bookingIdDe(pid, r) {
+  var b = sejourBeds24De(pid, r);
+  return b ? (parseInt(b.id, 10) || 0) : 0;
+}
+
+function rangerMessagesBeds24(sejours, messages) {
+  var parId = {};
+  (sejours || []).forEach(function (b) { parId[b.id] = b; });
+  var parResa = {}, total = 0, nonLus = 0, inconnus = 0;
+  (messages || []).forEach(function (m) {
+    var b = parId[m.bookingId];
+    if (!b) { inconnus++; return; }
+    var bien = biensBeds24().filter(function (p) { return String(state.info[p.id].beds24).trim() === String(b.roomId); })[0];
+    if (!bien) return;
+    var r = resasOf(bien.id).filter(function (x) { return x.uid === 'b24:' + b.id; })[0] ||
+      resasOf(bien.id).filter(function (x) { return x.statut !== 'annule' && x.start === b.arrivee && x.end === b.depart; })[0];
+    if (!r) return;
+    (parResa[r.id] = parResa[r.id] || []).push(m);
+    total++;
+    if (m.de === 'guest' && !m.lu) nonLus++;
+  });
+  Object.keys(parResa).forEach(function (k) {
+    parResa[k].sort(function (a, b) { return a.quand < b.quand ? -1 : a.quand > b.quand ? 1 : 0; });
+  });
+  return { parResa: parResa, total: total, nonLus: nonLus, inconnus: inconnus };
+}
 
 function chargerMessagesBeds24(force) {
   if (state.auth !== 'owner' || !biensBeds24().length) return Promise.resolve(0);
   if (typeof DB === 'undefined' || !DB.estDispo() || !DB.beds24 || !DB.profil()) return Promise.resolve(0);
-  if (b24Msg.encours || (!force && b24Msg.quand && Date.now() - b24Msg.quand < B24_MSG_DELAI)) return Promise.resolve(0);
+  var delai = surPageMessages() ? B24_MSG_DELAI_PAGE : B24_MSG_DELAI;
+  if (b24Msg.encours || (!force && b24Msg.quand && Date.now() - b24Msg.quand < delai)) return Promise.resolve(0);
   b24Msg.encours = true; if (force) render();
-  return Promise.all([DB.beds24('sejours'), DB.beds24('messages')]).then(function (rep) {
-    var parId = {};
-    (rep[0].sejours || []).forEach(function (b) { parId[b.id] = b; });
-    var parResa = {}, total = 0, nonLus = 0;
-    (rep[1].messages || []).forEach(function (m) {
-      var b = parId[m.bookingId];
-      if (!b) return;
-      var bien = biensBeds24().filter(function (p) { return String(state.info[p.id].beds24).trim() === String(b.roomId); })[0];
-      if (!bien) return;
-      var r = resasOf(bien.id).filter(function (x) { return x.uid === 'b24:' + b.id; })[0] ||
-        resasOf(bien.id).filter(function (x) { return x.statut !== 'annule' && x.start === b.arrivee && x.end === b.depart; })[0];
-      if (!r) return;
-      (parResa[r.id] = parResa[r.id] || []).push(m);
-      total++;
-      if (m.de === 'guest' && !m.lu) nonLus++;
-    });
-    Object.keys(parResa).forEach(function (k) {
-      parResa[k].sort(function (a, b) { return a.quand < b.quand ? -1 : a.quand > b.quand ? 1 : 0; });
-    });
-    b24Msg = { quand: Date.now(), parResa: parResa, total: total, nonLus: nonLus, ok: true, encours: false,
-      texte: total + ' message(s) Airbnb / Booking relevé(s) à ' + nowHM() + (nonLus ? ' · ' + nonLus + ' non lu(s) chez Beds24' : '') };
-    render();
-    return total;
+  /* Les réservations ne sont relues qu'une fois toutes les dix minutes — ou
+     tout de suite si un message parle d'une réservation qu'on ne connaît pas
+     encore (une réservation toute neuve, qui écrit aussitôt). */
+  var frais = b24Sejours.quand && Date.now() - b24Sejours.quand < B24_MSG_DELAI;
+  var pSej = (!force && frais) ? Promise.resolve({ sejours: b24Sejours.liste })
+    : DB.beds24('sejours').then(retenirSejoursBeds24);
+  return Promise.all([pSej, DB.beds24('messages')]).then(function (rep) {
+    var rg = rangerMessagesBeds24(rep[0].sejours, rep[1].messages);
+    if (rg.inconnus && frais && !force) {
+      return DB.beds24('sejours').then(retenirSejoursBeds24).then(function (j) {
+        return [rangerMessagesBeds24(j.sejours, rep[1].messages), rep[1].messages];
+      });
+    }
+    return [rg, rep[1].messages];
+  }).then(function (x) {
+    var rg = x[0], brut = x[1] || [];
+    var sig = rg.total + ':' + rg.nonLus + ':' + brut.map(function (m) { return m.id + (m.lu ? 'l' : ''); }).join(',');
+    var change = sig !== b24Msg.signature || !b24Msg.ok;
+    b24Msg = { quand: Date.now(), parResa: rg.parResa, total: rg.total, nonLus: rg.nonLus, ok: true, encours: false,
+      signature: sig,
+      texte: rg.total + ' message(s) Airbnb / Booking · relevé automatiquement, dernière fois à ' + nowHM() +
+        (rg.nonLus ? ' · ' + rg.nonLus + ' non lu(s)' : '') };
+    if (force || change) render();
+    marquerLusBeds24();
+    planifierMessagesBeds24();
+    return rg.total;
   }, function (err) {
     b24Msg.encours = false; b24Msg.ok = false; b24Msg.quand = Date.now();
-    b24Msg.texte = 'Les messages n’ont pas pu être relevés : ' + ((err && err.message) || 'Beds24 n’a pas répondu.');
+    b24Msg.texte = 'Les messages n’ont pas pu être relevés : ' + ((err && err.message) || 'Beds24 n’a pas répondu.') +
+      ' Nouvel essai tout seul dans quelques minutes.';
     render();
     return 0;
+  });
+}
+
+/* Le minuteur : une fois par minute, il demande — chaque fonction décide
+   elle-même s'il y a lieu (deux ou dix minutes pour les messages, cinq pour
+   la file d'envoi). Page cachée : il ne fait rien (le téléphone dort, et
+   personne ne lit). Lancé une seule fois, à l'entrée du propriétaire. */
+/** Après la relève des calendriers et l'import Beds24 : les messages, puis la file. */
+function releveAutoMessages() {
+  return chargerMessagesBeds24().then(function () { return planifierMessagesBeds24(); });
+}
+
+var b24Minuteur = null;
+function lancerReleveMessages() {
+  if (b24Minuteur || typeof setInterval !== 'function') return;
+  b24Minuteur = setInterval(function () {
+    if (state.auth !== 'owner' || document.visibilityState !== 'visible') return;
+    chargerMessagesBeds24();
+    planifierMessagesBeds24();
+    if (fileDue() && Date.now() - (b24File.robotQuand || 0) > 2 * 60 * 1000) lancerRobotMessages();
+  }, 60 * 1000);
+}
+
+/* MARQUER « LU » CE QU'ON A OUVERT (D-232). « Non lu » est une information
+   de Beds24 : sans ce geste, la pastille resterait allumée pour toujours,
+   puisqu'on ne lit plus les messages chez Airbnb. Seulement les messages du
+   voyageur de la conversation affichée, une seule demande par message. Un
+   refus (clé en lecture seule) est DIT sous la conversation, sans rien
+   bloquer (règle 4). */
+var b24LusDemandes = {};
+var b24LuErreur = '';
+function marquerLusBeds24() {
+  if (!route || route.name !== 'o-msg' || !route.id) return;
+  if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
+  var ids = messagesBeds24De(route.id).filter(function (m) {
+    return m.de === 'guest' && !m.lu && !b24LusDemandes[m.id];
+  }).map(function (m) { return m.id; });
+  if (!ids.length || typeof DB === 'undefined' || !DB.beds24) return;
+  ids.forEach(function (id) { b24LusDemandes[id] = true; });
+  DB.beds24('lu', { ids: ids }).then(function () {
+    Object.keys(b24Msg.parResa).forEach(function (k) {
+      b24Msg.parResa[k].forEach(function (m) { if (ids.indexOf(m.id) >= 0) m.lu = true; });
+    });
+    b24Msg.nonLus = Math.max(0, b24Msg.nonLus - ids.length);
+    b24Msg.texte = String(b24Msg.texte || '').replace(/ · \d+ non lu\(s\)$/, '') +
+      (b24Msg.nonLus ? ' · ' + b24Msg.nonLus + ' non lu(s)' : '');
+    b24Msg.signature = '';
+    b24LuErreur = '';
+    render();
+  }, function (err) {
+    b24LuErreur = 'Beds24 n’a pas noté ces messages comme lus : ' + ((err && err.message) || '') ;
+    render();
   });
 }
 
@@ -13597,14 +13870,38 @@ function quandMsgBeds24(iso) {
   return m ? fmtDate(m[1]) + ', ' + m[2] : String(iso || '');
 }
 
+/** L'instant (ISO, universel) qui correspond à « tel jour, telle heure, À PARIS »
+    — quel que soit le fuseau de l'appareil, et changement d'heure compris. */
+function instantParis(jour, hm) {
+  var m = /^(\d{1,2}):(\d{2})/.exec(String(hm || '')) || [0, '10', '00'];
+  var naif = Date.parse(String(jour) + 'T' + ('0' + m[1]).slice(-2) + ':' + m[2] + ':00Z');
+  if (isNaN(naif)) return '';
+  var fmt = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Paris', hourCycle: 'h23', year: 'numeric',
+    month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+  function ecart(t) {
+    var p = {};
+    fmt.formatToParts(new Date(t)).forEach(function (x) { p[x.type] = x.value; });
+    return Date.parse(p.year + '-' + p.month + '-' + p.day + 'T' + p.hour + ':' + p.minute + ':00Z') - t;
+  }
+  var t = naif - ecart(naif);
+  t = naif - ecart(t);              // une seconde passe pour les nuits de changement d'heure
+  return new Date(t).toISOString();
+}
+
+/* Le fil d'une conversation : les messages Beds24, puis ce qui est
+   PROGRAMMÉ pour ce séjour et pas encore parti (D-233) — Marc voit ainsi,
+   au même endroit, ce que le voyageur a reçu et ce qu'il va recevoir. */
 function carteMessagesBeds24(r) {
   if (!biensBeds24().length) return '';
   var l = messagesBeds24De(r.id);
+  var prevus = (b24File.lignes || []).filter(function (x) {
+    return x.resa_id === r.id && (x.statut === 'prevu' || x.statut === 'envoi' || x.statut === 'echec');
+  });
   return '<div class="card" style="margin-top:20px;padding:22px;border-left:4px solid var(--blue)">' +
     '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">' +
-      '<h2 class="grow" style="font:700 16px Figtree,sans-serif;margin:0">Messages ' + esc(r.plat) + ' (par Beds24)</h2>' +
-      '<button type="button" class="btn btn--xs" style="background:var(--cream);color:var(--ink-soft)"' +
-        (b24Msg.encours ? ' disabled' : '') + act('b24-messages') + '>' + (b24Msg.encours ? 'Un instant…' : '⟳ Relever') + '</button>' +
+      '<h2 class="grow" style="font:700 16px Figtree,sans-serif;margin:0">Conversation ' + esc(r.plat) + ' (par Beds24)</h2>' +
+      '<button type="button" class="btn btn--xs" style="background:var(--cream);color:var(--ink-soft)" title="Relever tout de suite"' +
+        (b24Msg.encours ? ' disabled' : '') + act('b24-messages') + '>' + (b24Msg.encours ? 'Un instant…' : '⟳') + '</button>' +
     '</div>' +
     (b24Msg.texte ? '<p class="sec-note" style="margin:6px 0 0;color:' + (b24Msg.ok ? 'var(--muted)' : 'var(--terra-d)') + '">' + esc(b24Msg.texte) + '</p>' : '') +
     (l.length ? '<div class="stack" style="gap:10px;margin-top:14px">' + l.map(function (m) {
@@ -13612,12 +13909,348 @@ function carteMessagesBeds24(r) {
       return '<div class="msg msg--' + cote + '"' + (m.de === 'system' ? ' style="opacity:.75"' : '') + '>' +
         '<div class="msg-t">' + esc(m.texte || (m.piece ? '📎 ' + m.piece : '')) + (m.texte && m.piece ? '<br>📎 ' + esc(m.piece) : '') + '</div>' +
         '<div class="msg-m num">' + esc((m.de === 'guest' ? r.guest : m.de === 'host' ? 'Toi' : 'Plateforme') + ' · ' + quandMsgBeds24(m.quand)) +
-          (m.de === 'guest' && !m.lu ? ' · non lu' : '') + '</div></div>';
+          (m.de === 'guest' && !m.lu ? ' · non lu' : '') + (m.local ? ' · envoi en cours de confirmation' : '') + '</div></div>';
     }).join('') + '</div>'
-      : '<p class="empty" style="padding:12px 0 0">' + (b24Msg.quand ? 'Aucun message pour ce séjour chez Beds24.' : 'Touche « Relever » pour lire les messages.') + '</p>') +
-    '<p class="sec-note" style="margin:12px 0 0">Lecture seule pour l’instant : pour répondre, utilise encore Airbnb ou Booking. ' +
-      'Répondre d’ici viendra à l’étape suivante.</p>' +
+      : '<p class="empty" style="padding:12px 0 0">' + (b24Msg.quand ? 'Aucun message pour ce séjour chez Beds24.' : 'Relève en cours…') + '</p>') +
+    (prevus.length ? '<div class="stack" style="gap:10px;margin-top:14px">' + prevus.map(function (x) {
+      var rouge = x.statut === 'echec';
+      return '<div class="msg msg--out msg--prog' + (rouge ? ' msg--echec' : '') + '">' +
+        '<div class="msg-t">' + esc(x.texte) + '</div>' +
+        '<div class="msg-m num">' + (rouge
+          ? '⚠️ Pas parti (« ' + esc(x.regle_nom) + ' ») : ' + esc(x.erreur || 'refusé') + ' — voir Messages programmés'
+          : '🕒 Programmé · « ' + esc(x.regle_nom) + ' » · part le ' + esc(quandMsgBeds24(x.envoyer_a)) + ' tout seul, par Beds24') +
+        '</div></div>';
+    }).join('') + '</div>' : '') +
+    (b24LuErreur ? '<p class="sec-note" style="margin:12px 0 0;color:var(--terra-d)">' + esc(b24LuErreur) + '</p>' : '') +
   '</div>';
+}
+
+/* ==========================================================================
+   LA FILE DES MESSAGES PROGRAMMÉS, ENVOYÉS PAR BEDS24 (session 49, D-233)
+
+   Demandé le 7 novembre : *« la possibilité d'écrire un message depuis
+   l'application ainsi que les messages programmés »*.
+
+   COMMENT ÇA MARCHE, EN TROIS PIÈCES
+     1. ICI, à chaque relève (MAISON WARME ouvert) : on calcule les messages
+        programmés des 60 prochains jours pour les séjours des logements
+        reliés à Beds24, REMPLIS pour chaque voyageur (`remplirVars`, un seul
+        endroit pour la mise en forme), et on les range dans la table
+        `messages_sortants` (script 19) avec leur heure, à Paris.
+     2. Le RÉVEIL du cahier partagé (Supabase Cron, toutes les dix minutes)
+        sonne chez le robot (`/api/beds24`, action `robot`), qui poste chez
+        Beds24 ceux dont l'heure est venue — application fermée comprise.
+     3. Ici encore, MAISON WARME ouvert : dès qu'un message est dû, on
+        réveille le robot soi-même, sans attendre les dix minutes.
+
+   CE QUI NE PART JAMAIS
+     · rien tant que l'interrupteur n'est pas allumé (Messages programmés) ;
+     · rien pour un moment ANTÉRIEUR à l'allumage — ni « dès la réservation »
+       pour une réservation faite avant : allumer ne doit pas déverser d'un
+       coup des messages d'accueil à des voyageurs qui les ont déjà reçus
+       d'Airbnb ;
+     · rien pour un séjour annulé, ni plus de trois jours en retard ;
+     · rien qui ait déjà été ouvert dans WhatsApp (`waOuverts`).
+
+   QUI ÉCRIT QUOI (règle 25). Le navigateur range et met à jour le TEXTE et
+   l'HEURE d'un message tant qu'il est « prévu » ; dès que le robot l'a pris,
+   seul le robot écrit son statut. Chaque mise à jour d'ici est conditionnée
+   au statut lu (`DB.majMessage(…, ['prevu'])`) : arrivée trop tard, elle
+   porte sur zéro ligne au lieu d'écraser le robot.
+   ========================================================================== */
+var b24File = { quand: 0, lignes: [], ok: true, texte: '', encours: false, robot: null, robotQuand: 0, robotEnCours: false };
+var B24_FILE_DELAI = 5 * 60 * 1000;
+var B24_FILE_HORIZON = 60;
+
+function envoiAutoActif() {
+  return !!(state.envoiBeds24 && state.envoiBeds24.actif) && biensBeds24().length > 0;
+}
+
+/** Les messages qui DOIVENT être dans la file, d'après les règles et les séjours. */
+function messagesVoulus() {
+  if (!envoiAutoActif()) return [];
+  var depuis = state.envoiBeds24.depuis || 0;
+  var maintenant = Date.now();
+  var debut = maintenant - 3 * 86400000, fin = maintenant + B24_FILE_HORIZON * 86400000;
+  var relies = {};
+  biensBeds24().forEach(function (p) { relies[p.id] = true; });
+  var out = [];
+  state.autoMsgs.forEach(function (rg) {
+    if (!rg.actif || !String(rg.texte || '').trim()) return;
+    allResas().forEach(function (x) {
+      if (!relies[x.pid] || x.r.statut === 'annule' || x.r.end < TODAY) return;
+      if (rg.props && rg.props.length && rg.props.indexOf(x.pid) < 0) return;
+      var id = rg.id + '_' + x.r.id;
+      if (state.waOuverts[id]) return;
+      var b = sejourBeds24De(x.pid, x.r);
+      if (!b || !parseInt(b.id, 10)) return;
+      var t;
+      if (rg.quand === 'reservation') {
+        t = Date.parse(String(b.reserveLe || ''));
+        if (isNaN(t)) return;              // l'heure de la réservation est inconnue : on ne devine pas (règle 5)
+      } else {
+        var d = dateEnvoi(rg, x.r);
+        t = d ? Date.parse(instantParis(d, rg.heure)) : NaN;
+        if (isNaN(t)) return;
+      }
+      if (t < depuis || t < debut || t > fin) return;
+      out.push({
+        id: id, property_id: x.pid, resa_id: x.r.id, booking_b24: parseInt(b.id, 10),
+        regle_id: rg.id, regle_nom: rg.nom, texte: remplirVars(rg.texte, x.pid, x.r),
+        envoyer_a: new Date(t).toISOString()
+      });
+    });
+  });
+  return out;
+}
+
+/** Pourquoi un message prévu ne l'est plus — dit sur l'écran (règle 5). */
+function raisonRetrait(l) {
+  if (!envoiAutoActif()) return 'Plus prévu : envoi automatique coupé.';
+  var rg = state.autoMsgs.filter(function (x) { return x.id === l.regle_id; })[0];
+  if (!rg) return 'Plus prévu : le message « ' + l.regle_nom + ' » a été supprimé.';
+  if (!rg.actif) return 'Plus prévu : le message « ' + rg.nom + ' » est en pause.';
+  var f = resaById(l.resa_id);
+  if (!f || f.r.statut === 'annule') return 'Plus prévu : séjour annulé ou supprimé.';
+  if (state.waOuverts[l.id]) return 'Plus prévu : déjà envoyé autrement (WhatsApp ou « Déjà fait »).';
+  return 'Plus prévu : dates, logements ou réglage du message modifiés.';
+}
+
+function fileDue() {
+  if (!envoiAutoActif()) return false;
+  var n = Date.now();
+  return (b24File.lignes || []).some(function (l) { return l.statut === 'prevu' && Date.parse(l.envoyer_a) <= n; });
+}
+
+function relireFile() {
+  return DB.fileMessages().then(function (lignes) {
+    b24File.lignes = lignes; b24File.quand = Date.now(); b24File.ok = true;
+    return lignes;
+  });
+}
+
+function planifierMessagesBeds24(force) {
+  if (state.auth !== 'owner' || !biensBeds24().length) return Promise.resolve(0);
+  if (typeof DB === 'undefined' || !DB.estDispo() || !DB.fileMessages || !DB.profil()) return Promise.resolve(0);
+  if (b24File.encours || (!force && b24File.quand && Date.now() - b24File.quand < B24_FILE_DELAI)) return Promise.resolve(0);
+  /* Sans les réservations Beds24 (leur numéro), on ne range ni ne retire
+     RIEN — un calcul sans elles conclurait que plus rien n'est voulu et
+     viderait la file. On relit seulement la file, pour l'afficher et pour
+     dire ce qui manque (script 19, etc.). */
+  if (envoiAutoActif() && !b24Sejours.quand) {
+    b24File.encours = true;
+    return relireFile().then(function () {
+      b24File.encours = false;
+      b24File.texte = 'File relue à ' + nowHM() + ' — en attente des réservations Beds24 pour ranger les nouveaux messages.';
+      render();
+      return 0;
+    }, function (err) {
+      b24File.encours = false; b24File.ok = false; b24File.quand = Date.now();
+      b24File.code = (err && err.code) || '';
+      b24File.texte = (err && err.message) || 'La file des messages programmés n’a pas pu être lue.';
+      render();
+      return 0;
+    });
+  }
+  b24File.encours = true;
+  var bilan = { ranges: 0, modifies: 0, retires: 0 };
+  return DB.fileMessages().then(function (lignes) {
+    var parId = {};
+    lignes.forEach(function (l) { parId[l.id] = l; });
+    var voulus = messagesVoulus(), vus = {}, nouveaux = [], gestes = [];
+    voulus.forEach(function (v) {
+      vus[v.id] = true;
+      var l = parId[v.id];
+      var champs = { texte: v.texte, envoyer_a: v.envoyer_a, booking_b24: v.booking_b24, regle_nom: v.regle_nom };
+      if (!l) { nouveaux.push(v); return; }
+      if (l.statut === 'prevu' && (l.texte !== v.texte || Date.parse(l.envoyer_a) !== Date.parse(v.envoyer_a) ||
+          String(l.booking_b24) !== String(v.booking_b24) || l.regle_nom !== v.regle_nom)) {
+        gestes.push(function () { return DB.majMessage(v.id, champs, ['prevu']).then(function (n) { bilan.modifies += n; }); });
+      } else if (l.statut === 'annule' && /^Plus prévu/.test(l.erreur || '')) {
+        // Remis en route : la règle a été rallumée, le séjour rétabli…
+        gestes.push(function () {
+          return DB.majMessage(v.id, Object.assign({ statut: 'prevu', erreur: '', essais: 0 }, champs), ['annule'])
+            .then(function (n) { bilan.ranges += n; });
+        });
+      }
+    });
+    lignes.forEach(function (l) {
+      if (l.statut !== 'prevu' || vus[l.id]) return;
+      var raison = raisonRetrait(l);
+      gestes.push(function () { return DB.majMessage(l.id, { statut: 'annule', erreur: raison }, ['prevu']).then(function (n) { bilan.retires += n; }); });
+    });
+    // Un geste après l'autre : pas de rafale vers le cahier.
+    return gestes.reduce(function (p, g) { return p.then(g); }, Promise.resolve())
+      .then(function () { return DB.rangerMessages(nouveaux); })
+      .then(function (n) { bilan.ranges += n; return relireFile(); });
+  }).then(function () {
+    b24File.encours = false;
+    b24File.texte = 'File relue à ' + nowHM() +
+      (bilan.ranges || bilan.modifies || bilan.retires
+        ? ' : ' + bilan.ranges + ' rangé(s), ' + bilan.modifies + ' mis à jour, ' + bilan.retires + ' retiré(s)' : '');
+    render();
+    if (fileDue()) lancerRobotMessages();
+    return bilan.ranges;
+  }, function (err) {
+    b24File.encours = false; b24File.ok = false; b24File.quand = Date.now();
+    b24File.code = (err && err.code) || '';
+    b24File.texte = (err && err.message) || 'La file des messages programmés n’a pas pu être lue.';
+    render();
+    return 0;
+  });
+}
+
+/** Réveiller le robot tout de suite (MAISON WARME ouvert et un message dû). */
+function lancerRobotMessages() {
+  if (b24File.robotEnCours || typeof DB === 'undefined' || !DB.beds24) return Promise.resolve(0);
+  b24File.robotEnCours = true; b24File.robotQuand = Date.now();
+  return DB.beds24('robot').then(function (j) {
+    b24File.robot = { ok: true, quand: nowHM(), texte: j.actif === false
+      ? 'Le robot a trouvé l’envoi automatique coupé : rien n’est parti.'
+      : !j.pris ? 'Rien à envoyer pour l’instant.'
+        : j.envoyes + ' message(s) envoyé(s)' + (j.annules ? ', ' + j.annules + ' annulé(s)' : '') +
+          (j.reportes ? ', ' + j.reportes + ' à réessayer' : '') + (j.echecs ? ', ' + j.echecs + ' en échec' : '') + '.' };
+  }, function (err) {
+    b24File.robot = { ok: false, quand: nowHM(), code: (err && err.code) || '', texte: (err && err.message) || 'Le robot n’a pas répondu.' };
+  }).then(function () {
+    b24File.robotEnCours = false;
+    return relireFile().then(null, function () { return null; });
+  }).then(function () {
+    render();
+    if (b24File.robot && b24File.robot.ok && b24File.robot.texte.indexOf('envoyé') >= 0) chargerMessagesBeds24(true);
+    return 1;
+  });
+}
+
+/* --------------------------------------------------------------------------
+   ÉCRIRE AU VOYAGEUR DEPUIS LA CONVERSATION (session 49, D-232)
+
+   Demandé le 7 novembre : *« la possibilité d'écrire un message depuis
+   l'application »* et *« une prévisualisation du message dans la rubrique
+   Messages »*. Une seule carte réunit ce qui était l'encadré WhatsApp
+   (D-199) et la réponse par Beds24 :
+     · les puces — lien du livret personnel, réponses toutes faites, messages
+       programmés — remplissent la case ;
+     · l'APERÇU montre, sous la case et à chaque frappe, le message tel que le
+       voyageur le recevra : variables remplacées ({voyageur}, {lien}…) ;
+     · « Envoyer sur Airbnb / Booking » le poste dans la conversation de la
+       plateforme, par Beds24, après une confirmation qui le recite
+       (règle 22 bis : un envoi vers l'extérieur ne se rattrape pas) ;
+     · « Ouvrir dans WhatsApp » reste, quand on a le numéro.
+   -------------------------------------------------------------------------- */
+var b24Envoi = {};          // { sejour: { encours, ok, texte } } — position d'affichage (règle 7)
+
+/* INSÉRER À L'ENDROIT DU CURSEUR (D-232, D-234). Toucher un bouton fait
+   perdre le focus à la case, mais elle garde la position du curseur — sauf
+   si on n'y est jamais entré : on ajoute alors à la fin, pas au tout début.
+   `champsTouches` retient les cases où l'on est déjà entré (état d'écran). */
+var champsTouches = {};
+var curseurApres = {};
+if (typeof document !== 'undefined' && document.addEventListener) {
+  document.addEventListener('focusin', function (e) {
+    var t = e.target;
+    if (t && t.dataset && t.dataset.fid) champsTouches[t.dataset.fid] = true;
+  });
+}
+function insererAuCurseur(id, valeur, ajout) {
+  var ta = document.getElementById(id);
+  var v = ta ? ta.value : String(valeur || '');
+  // Un curseur ailleurs qu'au tout début a forcément été placé : on s'y fie.
+  var connu = ta && typeof ta.selectionStart === 'number' &&
+    (champsTouches[ta.dataset.fid || id] || ta.selectionStart > 0 || ta.selectionEnd > 0);
+  var a = connu ? ta.selectionStart : v.length;
+  var b = connu ? ta.selectionEnd : v.length;
+  var avant = v.slice(0, a), apres = v.slice(b);
+  // Un espace autour du lien ou de la variable, pour qu'il ne colle pas au mot voisin.
+  var bout = (avant && !/\s$/.test(avant) ? ' ' : '') + ajout + (apres && !/^\s/.test(apres) ? ' ' : '');
+  curseurApres[id] = avant.length + bout.length;
+  return avant + bout + apres;
+}
+function remettreCurseur(id) {
+  var ta = document.getElementById(id);
+  if (!ta) return;
+  ta.focus();
+  var n = curseurApres[id];
+  if (typeof n === 'number') { try { ta.setSelectionRange(n, n); } catch (e) { /* rien */ } }
+}
+/** L'aperçu suit la frappe sans redessiner la page (la saisie n'est pas dérangée). */
+function majApercu(el, texte) {
+  if (String(texte || '').trim()) { el.textContent = texte; return; }
+  el.innerHTML = '<span class="apercu-vide">L’aperçu s’affiche ici dès que tu écris.</span>';
+}
+
+/** « ce qu'Anna », « ce que Paul » — l'élision, comme `de()`. */
+function queNom(nom) {
+  var n = String(nom || '').trim();
+  return /^[aeiouyàâäéèêëîïôöùûüh]/i.test(n) ? 'ce qu’' + n : 'ce que ' + n;
+}
+
+function nomPlateforme(r) {
+  return r && (r.plat === 'Airbnb' || r.plat === 'Booking.com') ? r.plat : 'Airbnb / Booking';
+}
+
+function carteEcrire(pid, r) {
+  var num = numeroWhatsApp(r.tel);
+  var relie = biensBeds24().some(function (p) { return p.id === pid; });
+  var bid = relie ? bookingIdDe(pid, r) : 0;
+  var etat = b24Envoi[r.id] || {};
+  var reps = reponsesDe(pid);
+  var autos = state.autoMsgs.filter(function (x) {
+    return !x.props || !x.props.length || x.props.indexOf(pid) >= 0;
+  });
+  var puce = function (src, x, titre) {
+    return '<button type="button" class="perm-chip"' + act('wa-reponse', { rid: r.id, src: src, id: x.id }) + '>' +
+      esc(titre) + '</button>';
+  };
+  var texte = state.waTexte[r.id] || '';
+  var apercu = remplirVars(texte, pid, r);
+
+  var comment = bid
+    ? 'Ton message part dans la conversation <strong>' + esc(nomPlateforme(r)) + '</strong>, par Beds24 : ' +
+      esc(r.guest) + ' le reçoit comme si tu répondais depuis ' + esc(nomPlateforme(r)) + '.'
+    : relie
+      ? 'Ce séjour n’est pas (encore) retrouvé chez Beds24' + (b24Sejours.quand ? '' : ' — relève en cours') +
+        ' : on ne peut pas lui écrire sur ' + esc(nomPlateforme(r)) + ' d’ici.' + (num ? ' WhatsApp reste possible.' : '')
+      : num ? 'Ce logement n’est pas relié à Beds24 : le message part par WhatsApp.'
+        : 'Ce logement n’est pas relié à Beds24 et il n’y a pas de numéro : écris le numéro sur la fiche du séjour pour passer par WhatsApp.';
+
+  return '<div class="card" style="margin-top:16px;padding:20px 22px;border-left:4px solid var(--terra)">' +
+    '<h2 style="font:700 16px Figtree,sans-serif;margin:0">Écrire à ' + esc(r.guest) + '</h2>' +
+    '<p class="sec-note" style="margin-top:4px">' + comment + '</p>' +
+
+    '<div class="chiprow" style="margin-top:12px">' +
+      '<button type="button" class="perm-chip perm-chip--lien"' + act('ecrire-lien', { rid: r.id }) +
+        ' title="Insère le lien personnel de ce voyageur : il ouvre son livret sans rien taper">🔗 Lien de son livret</button>' +
+      reps.map(function (x) { return puce('rep', x, x.titre); }).join('') +
+      autos.map(function (x) { return puce('auto', x, '🕒 ' + x.nom); }).join('') +
+    '</div>' +
+    (reps.length ? '' : '<p class="sec-note" style="margin:6px 0 0">Pas encore de réponse toute faite pour ce logement. ' +
+      '<button type="button" class="lienbtn"' + act('nav', { path: '#/admin/biens/' + pid }) + '>Les écrire dans la fiche du logement</button>.</p>') +
+
+    '<div style="margin-top:12px"><label class="lab" for="wa-' + esc(r.id) + '">Message</label>' +
+      '<textarea class="inp" id="wa-' + esc(r.id) + '" style="min-height:120px" placeholder="Écris ton message, ou touche une puce ci-dessus."' +
+        ' data-fid="wa-' + esc(r.id) + '" data-in="wa-texte" data-rid="' + esc(r.id) + '" data-pid="' + esc(pid) + '">' + esc(texte) + '</textarea></div>' +
+
+    '<div style="margin-top:12px"><span class="lab">Aperçu — ' + esc(queNom(r.guest)) + ' recevra</span>' +
+      '<div class="stack" style="margin-top:6px"><div class="msg msg--out msg--apercu">' +
+        '<div class="msg-t" id="apercu-' + esc(r.id) + '">' + (apercu.trim() ? esc(apercu) : '<span class="apercu-vide">L’aperçu s’affiche ici dès que tu écris.</span>') + '</div>' +
+      '</div></div></div>' +
+
+    '<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:14px">' +
+      (bid ? '<button type="button" class="btn btn--sm btn--primary"' + (etat.encours ? ' disabled' : '') +
+        act('b24-envoyer', { rid: r.id }) + '>' + (etat.encours ? 'Envoi…' : 'Envoyer sur ' + esc(nomPlateforme(r))) + '</button>' : '') +
+      (num ? '<button type="button" class="btn btn--sm" style="background:#25D366;color:#fff"' +
+        act('wa-ouvrir', { rid: r.id }) + '>Ouvrir dans WhatsApp</button>' : '') +
+      (num ? boutonContact(r.id) : '') +
+      (!num ? '<button type="button" class="btn btn--xs" style="background:var(--cream);color:var(--ink-soft)"' +
+        act('nav', { path: '#/admin/reservations/' + r.id }) + '>Fiche du séjour</button>' : '') +
+    '</div>' +
+    (etat.texte ? '<p class="sec-note" style="margin:10px 0 0;color:' + (etat.ok ? 'var(--green-d,#1C7A43)' : 'var(--terra-d)') + '">' +
+      esc(etat.texte) + '</p>' : '') +
+    (num ? '<p class="sec-note" style="margin:6px 0 0">WhatsApp au <strong class="num">+' + esc(num) + '</strong> : ' +
+      'WhatsApp s’ouvre avec le message écrit, c’est toi qui appuies sur « Envoyer ». Le contact s’appellera « ' +
+      esc(nomContactSejour(pid, r)) + ' ».</p>' : '') +
+    '</div>';
 }
 
 function importerBeds24() {
@@ -13630,7 +14263,7 @@ function importerBeds24() {
     b24.ok = false; b24.msg = 'Le cahier partagé n’est pas joignable : import impossible d’ici.'; render(); return;
   }
   b24.encours = 'b24-importer'; b24.msg = ''; render();
-  DB.beds24('sejours').then(function (j) {
+  DB.beds24('sejours').then(retenirSejoursBeds24).then(function (j) {
     b24.sejours = j;
     var lignes = [];
     biens.forEach(function (p) {
@@ -13659,11 +14292,12 @@ function b24Appel(action, extra) {
   DB.beds24(action, extra).then(function (j) {
     b24.encours = ''; b24.ok = true;
     if (action === 'etat') { b24.etat = j; b24.msg = ''; }
-    else if (action === 'sejours') { b24.sejours = j; b24.msg = ''; }
+    else if (action === 'sejours') { b24.sejours = retenirSejoursBeds24(j); b24.msg = ''; }
     else if (action === 'inviter') {
       b24.cle = String(j.refreshToken || ''); b24.code = '';
       b24.msg = j.dejaPosee
-        ? 'Code accepté. Attention : une clé est déjà posée chez Vercel ; remplace-la par celle-ci seulement si l’ancienne ne marche plus.'
+        ? 'Code accepté. Une clé est déjà posée chez Vercel : remplace-la par celle-ci (BEDS24_REFRESH_TOKEN), puis ' +
+          'Redeploy — c’est ce qui donne le droit d’écrire aux voyageurs si ce code l’a coché (§54).'
         : 'Code accepté : copie la clé ci-dessous et colle-la chez Vercel.';
     }
     render();
@@ -18570,6 +19204,7 @@ var actions = {
     if (i >= 0) state.autoMsgs[i] = regle; else state.autoMsgs.push(regle);
     state.am = null;
     save(); render();
+    planifierMessagesBeds24(true);       // D-233 : la file suit la règle
   },
   'auto-edit': function (el) {
     var rg = state.autoMsgs.find(function (x) { return x.id === el.dataset.rid; });
@@ -18579,7 +19214,7 @@ var actions = {
   },
   'auto-toggle': function (el) {
     var rg = state.autoMsgs.find(function (x) { return x.id === el.dataset.rid; });
-    if (rg) { rg.actif = !rg.actif; save(); render(); }
+    if (rg) { rg.actif = !rg.actif; save(); render(); planifierMessagesBeds24(true); }
   },
   'auto-remove': function (el) {
     var rg = state.autoMsgs.find(function (x) { return x.id === el.dataset.rid; });
@@ -18587,6 +19222,53 @@ var actions = {
     state.autoMsgs = state.autoMsgs.filter(function (x) { return x.id !== rg.id; });
     if (state.am && state.am.id === rg.id) state.am = null;
     save(); render();
+    planifierMessagesBeds24(true);
+  },
+
+  /* LE RACCOURCI DU LIVRET ET LES VARIABLES, À L'ENDROIT DU CURSEUR (D-234). */
+  'am-inserer': function (el) {
+    if (!state.am) return;
+    state.am.texte = insererAuCurseur('am-texte', state.am.texte, el.dataset.v || '');
+    save(); render(); remettreCurseur('am-texte');
+  },
+  'am-apercu-suivant': function () { amApercuRang++; render(); },
+
+  /* L'ENVOI AUTOMATIQUE PAR BEDS24 : allumer, couper (D-233). */
+  'b24-auto': function (el) {
+    var on = el.dataset.on === '1';
+    var noms = biensBeds24().map(function (p) { return p.name; }).join(', ');
+    if (on && !confirm('Allumer l’envoi automatique ?\n\nÀ partir de maintenant, tes messages programmés partiront ' +
+        'tout seuls, à leur heure, dans la conversation Airbnb ou Booking des voyageurs de : ' + noms + '.\n\n' +
+        'Rien ne part pour un moment déjà passé.\n\nAs-tu coupé les messages programmés d’Airbnb et de Booking qui ' +
+        'disent la même chose ? Sinon, tes voyageurs les recevront deux fois.')) return;
+    if (!on && !confirm('Couper l’envoi automatique ?\n\nPlus aucun message programmé ne partira par Beds24. Ceux qui ' +
+        'étaient prévus sont retirés de la file (ils te seront proposés pour WhatsApp, à la main).')) return;
+    state.envoiBeds24 = { actif: on, depuis: on ? Date.now() : (state.envoiBeds24.depuis || 0), _maj: Date.now() };
+    save(); render();
+    /* Le robot relit l'interrupteur DANS LE CAHIER : on l'y écrit tout de
+       suite, sans attendre les 800 ms habituelles. */
+    if (typeof DB !== 'undefined' && DB.estDispo() && DB.pousserMaintenant) DB.pousserMaintenant();
+    b24File.quand = 0;
+    if (b24Sejours.quand) planifierMessagesBeds24(true); else chargerMessagesBeds24(true);
+  },
+  'b24-file-maintenant': function (el) {
+    var x = (b24File.lignes || []).filter(function (l) { return l.id === el.dataset.mid; })[0];
+    if (!x) return;
+    var f = resaById(x.resa_id);
+    if (!confirm('Envoyer maintenant « ' + x.regle_nom + ' » à ' + (f ? f.r.guest : 'ce voyageur') + ' ?\n\n« ' +
+        x.texte.slice(0, 400) + (x.texte.length > 400 ? '…' : '') + ' »\n\nUn message envoyé ne se reprend pas.')) return;
+    DB.majMessage(x.id, { envoyer_a: new Date().toISOString() }, ['prevu']).then(function (n) {
+      if (!n) { b24File.texte = 'Ce message n’était plus « prévu » (déjà pris par le robot ?) : rien n’a été changé.'; render(); return; }
+      return lancerRobotMessages();
+    }, function (err) { b24File.ok = false; b24File.texte = (err && err.message) || 'Le cahier a refusé.'; render(); });
+  },
+  'b24-file-reessayer': function (el) {
+    var x = (b24File.lignes || []).filter(function (l) { return l.id === el.dataset.mid; })[0];
+    if (!x) return;
+    DB.majMessage(x.id, { statut: 'prevu', essais: 0, erreur: '', envoyer_a: new Date().toISOString() }, ['echec']).then(function (n) {
+      if (!n) { b24File.texte = 'Ce message n’était plus en échec : rien n’a été changé.'; render(); return; }
+      return lancerRobotMessages();
+    }, function (err) { b24File.ok = false; b24File.texte = (err && err.message) || 'Le cahier a refusé.'; render(); });
   },
 
   'create-resa': function (el) { createResa(el.dataset.pid); },
@@ -18787,6 +19469,45 @@ var actions = {
       save(); render();
     }
     window.open(url, '_blank');
+  },
+  /* Le lien personnel du livret, posé à l'endroit du curseur (D-232). Le VRAI
+     lien, pas « {lien} » : c'est un message à ce voyageur-là. */
+  'ecrire-lien': function (el) {
+    var f = resaById(el.dataset.rid);
+    if (!f) return;
+    state.waTexte = Object.assign({}, state.waTexte);
+    state.waTexte[f.r.id] = insererAuCurseur('wa-' + f.r.id, state.waTexte[f.r.id] || '', lienSejour(f.r.id));
+    render(); remettreCurseur('wa-' + f.r.id);
+  },
+  /* ENVOYER DANS LA CONVERSATION AIRBNB / BOOKING, PAR BEDS24 (D-232).
+     Confirmation qui RÉCITE le message (règle 22 bis) ; le texte reste dans
+     la case tant que Beds24 ne l'a pas accepté. */
+  'b24-envoyer': function (el) {
+    var f = resaById(el.dataset.rid);
+    if (!f || (b24Envoi[f.r.id] && b24Envoi[f.r.id].encours)) return;
+    var bid = bookingIdDe(f.pid, f.r);
+    var texte = remplirVars(state.waTexte[f.r.id] || '', f.pid, f.r).trim();
+    if (!texte) { alert('Écris d’abord ton message.'); return; }
+    if (!bid) { alert('Ce séjour n’est pas retrouvé chez Beds24 : impossible de lui écrire sur la plateforme d’ici.'); return; }
+    if (!confirm('Envoyer ce message à ' + f.r.guest + ' sur ' + nomPlateforme(f.r) + ' ?\n\n« ' +
+        texte.slice(0, 500) + (texte.length > 500 ? '…' : '') + ' »\n\nUn message envoyé ne se reprend pas.')) return;
+    var rid = f.r.id;
+    b24Envoi[rid] = { encours: true };
+    render();
+    DB.beds24('envoyer', { bookingId: bid, texte: texte }).then(function () {
+      b24Envoi[rid] = { ok: true, texte: '✅ Envoyé à ' + nowHM() + ' sur ' + nomPlateforme(f.r) + '.' };
+      state.waTexte = Object.assign({}, state.waTexte);
+      delete state.waTexte[rid];
+      // Affiché tout de suite dans le fil, en attendant que Beds24 le rende.
+      b24Msg.parResa = Object.assign({}, b24Msg.parResa);
+      b24Msg.parResa[rid] = messagesBeds24De(rid).concat([{ id: 'local-' + Date.now(), de: 'host', lu: true,
+        texte: texte, quand: new Date().toISOString(), local: true }]);
+      render();
+      setTimeout(function () { chargerMessagesBeds24(true); }, 4000);
+    }, function (err) {
+      b24Envoi[rid] = { ok: false, texte: '⚠️ Pas envoyé : ' + ((err && err.message) || 'Beds24 n’a pas répondu.') + ' Ton texte est gardé.' };
+      render();
+    });
   },
   // Envoyé autrement (sur Airbnb, par SMS…) : on ne le repropose plus.
   'wa-fait': function (el) {
@@ -19720,7 +20441,13 @@ var inputs = {
 
   /* Message programmé en cours d'écriture. */
   'am-nom': function (el) { if (state.am) { state.am.nom = el.value; save(); } },
-  'am-texte': function (el) { if (state.am) { state.am.texte = el.value; save(); } },
+  'am-texte': function (el) {
+    if (!state.am) return;
+    state.am.texte = el.value; save();
+    // L'aperçu suit la frappe, sans redessiner la page (D-234).
+    var pv = document.getElementById('am-apercu'), f = pv && resaById(pv.dataset.rid);
+    if (pv && f) majApercu(pv, remplirVars(el.value, f.pid, f.r));
+  },
   'am-dec': function (el) { if (state.am) { state.am.decalage = el.value; save(); } },
   'beds24-compte': function (el) { state.beds24.compte = el.value; save(); },
 
@@ -19747,7 +20474,11 @@ var inputs = {
   'admin-email': function (el) { state.adminEmail = el.value; },
   'lv-edit': function (el) { if (state.lvEdit) state.lvEdit[el.dataset.f] = el.value; },
   'reponse-ed': function (el) { if (state.reponseEd) state.reponseEd[el.dataset.f] = el.value; },
-  'wa-texte': function (el) { state.waTexte[el.dataset.rid] = el.value; },
+  'wa-texte': function (el) {
+    state.waTexte[el.dataset.rid] = el.value;
+    var f = resaById(el.dataset.rid), pv = document.getElementById('apercu-' + el.dataset.rid);
+    if (pv && f) majApercu(pv, remplirVars(el.value, f.pid, f.r));    // D-232
+  },
 
   /* Formulaires de création. */
   'nb-name': function (el) { state.nb.name = el.value; },
@@ -20281,6 +21012,13 @@ document.addEventListener('touchend', function (e) {
 }, { passive: true });
 
 window.addEventListener('hashchange', render);
+/* En entrant dans la rubrique Messages, la relève part tout de suite si la
+   dernière a plus de deux minutes (D-232), et les messages ouverts sont
+   marqués « lus ». Après le dessin : les vues restent pures (règle 26). */
+window.addEventListener('hashchange', function () {
+  if (state.auth !== 'owner' || !surPageMessages()) return;
+  setTimeout(function () { chargerMessagesBeds24(); marquerLusBeds24(); }, 0);
+});
 
 /* LE RETOUR AU PREMIER PLAN RELÈVE AUSSI LES CALENDRIERS (session 24, D-133).
 
@@ -20302,7 +21040,7 @@ document.addEventListener('visibilitychange', function () {
     return;
   }
   if (document.visibilityState !== 'visible') return;
-  releveAutoIcal().then(releveAutoBeds24);
+  releveAutoIcal().then(releveAutoBeds24).then(releveAutoMessages);
 });
 
 // Sauvegarde de sécurité : la frappe en cours n'est pas perdue en quittant la page.
@@ -20422,7 +21160,8 @@ if (cahierPret && !lienRecu) {
           if (restaurerNomsVoyageurs().length) save();
           // Session ouverte d'hier : les calendriers se relèvent sans rien
           // demander, avant même que Marc regarde ses missions (D-133).
-          releveAutoIcal().then(releveAutoBeds24);
+          releveAutoIcal().then(releveAutoBeds24).then(releveAutoMessages);
+          lancerReleveMessages();         // D-232
         }
       });
     })

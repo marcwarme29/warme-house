@@ -1263,7 +1263,12 @@ var DB = (function () {
     /* Session 48 : les prestations retirées d'un seul logement (D-224) et le
        message tout prêt du voyageur écrit à sa façon (D-225). Horodatés eux
        aussi (`REGLAGES_DATES`) : on peut les vider, et le vide doit voyager. */
-    'servicesRetires', 'messagesVoyageur'];
+    'servicesRetires', 'messagesVoyageur',
+    /* Session 49 (D-233) : l'interrupteur de l'envoi automatique des messages
+       programmés par Beds24 — `{ actif, depuis, _maj }`. Horodaté : le couper
+       doit voyager, et un appareil en retard ne doit pas le rallumer. Le robot
+       le relit lui-même dans le cahier (script 19) avant chaque passage. */
+    'envoiBeds24'];
 
   /* Deux clés ne doivent JAMAIS être remplacées par une liste vide : sans
      prestation ni article, l'application n'a plus rien à afficher et
@@ -1334,7 +1339,7 @@ var DB = (function () {
      trois-là sont relues juste avant chaque envoi : l'appareil resté ouvert
      depuis ce matin apprend la tâche ajoutée ailleurs avant de renvoyer sa
      copie, au lieu de l'effacer. */
-  var REGLAGES_DATES = { todos: 1, sansPresta: 1, adminDroits: 1, servicesRetires: 1, messagesVoyageur: 1 };
+  var REGLAGES_DATES = { todos: 1, sansPresta: 1, adminDroits: 1, servicesRetires: 1, messagesVoyageur: 1, envoiBeds24: 1 };
   function majDe(v) { return v && typeof v === 'object' && typeof v._maj === 'number' ? v._maj : 0; }
 
   function fusionnerOublis(local, distant) {
@@ -2329,6 +2334,11 @@ var DB = (function () {
     // Le mot laissé par le voyageur (session 31, D-164) : une colonne, pas une table.
     if (colonneCommentaireAbsente) out.push('14-commentaire-voyageur.sql');
     if (tablesAbsentes.factures) out.push('20-factures.sql');   // session 46, D-206
+    /* Session 49 (D-233) : la file des messages programmés. Dit seulement si
+       Marc a allumé l'envoi automatique — sinon personne n'en a besoin. */
+    if (tablesAbsentes.messages_sortants && typeof state !== 'undefined' && state.envoiBeds24 && state.envoiBeds24.actif) {
+      out.push('19-messages-beds24.sql');
+    }
     return out;
   }
 
@@ -3129,7 +3139,9 @@ var DB = (function () {
      9. BEDS24 — se relier et regarder (D-228)
 
      Même porte que le traducteur : la clé Beds24 ne vit que chez Vercel.
-     `action` : 'etat' | 'inviter' (avec `extra.code`) | 'sejours'.
+     `action` : 'etat' | 'inviter' (avec `extra.code`) | 'sejours' | 'messages'
+     — et, depuis la session 49 : 'envoyer' (`bookingId`, `texte`), 'lu'
+     (`ids`), 'robot' (envoie les messages programmés dus, D-233).
      Rend la réponse de `/api/beds24`, ou lève une erreur dont le message est
      déjà en français. Rien n'est écrit dans le cahier partagé.
      ---------------------------------------------------------------------- */
@@ -3164,6 +3176,79 @@ var DB = (function () {
         return j;
       });
     });
+  }
+
+  /* ----------------------------------------------------------------------
+     10. LA FILE DES MESSAGES PROGRAMMÉS (session 49, D-233, script 19)
+
+     MAISON WARME y range à l'avance chaque message programmé, déjà rempli
+     pour son voyageur ; le robot (`/api/beds24`, action `robot`) le poste
+     chez Beds24 à son heure. Une seule colonne appartient au robot une fois
+     le message pris : `statut` (avec `erreur`, `envoye_le`, `essais`). Le
+     navigateur n'y touche donc QUE par des mises à jour ciblées, conditionnées
+     au statut qu'il croit lire (`.eq('statut', …)`) : si le robot l'a pris
+     entre-temps, la mise à jour porte sur zéro ligne et ne l'écrase pas
+     (règles 16, 21, 22 et 25). Jamais d'envoi groupé qui renverrait un statut.
+     ---------------------------------------------------------------------- */
+  var COLONNES_FILE = 'id, property_id, resa_id, booking_b24, regle_id, regle_nom, texte, envoyer_a, statut, essais, erreur, envoye_le, updated_at';
+
+  function proprioDe() { return profil ? (profil.proprio || profil.id) : null; }
+
+  function erreurFile(err, quoi) {
+    if (tableAbsente(err)) {
+      tablesAbsentes.messages_sortants = true;
+      var e = new Error('Le script 19 (messages-beds24) n’est pas encore collé dans Supabase : ' +
+        'la file des messages programmés n’existe pas (§54 du mode d’emploi).');
+      e.code = 'sans-script';
+      return e;
+    }
+    return new Error(messageClair(err) + ' (' + quoi + ')');
+  }
+
+  /** Les messages rangés, des 30 derniers jours aux 60 prochains. */
+  function fileMessages() {
+    if (!dispo || !profil || profil.role !== 'owner') return Promise.reject(new Error('Réservé au compte du propriétaire.'));
+    var depuis = new Date(Date.now() - 30 * 86400000).toISOString();
+    return client.from('messages_sortants').select(COLONNES_FILE)
+      .eq('owner_id', proprioDe()).gte('envoyer_a', depuis)
+      .order('envoyer_a', { ascending: true }).limit(1000)
+      .then(function (r) {
+        if (r.error) throw erreurFile(r.error, 'en lisant la file des messages');
+        tablesAbsentes.messages_sortants = false;
+        return r.data || [];
+      });
+  }
+
+  /** Ranger de nouveaux messages. `ignoreDuplicates` : si un autre appareil
+      vient de ranger le même (même identifiant règle_séjour), on n'y touche pas. */
+  function rangerMessages(lignes) {
+    if (!lignes.length) return Promise.resolve(0);
+    var moi = proprioDe();
+    var l = lignes.map(function (x) {
+      return {
+        id: x.id, owner_id: moi, property_id: x.property_id, resa_id: x.resa_id,
+        booking_b24: x.booking_b24, regle_id: x.regle_id, regle_nom: x.regle_nom,
+        texte: x.texte, envoyer_a: x.envoyer_a
+      };
+    });
+    return client.from('messages_sortants')
+      .upsert(l, { onConflict: 'id', ignoreDuplicates: true }).select('id')
+      .then(function (r) {
+        if (r.error) throw erreurFile(r.error, 'en rangeant les messages programmés');
+        return (r.data || []).length;
+      });
+  }
+
+  /** Une mise à jour ciblée, SEULEMENT si la ligne est encore dans le statut
+      `si` (une liste). Rend le nombre de lignes réellement modifiées (règle 22). */
+  function majMessage(id, champs, si) {
+    var c = Object.assign({}, champs, { updated_at: new Date().toISOString() });
+    return client.from('messages_sortants').update(c)
+      .eq('id', id).eq('owner_id', proprioDe()).in('statut', si).select('id')
+      .then(function (r) {
+        if (r.error) throw erreurFile(r.error, 'en modifiant un message programmé');
+        return (r.data || []).length;
+      });
   }
 
   /* ---------------------------------------------------------------------- */
@@ -3281,6 +3366,10 @@ var DB = (function () {
     // Le livret en anglais (D-227).
     traduire: traduire,
     beds24: beds24,
+    // La file des messages programmés envoyés par Beds24 (session 49, D-233).
+    fileMessages: fileMessages,
+    rangerMessages: rangerMessages,
+    majMessage: majMessage,
     signalerDebutMenage: signalerDebutMenage,
     signalerCommentaire: signalerCommentaire
   };
