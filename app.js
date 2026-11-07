@@ -49,7 +49,7 @@ function isoDate(d) {
 /* La version de l'application, affichée dans les bandeaux d'erreur et sous le
    compte connecté (session 46) : trois fois, un écran resté sur l'ancienne
    version a fait chercher un défaut déjà corrigé. À changer à chaque envoi. */
-var VERSION_APP = '49.1';
+var VERSION_APP = '49.2';
 
 var TODAY = isoDate(new Date());
 var TODAY_LABEL = new Date().toLocaleDateString('fr-FR',
@@ -13526,8 +13526,9 @@ function carteBeds24() {
          « uniquement en lecture » de la session 48 est remplacé (règle 8). */
       '<p class="sec-note" style="margin:8px 0">Chez Beds24 : <strong>Settings → Marketplace → API → Generate invite code</strong>. ' +
         'Cocher <strong>en lecture</strong> : bookings, bookings-personal, bookings-financial, properties — et ' +
-        '<strong>bookings aussi en écriture</strong> : c’est ce qui permet de répondre aux voyageurs et d’envoyer ' +
-        'les messages programmés. Rien sur les prix ni les disponibilités. ' +
+        '<strong>bookings et bookings-personal aussi en écriture</strong> (vérifié le 7/11 : les messages en ont ' +
+        'besoin) : c’est ce qui permet de répondre aux voyageurs et d’envoyer les messages programmés. ' +
+        'Rien sur les prix ni les disponibilités. ' +
         'Le code périme vite : le coller ici <strong>aussitôt</strong>. §54 du mode d’emploi.</p>' +
       '<div style="display:flex;gap:8px;flex-wrap:wrap">' +
         '<input class="inp" style="flex:1;min-width:200px" type="text" autocomplete="off" placeholder="Coller le code d’invitation" value="' +

@@ -246,8 +246,20 @@ function refusEnvoi(rep) {
     return {
       code: 'sans-droit-ecrire', definitif: true,
       erreur: 'La clé Beds24 posée chez Vercel ne donne que le droit de LIRE. Pour écrire aux voyageurs, ' +
-        'refaire un code d’invitation chez Beds24 avec « bookings » en lecture ET écriture, l’échanger dans ' +
+        'refaire un code d’invitation chez Beds24 avec « bookings » ET « bookings-personal » en lecture ET écriture, l’échanger dans ' +
         'MAISON WARME et remplacer la clé chez Vercel (§54 du mode d’emploi).'
+    };
+  }
+  /* Session 49 bis, premier essai réel (7/11) : Booking.com filtre le CONTENU
+     des messages — un lien internet (même celui du livret) est refusé avec
+     « Message content failed to pass security filters », que Beds24 rend
+     souvent sous la forme « message could not be sent ». */
+  if (/security filter|could not be sent/i.test(dit)) {
+    return {
+      code: 'filtre-plateforme', definitif: true,
+      erreur: 'La plateforme a refusé ce message (filtre de sécurité). Booking.com refuse les liens internet, ' +
+        'les numéros de téléphone et les adresses e-mail dans ses messages : retire-les, ou envoie-les par ' +
+        'WhatsApp. Beds24 a répondu : « ' + dit.slice(0, 200) + ' ».'
     };
   }
   if (rep.statut === 0 || rep.statut === 429 || rep.statut >= 500 || /credit|limit/i.test(dit)) {
